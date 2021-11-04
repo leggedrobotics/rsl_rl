@@ -2,7 +2,6 @@ from setuptools import setup, find_packages
 
 setup(name='rsl_rl',
       version='1.0.2',
-      packages=find_packages(),
       author='Nikita Rudin',
       author_email='rudinn@ethz.ch',
       license="BSD-3-Clause",
@@ -12,6 +11,6 @@ setup(name='rsl_rl',
       install_requires=[
             "torch>=1.4.0",
             "torchvision>=0.5.0",
-            "numpy>=1.16.4",
+            "numpy>=1.16.4"
       ],
       )
