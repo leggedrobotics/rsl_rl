@@ -6,7 +6,6 @@ setup(name='rsl_rl',
       author='Nikita Rudin',
       author_email='rudinn@ethz.ch',
       license="BSD-3-Clause",
-      packages=find_packages(),
       description='Fast and simple RL algorithms implemented in pytorch',
       python_requires='>=3.6',
       install_requires=[
