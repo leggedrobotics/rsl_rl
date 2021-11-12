@@ -10,7 +10,7 @@ Contributions are welcome.
 ```
 git clone https://github.com/leggedrobotics/rsl_rl
 cd rsl_rl
-python setup.py install
+pip install -e
 ```
 
 **Maintainer**: Nikita Rudin  
