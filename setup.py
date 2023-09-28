@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(name='rsl_rl',
-      version='1.0.2',
+      version='1.0.3',
       author='Nikita Rudin',
       author_email='rudinn@ethz.ch',
       license="BSD-3-Clause",

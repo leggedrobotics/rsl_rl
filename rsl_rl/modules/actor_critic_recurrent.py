@@ -73,16 +73,16 @@ class ActorCriticRecurrent(ActorCritic):
         self.memory_a.reset(dones)
         self.memory_c.reset(dones)
 
-    def act(self, observations, masks=None, hidden_states=None):
-        input_a = self.memory_a(observations, masks, hidden_states)
+    def act(self, observations, masks=None, hidden_states=None, num_transitions_per_env=None):
+        input_a = self.memory_a(observations, masks, hidden_states, num_transitions_per_env)
         return super().act(input_a.squeeze(0))
 
     def act_inference(self, observations):
         input_a = self.memory_a(observations)
         return super().act_inference(input_a.squeeze(0))
 
-    def evaluate(self, critic_observations, masks=None, hidden_states=None):
-        input_c = self.memory_c(critic_observations, masks, hidden_states)
+    def evaluate(self, critic_observations, masks=None, hidden_states=None, num_transitions_per_env=None):
+        input_c = self.memory_c(critic_observations, masks, hidden_states, num_transitions_per_env)
         return super().evaluate(input_c.squeeze(0))
     
     def get_hidden_states(self):
@@ -97,14 +97,14 @@ class Memory(torch.nn.Module):
         self.rnn = rnn_cls(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
         self.hidden_states = None
     
-    def forward(self, input, masks=None, hidden_states=None):
+    def forward(self, input, masks=None, hidden_states=None, num_transitions_per_env=None):
         batch_mode = masks is not None
         if batch_mode:
             # batch mode (policy update): need saved hidden states
             if hidden_states is None:
                 raise ValueError("Hidden states not passed to memory module during policy update")
             out, _ = self.rnn(input, hidden_states)
-            out = unpad_trajectories(out, masks)
+            out = unpad_trajectories(out, masks, num_transitions_per_env)
         else:
             # inference mode (collection): use hidden states of last step
             out, self.hidden_states = self.rnn(input.unsqueeze(0), self.hidden_states)
