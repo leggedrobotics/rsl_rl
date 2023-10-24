@@ -58,13 +58,16 @@ def split_and_pad_trajectories(tensor, dones):
     trajectory_lengths_list = trajectory_lengths.tolist()
     # Extract the individual trajectories
     trajectories = torch.split(tensor.transpose(1, 0).flatten(0, 1),trajectory_lengths_list)
+    # add at least one full length trajectory to avoid errors with max(traj_lens) < num_transitions_per_env
+    trajectories = trajectories + (torch.zeros(tensor.shape[0], tensor.shape[-1], device=tensor.device), ) 
     padded_trajectories = torch.nn.utils.rnn.pad_sequence(trajectories)
+    padded_trajectories = padded_trajectories[:, :-1] # remove the added tensor after padding
 
     trajectory_masks = trajectory_lengths > torch.arange(0, padded_trajectories.shape[0], device=tensor.device).unsqueeze(1)
     return padded_trajectories, trajectory_masks
 
-def unpad_trajectories(trajectories, masks, num_transitions_per_env):
+def unpad_trajectories(trajectories, masks):
     """ Does the inverse operation of  split_and_pad_trajectories()
     """
     # Need to transpose before and after the masking to have proper reshaping
-    return trajectories.transpose(1, 0)[masks.transpose(1, 0)].view(-1, num_transitions_per_env, trajectories.shape[-1]).transpose(1, 0)
+    return trajectories.transpose(1, 0)[masks.transpose(1, 0)].view(-1, trajectories.shape[0], trajectories.shape[-1]).transpose(1, 0)
