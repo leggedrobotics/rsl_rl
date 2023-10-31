@@ -1,4 +1,5 @@
 algorithm:
+  class_name: PPO
   # training parameters
   # -- value function
   value_loss_coef: 1.0
@@ -16,6 +17,7 @@ algorithm:
   num_mini_batches: 4  # mini batch size = num_envs * num_steps / num_mini_batches
   schedule: adaptive  # adaptive, fixed
 policy:
+  class_name: ActorCritic
   # for MLP i.e. `ActorCritic`
   activation: elu
   actor_hidden_dims: [128, 128, 128]
@@ -26,8 +28,6 @@ policy:
   # rnn_hidden_size: 512
   # rnn_num_layers: 1
 runner:
-    policy_class_name: ActorCritic
-    algorithm_class_name: PPO
     num_steps_per_env: 24  # number of steps per environment per iteration
     max_iterations: 1500  # number of policy updates
     empirical_normalization: false
