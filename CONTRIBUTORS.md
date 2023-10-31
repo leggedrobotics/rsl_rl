@@ -25,7 +25,7 @@ Please keep the lists sorted alphabetically.
 * Eric Vollenweider
 * Fabian Jenelten
 * Lorenzo Terenzi
-* Matthijs van der Boon
 * Marko Bjelonic
+* Matthijs van der Boon
 * Mayank Mittal
 * Zhang Chong
