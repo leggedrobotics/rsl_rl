@@ -1,0 +1,48 @@
+algorithm:
+  class_name: PPO
+  # training parameters
+  # -- value function
+  value_loss_coef: 1.0
+  clip_param: 0.2
+  use_clipped_value_loss: true
+  # -- surrogate loss
+  desired_kl: 0.01
+  entropy_coef: 0.01
+  gamma: 0.99
+  lam: 0.95
+  max_grad_norm: 1.0
+  # -- training
+  learning_rate: 0.001
+  num_learning_epochs: 5
+  num_mini_batches: 4  # mini batch size = num_envs * num_steps / num_mini_batches
+  schedule: adaptive  # adaptive, fixed
+policy:
+  class_name: ActorCritic
+  # for MLP i.e. `ActorCritic`
+  activation: elu
+  actor_hidden_dims: [128, 128, 128]
+  critic_hidden_dims: [128, 128, 128]
+  init_noise_std: 1.0
+  # only needed for `ActorCriticRecurrent`
+  # rnn_type: 'lstm'
+  # rnn_hidden_size: 512
+  # rnn_num_layers: 1
+runner:
+    num_steps_per_env: 24  # number of steps per environment per iteration
+    max_iterations: 1500  # number of policy updates
+    empirical_normalization: false
+    # -- logging parameters
+    save_interval: 50  # check for potential saves every `save_interval` iterations
+    experiment_name: walking_experiment
+    run_name: ""
+    # -- logging writer
+    logger: tensorboard  # tensorboard, neptune, wandb
+    neptune_project: legged_gym
+    wandb_project: legged_gym
+    # -- load and resuming
+    resume: false
+    load_run: -1  # -1 means load latest run
+    resume_path: null  # updated from load_run and checkpoint
+    checkpoint: -1  # -1 means load latest checkpoint
+runner_class_name: OnPolicyRunner
+seed: 1
