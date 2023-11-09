@@ -5,7 +5,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="rsl_rl",
-    version="2.0.0",
+    version="2.0.1",
     packages=find_packages(),
     license="BSD-3",
     description="Fast and simple RL algorithms implemented in pytorch",

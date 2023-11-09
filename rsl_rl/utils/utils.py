@@ -60,7 +60,11 @@ def unpad_trajectories(trajectories, masks):
 
 def store_code_state(logdir, repositories):
     for repository_file_path in repositories:
-        repo = git.Repo(repository_file_path, search_parent_directories=True)
+        try:
+            repo = git.Repo(repository_file_path, search_parent_directories=True)
+        except git.InvalidGitRepositoryError:
+            # skip if not a git repository
+            continue
         repo_name = pathlib.Path(repo.working_dir).name
         t = repo.head.commit.tree
         content = f"--- git status ---\n{repo.git.status()} \n\n\n--- git diff ---\n{repo.git.diff(t)}"
