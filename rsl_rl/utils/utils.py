@@ -58,15 +58,21 @@ def unpad_trajectories(trajectories, masks):
     )
 
 
-def store_code_state(logdir, repositories):
+def store_code_state(logdir, repositories) -> list:
+    file_paths = []
     for repository_file_path in repositories:
         try:
             repo = git.Repo(repository_file_path, search_parent_directories=True)
         except git.InvalidGitRepositoryError:
             # skip if not a git repository
             continue
+        # get the name of the repository
         repo_name = pathlib.Path(repo.working_dir).name
         t = repo.head.commit.tree
+        diff_file_name = os.path.join(logdir, f"{repo_name}_git.diff")
         content = f"--- git status ---\n{repo.git.status()} \n\n\n--- git diff ---\n{repo.git.diff(t)}"
-        with open(os.path.join(logdir, f"{repo_name}_git.diff"), "x") as f:
+        with open(diff_file_name, "x") as f:
             f.write(content)
+        # add the file path to the list of files to be uploaded
+        file_paths.append(diff_file_name)
+    return file_paths

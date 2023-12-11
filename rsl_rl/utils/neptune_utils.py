@@ -86,3 +86,7 @@ class NeptuneSummaryWriter(SummaryWriter):
 
     def save_model(self, model_path, iter):
         self.neptune_logger.run["model/saved_model_" + str(iter)].upload(model_path)
+
+    def save_file(self, path, iter=None):
+        name = path.rsplit("/", 1)[-1].split(".")[0]
+        self.neptune_logger.run["git_diff/" + name].upload(path)
