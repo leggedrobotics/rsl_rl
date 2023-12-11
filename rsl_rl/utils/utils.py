@@ -59,6 +59,8 @@ def unpad_trajectories(trajectories, masks):
 
 
 def store_code_state(logdir, repositories) -> list:
+    git_log_dir = os.path.join(logdir, "git")
+    os.makedirs(git_log_dir, exist_ok=True)
     file_paths = []
     for repository_file_path in repositories:
         try:
@@ -69,7 +71,7 @@ def store_code_state(logdir, repositories) -> list:
         # get the name of the repository
         repo_name = pathlib.Path(repo.working_dir).name
         t = repo.head.commit.tree
-        diff_file_name = os.path.join(logdir, f"{repo_name}_git.diff")
+        diff_file_name = os.path.join(git_log_dir, f"{repo_name}.diff")
         content = f"--- git status ---\n{repo.git.status()} \n\n\n--- git diff ---\n{repo.git.diff(t)}"
         with open(diff_file_name, "x") as f:
             f.write(content)

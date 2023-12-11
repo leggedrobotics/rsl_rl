@@ -74,7 +74,7 @@ class WandbSummaryWriter(SummaryWriter):
         self.store_config(env_cfg, runner_cfg, alg_cfg, policy_cfg)
 
     def save_model(self, model_path, iter):
-        wandb.save(model_path)
+        wandb.save(model_path, base_path=os.path.dirname(model_path))
 
     def save_file(self, path, iter=None):
-        wandb.save(path)
+        wandb.save(path, base_path=os.path.dirname(path))
