@@ -8,14 +8,14 @@ from dataclasses import asdict
 from torch.utils.tensorboard import SummaryWriter
 
 try:
-    import neptune.new as neptune
+    import neptune
 except ModuleNotFoundError:
     raise ModuleNotFoundError("neptune-client is required to log to Neptune.")
 
 
 class NeptuneLogger:
     def __init__(self, project, token):
-        self.run = neptune.init(project=project, api_token=token)
+        self.run = neptune.init_run(project=project, api_token=token)
 
     def store_config(self, env_cfg, runner_cfg, alg_cfg, policy_cfg):
         self.run["runner_cfg"] = runner_cfg
