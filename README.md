@@ -3,6 +3,9 @@
 Fast and simple implementation of RL algorithms, designed to run fully on GPU.
 This code is an evolution of `rl-pytorch` provided with NVIDIA's Isaac GYM.
 
+| :zap:        The `algorithms` branch supports additional algorithms (SAC, DDPG, DSAC, and more)! |
+| ------------------------------------------------------------------------------------------------ |
+
 Only PPO is implemented for now. More algorithms will be added later.
 Contributions are welcome.
 
