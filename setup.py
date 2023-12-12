@@ -1,24 +1,20 @@
-#  Copyright 2021 ETH Zurich, NVIDIA CORPORATION
-#  SPDX-License-Identifier: BSD-3-Clause
-
-from setuptools import find_packages, setup
+from setuptools import setup, find_packages
 
 setup(
     name="rsl_rl",
-    version="2.0.2",
+    version="1.0.2",
     packages=find_packages(),
-    author="ETH Zurich, NVIDIA CORPORATION",
-    maintainer="Nikita Rudin, David Hoeller",
-    maintainer_email="rudinn@ethz.ch",
-    url="https://github.com/leggedrobotics/rsl_rl",
     license="BSD-3",
     description="Fast and simple RL algorithms implemented in pytorch",
     python_requires=">=3.6",
     install_requires=[
+        "GitPython",
+        "gym[all]>=0.26.0",
+        "numpy>=1.24.4",
+        "onnx>=1.14.0",
+        "tensorboard>=2.13.0",
         "torch>=1.10.0",
         "torchvision>=0.5.0",
-        "numpy>=1.16.4",
-        "GitPython",
-        "onnx",
+        "wandb>=0.15.4",
     ],
 )

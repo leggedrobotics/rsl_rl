@@ -3,6 +3,7 @@
 
 """Implementation of runners for environment-agent interaction."""
 
-from .on_policy_runner import OnPolicyRunner
+from .runner import Runner
+from .legacy_runner import LeggedGymRunner
 
-__all__ = ["OnPolicyRunner"]
+__all__ = ["LeggedGymRunner", "Runner"]

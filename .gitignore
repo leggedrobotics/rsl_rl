@@ -7,6 +7,17 @@
 # cache
 __pycache__
 .pytest_cache
+wandb/
 
 # vs code
 .vscode
+
+# data
+videos/
+
+# secrets
+examples/wandb_config.py
+
+# docs
+docs/_build
+docs/source

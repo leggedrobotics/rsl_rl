@@ -1,57 +1,64 @@
 # RSL RL
 
 Fast and simple implementation of RL algorithms, designed to run fully on GPU.
-This code is an evolution of `rl-pytorch` provided with NVIDIA's Isaac GYM.
 
-Only PPO is implemented for now. More algorithms will be added later.
-Contributions are welcome.
+Currently, the following algorithms are implemented:
+- Distributed Distributional DDPG (D4PG)
+- Deep Deterministic Policy Gradient (DDPG)
+- Distributional PPO (DPPO)
+- Distributional Soft Actor Critic (DSAC)
+- Proximal Policy Optimization (PPO)
+- Soft Actor Critic (SAC)
+- Twin Delayed DDPG (TD3)
 
-**Maintainer**: David Hoeller and Nikita Rudin <br/>
+**Maintainer**: David Hoeller, Nikita Rudin <br/>
 **Affiliation**: Robotic Systems Lab, ETH Zurich & NVIDIA <br/>
 **Contact**: rudinn@ethz.ch
 
-## Setup
+## Installation
 
-Following are the instructions to setup the repository for your workspace:
+To install the package, run the following command in the root directory of the repository:
 
 ```bash
-git clone https://github.com/leggedrobotics/rsl_rl
-cd rsl_rl
-pip install -e .
+$ pip3 install -e .
 ```
 
-The framework supports the following logging frameworks which can be configured through `logger`:
+Examples can be run from the `examples/` directory.
+The example directory also include hyperparameters tuned for some gym environments.
+These are automatically loaded when running the example.
+Videos of the trained policies are periodically saved to the `videos/` directory.
 
-* Tensorboard: https://www.tensorflow.org/tensorboard/
-* Weights & Biases: https://wandb.ai/site
-* Neptune: https://docs.neptune.ai/
+```bash
+$ python3 examples/example.py
+```
 
-For a demo configuration of the PPO, please check: [dummy_config.yaml](config/dummy_config.yaml) file.
+To run gym mujoco environments, you need a working installation of the mujoco simulator and [mujoco_py](https://github.com/openai/mujoco-py).
 
+## Tests
+
+The repository contains a set of tests to ensure that the algorithms are working as expected.
+To run the tests, simply execute:
+
+```bash
+$ cd tests/ && python -m unittest
+```
+
+## Documentation
+
+To generate documentation, run the following command in the root directory of the repository:
+
+```bash
+$ pip3 install sphinx sphinx-rtd-theme
+$ sphinx-apidoc -o docs/source . ./examples
+$ cd docs/ && make html
+```
 
 ## Contribution Guidelines
 
-For documentation, we adopt the [Google Style Guide](https://sphinxcontrib-napoleon.readthedocs.io/en/latest/example_google.html) for docstrings. We use [Sphinx](https://www.sphinx-doc.org/en/master/) for generating the documentation. Please make sure that your code is well-documented and follows the guidelines.
-
-We use the following tools for maintaining code quality:
-
-- [pre-commit](https://pre-commit.com/): Runs a list of formatters and linters over the codebase.
-- [black](https://black.readthedocs.io/en/stable/): The uncompromising code formatter.
-- [flake8](https://flake8.pycqa.org/en/latest/): A wrapper around PyFlakes, pycodestyle, and McCabe complexity checker.
-
-Please check [here](https://pre-commit.com/#install) for instructions to set these up. To run over the entire repository, please execute the following command in the terminal:
-
+We use [`black`](https://github.com/psf/black) formatter for formatting the python code.
+You should [configure `black` with VSCode](https://dev.to/adamlombard/how-to-use-the-black-python-code-formatter-in-vscode-3lo0) or you can manually format files with:
 
 ```bash
-# for installation (only once)
-pre-commit install
-# for running
-pre-commit run --all-files
+$ pip install black
+$ black --line-length 120 .
 ```
-
-### Useful Links
-
-Environment repositories using the framework:
-
-* `Legged-Gym` (built on top of NVIDIA Isaac Gym): https://leggedrobotics.github.io/legged_gym/
-* `Orbit` (built on top of NVIDIA Isaac Sim): https://isaac-orbit.github.io/

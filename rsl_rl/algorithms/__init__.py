@@ -1,8 +1,10 @@
-#  Copyright 2021 ETH Zurich, NVIDIA CORPORATION
-#  SPDX-License-Identifier: BSD-3-Clause
-
-"""Implementation of different RL agents."""
-
+from .agent import Agent
+from .d4pg import D4PG
+from .ddpg import DDPG
+from .dppo import DPPO
+from .dsac import DSAC
 from .ppo import PPO
+from .sac import SAC
+from .td3 import TD3
 
-__all__ = ["PPO"]
+__all__ = ["Agent", "DDPG", "D4PG", "DPPO", "DSAC", "PPO", "SAC", "TD3"]

@@ -1,11 +1,7 @@
-#  Copyright 2021 ETH Zurich, NVIDIA CORPORATION
-#  SPDX-License-Identifier: BSD-3-Clause
-
-from __future__ import annotations
-
 import os
-from dataclasses import asdict
+
 from torch.utils.tensorboard import SummaryWriter
+from legged_gym.utils import class_to_dict
 
 try:
     import wandb
@@ -14,8 +10,6 @@ except ModuleNotFoundError:
 
 
 class WandbSummaryWriter(SummaryWriter):
-    """Summary writer for Weights and Biases."""
-
     def __init__(self, log_dir: str, flush_secs: int, cfg):
         super().__init__(log_dir, flush_secs)
 
@@ -49,7 +43,7 @@ class WandbSummaryWriter(SummaryWriter):
         wandb.config.update({"runner_cfg": runner_cfg})
         wandb.config.update({"policy_cfg": policy_cfg})
         wandb.config.update({"alg_cfg": alg_cfg})
-        wandb.config.update({"env_cfg": asdict(env_cfg)})
+        wandb.config.update({"env_cfg": class_to_dict(env_cfg)})
 
     def _map_path(self, path):
         if path in self.name_map:
@@ -74,7 +68,4 @@ class WandbSummaryWriter(SummaryWriter):
         self.store_config(env_cfg, runner_cfg, alg_cfg, policy_cfg)
 
     def save_model(self, model_path, iter):
-        wandb.save(model_path, base_path=os.path.dirname(model_path))
-
-    def save_file(self, path, iter=None):
-        wandb.save(path, base_path=os.path.dirname(path))
+        wandb.save(model_path)
