@@ -31,6 +31,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
@@ -52,6 +53,9 @@ class PPO:
                  schedule="fixed",
                  desired_kl=0.01,
                  device='cpu',
+                 #vae_module_learning_rate=1e-3,
+                 num_vae_module_substeps=1,
+                 beta=1
                  ):
 
         self.device = device
@@ -78,28 +82,40 @@ class PPO:
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
 
-    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
-        self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device)
+        #self.vae_module_learning_rate = vae_module_learning_rate
+        self.num_vae_module_substeps = num_vae_module_substeps
 
+        self.beta=beta
+
+    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, obs_history_shape,action_shape):
+        self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, obs_history_shape,action_shape, self.device)
+       # print(f'num_transitions_per_env{num_transitions_per_env}')
     def test_mode(self):
         self.actor_critic.test()
     
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, critic_obs):
+    def act(self, obs, privileged_obs,obs_history):
+        #print(f'critic_obs{critic_obs.shape}')
         if self.actor_critic.is_recurrent:
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
         # Compute the actions and values
-        self.transition.actions = self.actor_critic.act(obs).detach()
-        self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
+        self.transition.actions = self.actor_critic.act(obs,obs_history).detach()
+        self.transition.values = self.actor_critic.evaluate(obs,privileged_obs).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
         # need to record obs and critic_obs before env.step()
         self.transition.observations = obs
-        self.transition.critic_observations = critic_obs
+        self.transition.critic_observations = obs
+        
+        self.transition.privileged_observations=privileged_obs
+        
+        self.transition.observation_histories = obs_history
+        
         return self.transition.actions
+
     
     def process_env_step(self, rewards, dones, infos):
         self.transition.rewards = rewards.clone()
@@ -113,27 +129,37 @@ class PPO:
         self.transition.clear()
         self.actor_critic.reset(dones)
     
-    def compute_returns(self, last_critic_obs):
-        last_values= self.actor_critic.evaluate(last_critic_obs).detach()
+    def compute_returns(self, last_obs ,last_critic_obs):
+        last_values = self.actor_critic.evaluate(last_obs, last_critic_obs).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
 
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
+
+        mean_vae_loss = 0
+
+        prev_obs_history_batch = None
+        prev_base_lin_vel_batch = None
+        prev_obs_batch = None
+
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-        for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
+        for obs_batch, critic_obs_batch,privileged_obs_batch,base_lin_vel_batch, obs_history_batch,actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
             old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
 
 
-                self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+                self.actor_critic.act(obs_batch, obs_history_batch,masks=masks_batch, hidden_states=hid_states_batch[0])
                 actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
-                value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
+                value_batch = self.actor_critic.evaluate(obs_batch,privileged_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
                 mu_batch = self.actor_critic.action_mean
                 sigma_batch = self.actor_critic.action_std
                 entropy_batch = self.actor_critic.entropy
+
+               
+           
 
                 # KL
                 if self.desired_kl != None and self.schedule == 'adaptive':
@@ -179,9 +205,37 @@ class PPO:
                 mean_value_loss += value_loss.item()
                 mean_surrogate_loss += surrogate_loss.item()
 
+                
+                if prev_obs_history_batch is not None and prev_base_lin_vel_batch is not None and prev_obs_batch is not None:
+                    for epoch in range(self.num_vae_module_substeps):
+                        encoder_pred,recons,vae_mu,vae_log_var=self.actor_critic.vae_forward(prev_obs_history_batch)
+                        body_vel_pred = encoder_pred[:, :3]
+
+                        with torch.no_grad():
+                            body_vel_target = prev_base_lin_vel_batch
+                            recons_target = obs_batch
+                        body_vel_loss = F.mse_loss(body_vel_pred, body_vel_target)
+                        recons_loss = F.mse_loss(recons, recons_target )
+                        kld_loss = -0.5 * torch.sum(1 + vae_log_var - vae_mu.pow(2) - vae_log_var.exp())
+                        vae_loss=body_vel_loss+recons_loss+self.beta*kld_loss
+                        self.optimizer.zero_grad()
+                        vae_loss.backward()
+                        self.optimizer.step()
+
+                        mean_vae_loss += vae_loss.item()
+
+                prev_obs_history_batch = obs_history_batch
+                prev_base_lin_vel_batch = base_lin_vel_batch
+                prev_obs_batch=obs_batch
+            
+
+
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
+        
+        mean_vae_loss /= (num_updates * self.num_vae_module_substeps)
+        
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss
+        return mean_value_loss, mean_surrogate_loss, mean_vae_loss

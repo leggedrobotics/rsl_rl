@@ -39,7 +39,11 @@ class ActorCritic(nn.Module):
     is_recurrent = False
     def __init__(self,  num_actor_obs,
                         num_critic_obs,
+                        num_obs_history,
                         num_actions,
+                        encoder_hidden_dims=[128,64,19],
+                        decoder_hidden_dims=[64,128,48],
+                        latent_dim=19,
                         actor_hidden_dims=[256, 256, 256],
                         critic_hidden_dims=[256, 256, 256],
                         activation='elu',
@@ -50,12 +54,51 @@ class ActorCritic(nn.Module):
         super(ActorCritic, self).__init__()
 
         activation = get_activation(activation)
+        self.num_actor_obs=num_actor_obs
+        self.num_critic_obs = num_critic_obs
+        #print(f'num_critic_obs{self.num_critic_obs}') #187
+       
+        self.num_obs_history = num_obs_history
+        self.latent_dim = latent_dim
 
-        mlp_input_dim_a = num_actor_obs
-        mlp_input_dim_c = num_critic_obs
+        mlp_input_dim_a = self.latent_dim+self.num_actor_obs
+        mlp_input_dim_c = self.num_actor_obs+self.num_critic_obs 
+        
+        mlp_input_dim_e = self.num_obs_history
+        mlp_output_dim_d= self.num_actor_obs
+        
+
+        # Encoder
+        encoder_layers = []
+        encoder_layers.append(nn.Linear(mlp_input_dim_e, encoder_hidden_dims[0]))
+        encoder_layers.append(activation)
+        for l in range(len(encoder_hidden_dims)):
+            if l == len(encoder_hidden_dims) - 1:
+                self.fc_mu = nn.Linear(encoder_hidden_dims[l], self.latent_dim)
+                self.fc_var = nn.Linear(encoder_hidden_dims[l], self.latent_dim)
+            else:
+                encoder_layers.append(nn.Linear(encoder_hidden_dims[l], encoder_hidden_dims[l + 1]))
+                encoder_layers.append(activation)
+        self.encoder_module = nn.Sequential(*encoder_layers)
+
+        # Decoder
+        decoder_layers = []
+        decoder_layers.append(nn.Linear(latent_dim, decoder_hidden_dims[0]))   
+        decoder_layers.append(activation)
+        for l in range(len(decoder_hidden_dims)):
+            if l == len(decoder_hidden_dims) - 1:
+                decoder_layers.append(nn.Linear(decoder_hidden_dims[l], mlp_output_dim_d))
+            else:
+                decoder_layers.append(nn.Linear(decoder_hidden_dims[l], decoder_hidden_dims[l + 1]))
+                decoder_layers.append(activation)
+        self.decoder_module = nn.Sequential(*decoder_layers)
+
+       
 
         # Policy
         actor_layers = []
+        print(f'actor_hidden_dims{actor_hidden_dims}') #256,256,256
+        print(f'actor_hidden_dims[0]{actor_hidden_dims[0]}') #256
         actor_layers.append(nn.Linear(mlp_input_dim_a, actor_hidden_dims[0]))
         actor_layers.append(activation)
         for l in range(len(actor_hidden_dims)):
@@ -80,6 +123,8 @@ class ActorCritic(nn.Module):
 
         print(f"Actor MLP: {self.actor}")
         print(f"Critic MLP: {self.critic}")
+        print(f"Encoder MLP: {self.encoder_module}")
+        print(f"Decoder MLP: {self.decoder_module}")
 
         # Action noise
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
@@ -116,24 +161,58 @@ class ActorCritic(nn.Module):
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
-    def update_distribution(self, observations):
-        mean = self.actor(observations)
-        self.distribution = Normal(mean, mean*0. + self.std)
 
-    def act(self, observations, **kwargs):
-        self.update_distribution(observations)
+    def update_distribution(self, observations,observation_history):
+        latent,_,_,_=self.vae_forward(observation_history)
+        #print(f'latent{latent.shape}')
+        mean = self.actor(torch.cat((latent, observations), dim=-1))
+        #print(torch.isnan(mean).any())
+        #print(f'mean{mean}')
+        #print(f'mean.shape{mean.shape}') #mean.shapetorch.Size([24576, 12])
+        #print(f'self.std{self.std}')
+        #print(f'self.std.shape{self.std.shape}') #self.std.shapetorch.Size([12])
+        
+        self.distribution = Normal(mean, mean * 0.0 + self.std)
+        #print(f'self.distribution{self.distribution}')
+
+
+    def act(self, observations,observation_history,**kwargs):
+        self.update_distribution(observations,observation_history)
+        #print(f'self.distribution.sample{self.distribution.sample().shape}')                                                                                               
         return self.distribution.sample()
     
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def act_inference(self, observations):
-        actions_mean = self.actor(observations)
-        return actions_mean
+   
 
-    def evaluate(self, critic_observations, **kwargs):
-        value = self.critic(critic_observations)
+    def evaluate(self, observations,privileged_observations, **kwargs):
+        value = self.critic(torch.cat((observations,privileged_observations),dim=-1))
         return value
+  
+    def encode(self, observation_history):
+        h = self.encoder_module(observation_history)
+        mu, log_var = self.fc_mu(h), self.fc_var(h)
+        return mu, log_var
+
+    def reparameterize(self, mu, log_var):
+        std = torch.exp(0.5 * log_var)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, latent):
+        return self.decoder_module(latent)
+    
+    # define forward function for only the vae
+    def vae_forward(self, observation_history):
+        mu, log_var = self.encode(observation_history)
+        latent = self.reparameterize(mu, log_var)
+        return latent,self.decode(latent),mu,log_var
+
+    
+    # def act_inference(self, observations):   
+    #     actions_mean = self.actor(observations)
+    #     return actions_mean
 
 def get_activation(act_name):
     if act_name == "elu":
