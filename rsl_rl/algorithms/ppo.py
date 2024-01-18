@@ -55,7 +55,7 @@ class PPO:
                  device='cpu',
                  #vae_module_learning_rate=1e-3,
                  num_vae_module_substeps=1,
-                 beta=1
+                 beta=1.0
                  ):
 
         self.device = device
