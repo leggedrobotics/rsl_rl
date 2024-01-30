@@ -13,7 +13,21 @@ Currently, the following algorithms are implemented:
 
 **Maintainer**: David Hoeller, Nikita Rudin <br/>
 **Affiliation**: Robotic Systems Lab, ETH Zurich & NVIDIA <br/>
-**Contact**: rudinn@ethz.ch
+**Contact**: Nikita Rudin (rudinn@ethz.ch), Lukas Schneider (lukas@luschneider.com)
+
+## Citation
+
+If you use our code in your research, please cite us:
+```
+@misc{schneider2023learning,
+  archivePrefix={arXiv},
+  author={Lukas Schneider and Jonas Frey and Takahiro Miki and Marco Hutter},
+  eprint={2309.14246},
+  primaryClass={cs.RO}
+  title={Learning Risk-Aware Quadrupedal Locomotion using Distributional Reinforcement Learning}, 
+  year={2023},
+}
+```
 
 ## Installation
 
