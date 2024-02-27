@@ -30,7 +30,7 @@ class WandbSummaryWriter(SummaryWriter):
             entity = os.environ["WANDB_USERNAME"]
         except KeyError:
             entity = None
-            print("`WANDB_USERNAME` is not found! The run will be sent to your username.")
+            print("`WANDB_USERNAME` is not found! WandB will request your username in the interactive mode.")
 
         wandb.init(project=project, entity=entity)
 
@@ -48,7 +48,7 @@ class WandbSummaryWriter(SummaryWriter):
 
         wandb.log({"log_dir": run_name})
 
-        # Video logging.
+        # Video logging bookkeeper
         self.saved_video_files = {}
 
     def store_config(self, env_cfg, runner_cfg, alg_cfg, policy_cfg):
