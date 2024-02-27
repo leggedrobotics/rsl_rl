@@ -212,7 +212,7 @@ class OnPolicyRunner:
 
         # Video recording for wandb
         if self.logger_type == "wandb":
-            self.writer.update_video_files(log_name="Video", fps=30.0)
+            self.writer.update_video_files(log_name="Video", fps=30)
 
         str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 
