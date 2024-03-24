@@ -12,7 +12,7 @@ setup(
         "gym[all]>=0.26.0",
         "numpy>=1.24.4",
         "onnx>=1.14.0",
-        "tensorboard>=2.13.0",
+        "tensorboard>=2.10.0",
         "torch>=1.10.0",
         "torchvision>=0.5.0",
         "wandb>=0.15.4",
