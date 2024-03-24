@@ -8,6 +8,6 @@ setup(
     description="Fast and simple RL algorithms implemented in pytorch",
     python_requires=">=3.6",
     install_requires=[
-        "GitPython", "gym[all]", "numpy", "onnx", "tensorboard", "torch", "torchvision", "wandb",
+        "GitPython", "gym", "numpy", "onnx", "tensorboard", "torch", "torchvision", "wandb",
     ],
 )
