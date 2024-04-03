@@ -365,7 +365,7 @@ class Runner:
 
     def load(self, path: str) -> Any:
         """Restores the agent and runner state from a file."""
-        content = torch.load(path)
+        content = torch.load(path, map_location=self.device)
 
         assert "agent" in content
         assert "data" in content
