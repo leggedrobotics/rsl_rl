@@ -42,12 +42,8 @@ class OnPolicyRunner:
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
         if self.empirical_normalization:
-            if train_cfg.get("resume") == True:
-                until = 0
-            else:
-                until = 1.0e8
-            self.obs_normalizer = EmpiricalNormalization(shape=[num_obs], until=until).to(self.device)
-            self.critic_obs_normalizer = EmpiricalNormalization(shape=[num_critic_obs], until=until).to(self.device)
+            self.obs_normalizer = EmpiricalNormalization(shape=[num_obs], until=1.0e8).to(self.device)
+            self.critic_obs_normalizer = EmpiricalNormalization(shape=[num_critic_obs], until=1.0e8).to(self.device)
         else:
             self.obs_normalizer = torch.nn.Identity()  # no normalization
             self.critic_obs_normalizer = torch.nn.Identity()  # no normalization

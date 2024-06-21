@@ -26,7 +26,7 @@ class EmpiricalNormalization(nn.Module):
         self.register_buffer("_mean", torch.zeros(shape).unsqueeze(0))
         self.register_buffer("_var", torch.ones(shape).unsqueeze(0))
         self.register_buffer("_std", torch.ones(shape).unsqueeze(0))
-        self.count = 0
+        self.register_buffer("count", torch.tensor(0, dtype=torch.long))
 
     @property
     def mean(self):
