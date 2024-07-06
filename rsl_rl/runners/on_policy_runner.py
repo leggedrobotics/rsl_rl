@@ -163,7 +163,7 @@ class OnPolicyRunner:
                     for path in git_file_paths:
                         self.writer.save_file(path)
 
-        self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
+        self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration + 1}.pt"))
 
     def log(self, locs: dict, width: int = 80, pad: int = 35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
