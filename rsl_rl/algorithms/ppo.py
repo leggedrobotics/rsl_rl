@@ -30,6 +30,7 @@ class PPO:
         schedule="fixed",
         desired_kl=0.01,
         device="cpu",
+        **kwargs,
     ):
         self.device = device
 
