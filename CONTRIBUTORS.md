@@ -29,3 +29,4 @@ Please keep the lists sorted alphabetically.
 * Matthijs van der Boon
 * Mayank Mittal
 * Zhang Chong
+* Ziqi Fan
