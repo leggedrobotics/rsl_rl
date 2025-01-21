@@ -6,8 +6,10 @@ from .network import Network
 from .normalizer import EmpiricalNormalization
 from .quantile_network import QuantileNetwork
 from .transformer import Transformer
+from .actor_critic import ActorCritic
 
 __all__ = [
+    "ActorCritic",
     "CategoricalNetwork",
     "EmpiricalNormalization",
     "GaussianChimeraNetwork",

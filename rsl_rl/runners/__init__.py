@@ -5,5 +5,6 @@
 
 from .runner import Runner
 from .legacy_runner import LeggedGymRunner
+from .on_policy_runner import OnPolicyRunner
 
-__all__ = ["LeggedGymRunner", "Runner"]
+__all__ = ["LeggedGymRunner", "Runner", "OnPolicyRunner"]
