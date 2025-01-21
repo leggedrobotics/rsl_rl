@@ -89,6 +89,13 @@ class PPO(AbstractActorCritic):
         )
         self.critic = self.critic_network(self._critic_input_size, 1, **self._critic_network_kwargs)
 
+
+        print ("================= Actor network ===================")
+        print (self.actor)
+        print ("================= Critic network ===================")
+        print (self.critic)
+        print ("================================================")
+
         if self.recurrent:
             self.actor.reset_full_hidden_state(batch_size=self.env.num_envs)
             self.critic.reset_full_hidden_state(batch_size=self.env.num_envs)
