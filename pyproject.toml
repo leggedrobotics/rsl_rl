@@ -46,3 +46,36 @@ reportMissingModuleSource = "none" # -> most common: prettytable in mdp managers
 reportGeneralTypeIssues = "none"       # -> raises 218 errors (usage of literal MISSING in dataclasses)
 reportOptionalMemberAccess = "warning" # -> raises 8 errors
 reportPrivateUsage = "warning"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rsl_rl_lib"
+version = "2.0.2"
+authors = [
+  { name="Nikita Rudin, David Hoeller", email="rudinn@ethz.ch" },
+]
+description = "Fast and simple RL algorithms implemented in pytorch"
+readme = "README.md"
+requires-python = ">=3.6"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = {text = "BSD-3"}
+dependencies = [
+    "torch>=1.10.0",
+    "torchvision>=0.5.0",
+    "numpy>=1.16.4",
+    "GitPython",
+    "onnx",
+]
+
+[project.urls]
+Homepage = "https://github.com/leggedrobotics/rsl_rl"
+Issues = "https://github.com/leggedrobotics/rsl_rl/issues"
+
+[tool.setuptools_scm]
+version_scheme = "post-release"
