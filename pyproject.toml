@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rsl-rl-lib"
 version = "2.1.1"
+keywords = ["reinforcement-learning", "isaac", "leggedrobotics", "rl-pytorch"]
 maintainers = [
   { name="Clemens Schwarke", email="cschwarke@ethz.ch" },
   { name="Mayank Mittal", email="mittalma@ethz.ch" },
@@ -16,13 +17,15 @@ authors = [
   { name="David Hoeller", email="holler.david78@gmail.com" },
 ]
 description = "Fast and simple RL algorithms implemented in PyTorch"
-readme = "README.md"
+readme = { file = "README.md", content-type = "text/markdown"}
+license = "BSD-3-Clause"
+license-files = ["LICEN[CS]E*", "licenses/*.txt", "CONTRIBUTORS.md"]
+
 requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
-license = { file = "LICENSE" }
 dependencies = [
     "torch>=1.10.0",
     "torchvision>=0.5.0",
