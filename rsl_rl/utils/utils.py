@@ -80,7 +80,7 @@ def store_code_state(logdir, repositories) -> list:
             continue
         # write the diff file
         print(f"Storing git diff for '{repo_name}' in: {diff_file_name}")
-        with open(diff_file_name, "x") as f:
+        with open(diff_file_name, "x", encoding="utf-8") as f:
             content = f"--- git status ---\n{repo.git.status()} \n\n\n--- git diff ---\n{repo.git.diff(t)}"
             f.write(content)
         # add the file path to the list of files to be uploaded
