@@ -18,8 +18,7 @@ authors = [
 ]
 description = "Fast and simple RL algorithms implemented in PyTorch"
 readme = { file = "README.md", content-type = "text/markdown"}
-license = "BSD-3-Clause"
-license-files = ["LICEN[CS]E*", "licenses/*.txt", "CONTRIBUTORS.md"]
+license = { text = "BSD-3-Clause" }
 
 requires-python = ">=3.8"
 classifiers = [
