@@ -1,3 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rsl_rl"
+version = "2.0.2"
+maintainers = [
+  { name="Clemens Schwarke", email="cschwarke@ethz.ch" },
+  { name="Mayank Mittal", email="mittalma@ethz.ch" },
+]
+authors = [
+  { name="Clemens Schwarke", email="cschwarke@ethz.ch" },
+  { name="Mayank Mittal", email="mittalma@ethz.ch" },
+  { name="Nikita Rudin", email="rudinn@ethz.ch" },
+  { name="David Hoeller", email="holler.david78@gmail.com" },
+]
+description = "Fast and simple RL algorithms implemented in PyTorch"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = { file = "LICENSE" }
+dependencies = [
+    "torch>=1.10.0",
+    "torchvision>=0.5.0",
+    "numpy>=1.16.4",
+    "GitPython",
+    "onnx",
+]
+
+[project.urls]
+Homepage = "https://github.com/leggedrobotics/rsl_rl"
+Issues = "https://github.com/leggedrobotics/rsl_rl/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rsl_rl*"]
+
+[tool.setuptools.package-data]
+"rsl_rl" = ["config/*", "licenses/*"]
+
 [tool.isort]
 
 py_version = 37
@@ -46,33 +90,3 @@ reportMissingModuleSource = "none" # -> most common: prettytable in mdp managers
 reportGeneralTypeIssues = "none"       # -> raises 218 errors (usage of literal MISSING in dataclasses)
 reportOptionalMemberAccess = "warning" # -> raises 8 errors
 reportPrivateUsage = "warning"
-
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "rsl_rl"
-version = "2.0.2"
-authors = [
-  { name="Clemens Schwarke, Mayank Mittal", email="cschwarke@ethz.ch" },
-]
-description = "Fast and simple RL algorithms implemented in PyTorch"
-readme = "README.md"
-requires-python = ">=3.7"
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent",
-]
-license = {text = "BSD-3"}
-dependencies = [
-    "torch>=1.10.0",
-    "torchvision>=0.5.0",
-    "numpy>=1.16.4",
-    "GitPython",
-    "onnx",
-]
-
-[project.urls]
-Homepage = "https://github.com/leggedrobotics/rsl_rl"
-Issues = "https://github.com/leggedrobotics/rsl_rl/issues"
