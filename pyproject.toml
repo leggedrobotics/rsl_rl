@@ -52,7 +52,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rsl_rl_lib"
+name = "rsl_rl"
 version = "2.0.2"
 authors = [
   { name="Clemens Schwarke, Mayank Mittal", email="cschwarke@ethz.ch" },
