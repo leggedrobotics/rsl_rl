@@ -6,16 +6,22 @@ This code is an evolution of `rl-pytorch` provided with NVIDIA's Isaac GYM.
 | :zap:        The `algorithms` branch supports additional algorithms (SAC, DDPG, DSAC, and more)! |
 | ------------------------------------------------------------------------------------------------ |
 
-Only PPO is implemented for now. More algorithms will be added later.
+The main branch only supports PPO for now.
 Contributions are welcome.
 
-**Maintainer**: David Hoeller and Nikita Rudin <br/>
+**Maintainer**: Mayank Mittal and Clemens Schwarke <br/>
 **Affiliation**: Robotic Systems Lab, ETH Zurich & NVIDIA <br/>
-**Contact**: rudinn@ethz.ch
+**Contact**: cschwarke@ethz.ch
 
 ## Setup
 
-Following are the instructions to setup the repository for your workspace:
+The package can be installed via PyPI with:
+
+```
+pip install rsl_rl
+```
+
+or by cloning this repository and installing it with:
 
 ```bash
 git clone https://github.com/leggedrobotics/rsl_rl
@@ -23,13 +29,13 @@ cd rsl_rl
 pip install -e .
 ```
 
-The framework supports the following logging frameworks which can be configured through `logger`:
+The package supports the following logging frameworks which can be configured through `logger`:
 
 * Tensorboard: https://www.tensorflow.org/tensorboard/
 * Weights & Biases: https://wandb.ai/site
 * Neptune: https://docs.neptune.ai/
 
-For a demo configuration of the PPO, please check: [dummy_config.yaml](config/dummy_config.yaml) file.
+For a demo configuration of PPO, please check the [dummy_config.yaml](config/dummy_config.yaml) file.
 
 
 ## Contribution Guidelines
@@ -56,5 +62,5 @@ pre-commit run --all-files
 
 Environment repositories using the framework:
 
+* `Isaac Lab` (built on top of NVIDIA Isaac Sim): https://github.com/isaac-sim/IsaacLab
 * `Legged-Gym` (built on top of NVIDIA Isaac Gym): https://leggedrobotics.github.io/legged_gym/
-* `Orbit` (built on top of NVIDIA Isaac Sim): https://isaac-orbit.github.io/
