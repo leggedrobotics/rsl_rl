@@ -52,14 +52,14 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rsl_rl_lib"
+name = "rsl_rl"
 version = "2.0.2"
 authors = [
-  { name="Nikita Rudin, David Hoeller", email="rudinn@ethz.ch" },
+  { name="Clemens Schwarke, Mayank Mittal", email="cschwarke@ethz.ch" },
 ]
-description = "Fast and simple RL algorithms implemented in pytorch"
+description = "Fast and simple RL algorithms implemented in PyTorch"
 readme = "README.md"
-requires-python = ">=3.6"
+requires-python = ">=3.7"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
@@ -76,6 +76,3 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/leggedrobotics/rsl_rl"
 Issues = "https://github.com/leggedrobotics/rsl_rl/issues"
-
-[tool.setuptools_scm]
-version_scheme = "post-release"
