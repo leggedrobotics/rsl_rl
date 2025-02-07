@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rsl-rl-lib"
-version = "2.1.0"
+version = "2.1.1"
 maintainers = [
   { name="Clemens Schwarke", email="cschwarke@ethz.ch" },
   { name="Mayank Mittal", email="mittalma@ethz.ch" },

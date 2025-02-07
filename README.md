@@ -3,8 +3,8 @@
 Fast and simple implementation of RL algorithms, designed to run fully on GPU.
 This code is an evolution of `rl-pytorch` provided with NVIDIA's Isaac GYM.
 
-| :zap:        The `algorithms` branch supports additional algorithms (SAC, DDPG, DSAC, and more)! |
-| ------------------------------------------------------------------------------------------------ |
+| The `algorithms` branch supports additional algorithms (SAC, DDPG, DSAC, and more)! |
+| ----------------------------------------------------------------------------------- |
 
 The main branch only supports PPO for now.
 Contributions are welcome.
@@ -17,8 +17,8 @@ Contributions are welcome.
 
 The package can be installed via PyPI with:
 
-```
-pip install rsl_rl
+```bash
+pip install rsl-rl-lib
 ```
 
 or by cloning this repository and installing it with:
@@ -40,7 +40,7 @@ For a demo configuration of PPO, please check the [dummy_config.yaml](config/dum
 
 ## Contribution Guidelines
 
-For documentation, we adopt the [Google Style Guide](https://sphinxcontrib-napoleon.readthedocs.io/en/latest/example_google.html) for docstrings. We use [Sphinx](https://www.sphinx-doc.org/en/master/) for generating the documentation. Please make sure that your code is well-documented and follows the guidelines.
+For documentation, we adopt the [Google Style Guide](https://sphinxcontrib-napoleon.readthedocs.io/en/latest/example_google.html) for docstrings. Please make sure that your code is well-documented and follows the guidelines.
 
 We use the following tools for maintaining code quality:
 
@@ -58,7 +58,7 @@ pre-commit install
 pre-commit run --all-files
 ```
 
-### Useful Links
+## Useful Links
 
 Environment repositories using the framework:
 
