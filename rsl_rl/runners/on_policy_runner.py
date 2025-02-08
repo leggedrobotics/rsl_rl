@@ -160,7 +160,7 @@ class OnPolicyRunner:
             if it % self.save_interval == 0:
                 self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
             ep_infos.clear()
-            if it == start_iter:
+            if it == start_iter and self.cfg.get("store_code_state", True):
                 # obtain all the diff files
                 git_file_paths = store_code_state(self.log_dir, self.git_status_repos)
                 # if possible store them to wandb
@@ -214,6 +214,10 @@ class OnPolicyRunner:
                 self.writer.add_scalar(
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )
+
+        # Video recording for wandb
+        if self.logger_type == "wandb":
+            self.writer.update_video_files(log_name="Video", fps=30)
 
         str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 
