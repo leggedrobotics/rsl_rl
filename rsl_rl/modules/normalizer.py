@@ -74,3 +74,56 @@ class EmpiricalNormalization(nn.Module):
     @torch.jit.unused
     def inverse(self, y):
         return y * (self._std + self.eps) + self._mean
+
+
+class EmpiricalDiscountedVariationNormalization(nn.Module):
+    """Reward normalization from Pathak's large scale study on PPO.
+
+    Reward normalization. Since the reward function is non-stationary, it is useful to normalize
+    the scale of the rewards so that the value function can learn quickly. We did this by dividing
+    the rewards by a running estimate of the standard deviation of the sum of discounted rewards.
+    """
+
+    def __init__(self, shape, eps=1e-2, gamma=0.99, until=None):
+        super().__init__()
+
+        self.emp_norm = EmpiricalNormalization(shape, eps, until)
+        self.disc_avg = DiscountedAverage(gamma)
+
+    def forward(self, rew):
+        if self.training:
+            # update discounected rewards
+            avg = self.disc_avg.update(rew)
+
+            # update moments from discounted rewards
+            self.emp_norm.update(avg)
+
+        if self.emp_norm._std > 0:
+            return rew / self.emp_norm._std
+        else:
+            return rew
+
+
+class DiscountedAverage:
+    r"""Discounted average of rewards.
+
+    The discounted average is defined as:
+
+    .. math::
+
+        \bar{R}_t = \gamma \bar{R}_{t-1} + r_t
+
+    Args:
+        gamma (float): Discount factor.
+    """
+
+    def __init__(self, gamma):
+        self.avg = None
+        self.gamma = gamma
+
+    def update(self, rew: torch.Tensor) -> torch.Tensor:
+        if self.avg is None:
+            self.avg = rew
+        else:
+            self.avg = self.avg * self.gamma + rew
+        return self.avg

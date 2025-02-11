@@ -8,8 +8,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from rsl_rl.modules.actor_critic import ActorCritic, get_activation
-from rsl_rl.utils import unpad_trajectories
+from rsl_rl.modules.actor_critic import ActorCritic
+from rsl_rl.utils import resolve_nn_activation, unpad_trajectories
 
 
 class ActorCriticRecurrent(ActorCritic):
@@ -44,7 +44,7 @@ class ActorCriticRecurrent(ActorCritic):
             init_noise_std=init_noise_std,
         )
 
-        activation = get_activation(activation)
+        activation = resolve_nn_activation(activation)
 
         self.memory_a = Memory(num_actor_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=rnn_hidden_size)
         self.memory_c = Memory(num_critic_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=rnn_hidden_size)

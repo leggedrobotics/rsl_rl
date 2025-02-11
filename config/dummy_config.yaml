@@ -16,6 +16,52 @@ algorithm:
   num_learning_epochs: 5
   num_mini_batches: 4  # mini batch size = num_envs * num_steps / num_mini_batches
   schedule: adaptive  # adaptive, fixed
+
+  # -- Random Network Distillation
+  rnd_cfg:
+      weight: 0.0  # initial weight of the RND reward
+
+      # note: This is a dictionary with a required key called "mode" which can be one of "constant" or "step".
+      #   - If "constant", then the weight is constant.
+      #   - If "step", then the weight is updated using the step scheduler. It takes additional parameters:
+      #     - max_num_steps: maximum number of steps to update the weight
+      #     - final_value: final value of the weight
+      # If None, then no scheduler is used.
+      weight_schedule: null
+
+      reward_normalization: false  # whether to normalize RND reward
+      gate_normalization: true  # whether to normalize RND gate observations
+
+      # -- Learning parameters
+      learning_rate: 0.001  # learning rate for RND
+
+      # -- Network parameters
+      # note: if -1, then the network will use dimensions of the observation
+      num_outputs: 1  # number of outputs of RND network
+      predictor_hidden_dims: [-1] # hidden dimensions of predictor network
+      target_hidden_dims: [-1]  # hidden dimensions of target network
+
+  # -- Symmetry Augmentation
+  symmetry_cfg:
+    use_data_augmentation: true  # this adds symmetric trajectories to the batch
+    use_mirror_loss: false  # this adds symmetry loss term to the loss function
+
+    # string containing the module and function name to import.
+    # Example: "legged_gym.envs.locomotion.anymal_c.symmetry:get_symmetric_states"
+    #
+    # .. code-block:: python
+    #
+    #     @torch.no_grad()
+    #     def get_symmetric_states(
+    #        obs: Optional[torch.Tensor] = None, actions: Optional[torch.Tensor] = None, cfg: "BaseEnvCfg" = None, is_critic: bool = False,
+    #     ) -> Tuple[torch.Tensor, torch.Tensor]:
+    #
+    data_augmentation_func: null
+
+    # coefficient for symmetry loss term
+    # if 0, then no symmetry loss is used
+    mirror_loss_coeff: 0.0
+
 policy:
   class_name: ActorCritic
   # for MLP i.e. `ActorCritic`
@@ -27,6 +73,7 @@ policy:
   # rnn_type: 'lstm'
   # rnn_hidden_size: 512
   # rnn_num_layers: 1
+
 runner:
     num_steps_per_env: 24  # number of steps per environment per iteration
     max_iterations: 1500  # number of policy updates
@@ -44,5 +91,6 @@ runner:
     load_run: -1  # -1 means load latest run
     resume_path: null  # updated from load_run and checkpoint
     checkpoint: -1  # -1 means load latest checkpoint
+
 runner_class_name: OnPolicyRunner
 seed: 1

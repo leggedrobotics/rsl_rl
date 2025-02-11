@@ -20,34 +20,46 @@ class VecEnv(ABC):
     in the "observations" dictionary (if they are present):
 
     - "critic": The observation is used as input to the critic network. Useful for asymmetric observation spaces.
+    - "rnd_state": The observation is used as input to the RND network. Useful for random network distillation.
     """
 
     num_envs: int
     """Number of environments."""
+
     num_obs: int
     """Number of observations."""
+
     num_privileged_obs: int
     """Number of privileged observations."""
+
     num_actions: int
     """Number of actions."""
+
     max_episode_length: int
     """Maximum episode length."""
+
     privileged_obs_buf: torch.Tensor
     """Buffer for privileged observations."""
+
     obs_buf: torch.Tensor
     """Buffer for observations."""
+
     rew_buf: torch.Tensor
     """Buffer for rewards."""
+
     reset_buf: torch.Tensor
     """Buffer for resets."""
-    episode_length_buf: torch.Tensor  # current episode duration
+
+    episode_length_buf: torch.Tensor
     """Buffer for current episode lengths."""
+
     extras: dict
     """Extra information (metrics).
 
     Extra information is stored in a dictionary. This includes metrics such as the episode reward, episode length,
     etc. Additional information can be stored in the dictionary such as observations for the critic network, etc.
     """
+
     device: torch.device
     """Device to use."""
 
