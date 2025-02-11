@@ -18,7 +18,7 @@ Environment repositories using the framework:
 * `Isaac Lab` (built on top of NVIDIA Isaac Sim): https://github.com/isaac-sim/IsaacLab
 * `Legged-Gym` (built on top of NVIDIA Isaac Gym): https://leggedrobotics.github.io/legged_gym/
 
-We welcome contributions on the community. Please check our contribution guidelines for more
+We welcome contributions from the community. Please check our contribution guidelines for more
 information.
 
 > **Note:** The `algorithms` branch supports additional algorithms (SAC, DDPG, DSAC, and more). However, it isn't currently actively maintained.
