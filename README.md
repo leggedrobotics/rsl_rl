@@ -3,6 +3,11 @@
 Fast and simple implementation of RL algorithms, designed to run fully on GPU.
 This code is an evolution of `rl-pytorch` provided with NVIDIA's Isaac GYM.
 
+Environment repositories using the framework:
+
+* **`Isaac Lab`** (built on top of NVIDIA Isaac Sim): https://github.com/isaac-sim/IsaacLab
+* **`Legged-Gym`** (built on top of NVIDIA Isaac Gym): https://leggedrobotics.github.io/legged_gym/
+
 The main branch supports PPO with additional features from our research.
 These include:
 
@@ -10,17 +15,12 @@ These include:
   a curiosity driven intrinsic reward.
 * [Symmetry-based Augmentation](https://arxiv.org/abs/2403.04359) - Makes the learned behaviors more symmetrical.
 
+We welcome contributions from the community. Please check our contribution guidelines for more
+information.
+
 **Maintainer**: Mayank Mittal and Clemens Schwarke <br/>
 **Affiliation**: Robotic Systems Lab, ETH Zurich & NVIDIA <br/>
 **Contact**: cschwarke@ethz.ch
-
-Environment repositories using the framework:
-
-* `Isaac Lab` (built on top of NVIDIA Isaac Sim): https://github.com/isaac-sim/IsaacLab
-* `Legged-Gym` (built on top of NVIDIA Isaac Gym): https://leggedrobotics.github.io/legged_gym/
-
-We welcome contributions from the community. Please check our contribution guidelines for more
-information.
 
 > **Note:** The `algorithms` branch supports additional algorithms (SAC, DDPG, DSAC, and more). However, it isn't currently actively maintained.
 
