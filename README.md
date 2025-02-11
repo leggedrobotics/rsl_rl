@@ -3,11 +3,12 @@
 Fast and simple implementation of RL algorithms, designed to run fully on GPU.
 This code is an evolution of `rl-pytorch` provided with NVIDIA's Isaac GYM.
 
-The main branch supports PPO with additional features from our work.
+The main branch supports PPO with additional features from our research.
 These include:
 
-* [Random Network Distillation (RND)](https://proceedings.mlr.press/v229/schwarke23a.html)
-* [Symmetry-based Augmentation](https://arxiv.org/abs/2403.04359)
+* [Random Network Distillation (RND)](https://proceedings.mlr.press/v229/schwarke23a.html) - Encourages exploration by adding
+  a curiosity driven intrinsic reward.
+* [Symmetry-based Augmentation](https://arxiv.org/abs/2403.04359) - Makes the learned behaviors more symmetrical.
 
 **Maintainer**: Mayank Mittal and Clemens Schwarke <br/>
 **Affiliation**: Robotic Systems Lab, ETH Zurich & NVIDIA <br/>
