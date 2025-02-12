@@ -54,7 +54,7 @@ class OnPolicyRunner:
             self.alg_cfg["rnd_cfg"]["weight"] *= env.dt
 
         # if using symmetry then pass the environment config object
-        if "symmetry_cfg" in self.alg_cfg is not None:
+        if "symmetry_cfg" in self.alg_cfg:
             # this is used by the symmetry function for handling different observation terms
             self.alg_cfg["symmetry_cfg"]["_env"] = env
 
