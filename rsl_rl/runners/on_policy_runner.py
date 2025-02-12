@@ -41,7 +41,7 @@ class OnPolicyRunner:
         ).to(self.device)
 
         # resolve dimension of rnd gated state
-        if self.alg_cfg["rnd_cfg"] is not None:
+        if "rnd_cfg" in self.alg_cfg:
             # check if rnd gated state is present
             rnd_state = extras["observations"].get("rnd_state")
             if rnd_state is None:
@@ -54,7 +54,7 @@ class OnPolicyRunner:
             self.alg_cfg["rnd_cfg"]["weight"] *= env.dt
 
         # if using symmetry then pass the environment config object
-        if self.alg_cfg["symmetry_cfg"] is not None:
+        if "symmetry_cfg" in self.alg_cfg:
             # this is used by the symmetry function for handling different observation terms
             self.alg_cfg["symmetry_cfg"]["_env"] = env
 
