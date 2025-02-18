@@ -30,7 +30,7 @@ class RandomNetworkDistillation(nn.Module):
         state_normalization: bool = False,
         reward_normalization: bool = False,
         device: str = "cpu",
-        weight_schedule: str | None = None,
+        weight_schedule: dict | None = None,
         **kwargs,
     ):
         """Initialize the RND module.
@@ -53,8 +53,13 @@ class RandomNetworkDistillation(nn.Module):
             state_normalization: Whether to normalize the input state. Defaults to False.
             reward_normalization: Whether to normalize the intrinsic reward. Defaults to False.
             device: Device to use. Defaults to "cpu".
-            weight_schedule: The type of schedule to use for the RND weight parameter. Must be one of ["constant", "step"].
+            weight_schedule: The type of schedule to use for the RND weight parameter.
                 Defaults to None, in which case the weight parameter is constant.
+                It is a dictionary with the following keys:
+
+                - "mode": The type of schedule to use for the RND weight parameter.
+                - "max_num_steps": Maximum number of steps per episode. Used for the weight schedule of type "step".
+                - "final_value": Final value of the weight parameter. Used for the weight schedule of type "step".
 
         Keyword Args:
 
@@ -111,7 +116,7 @@ class RandomNetworkDistillation(nn.Module):
 
         # Check the weight schedule
         if self.weight_scheduler is not None:
-            self.weight = self.weight_scheduler(self.update_counter, **self.weight_scheduler_params)
+            self.weight = self.weight_scheduler(step=self.update_counter, **self.weight_scheduler_params)
         else:
             self.weight = self.initial_weight
         # Scale intrinsic reward

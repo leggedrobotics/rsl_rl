@@ -23,7 +23,7 @@ algorithm:
 
       # note: This is a dictionary with a required key called "mode" which can be one of "constant" or "step".
       #   - If "constant", then the weight is constant.
-      #   - If "step", then the weight is updated using the step scheduler. It takes additional parameters:
+      #   - If "step", then the weight is updated using the step scheduler. The dictionary should contain additional parameters:
       #     - max_num_steps: maximum number of steps to update the weight
       #     - final_value: final value of the weight
       # If None, then no scheduler is used.
