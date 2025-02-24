@@ -69,6 +69,7 @@ policy:
   actor_hidden_dims: [128, 128, 128]
   critic_hidden_dims: [128, 128, 128]
   init_noise_std: 1.0
+  std_type: "scalar"  # 'scalar' or 'log'
   # only needed for `ActorCriticRecurrent`
   # rnn_type: 'lstm'
   # rnn_hidden_size: 512
