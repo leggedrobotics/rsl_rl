@@ -361,6 +361,7 @@ class PPO:
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
+        mean_entropy /= num_updates
         # -- For RND
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
