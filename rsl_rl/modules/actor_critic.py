@@ -24,7 +24,7 @@ class ActorCritic(nn.Module):
         critic_hidden_dims=[256, 256, 256],
         activation="elu",
         init_noise_std=1.0,
-        std_type: str = "scalar",
+        noise_std_type: str = "scalar",
         **kwargs,
     ):
         if kwargs:
@@ -65,14 +65,14 @@ class ActorCritic(nn.Module):
         print(f"Critic MLP: {self.critic}")
 
         # Action noise
-        self.std_type = std_type
-        if self.std_type == "scalar":
+        self.noise_std_type = noise_std_type
+        if self.noise_std_type == "scalar":
             self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
-        elif self.std_type == "log":
+        elif self.noise_std_type == "log":
             self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
             self.std = torch.exp(self.log_std)
         else:
-            raise ValueError(f"Unknown std_dev_type: {self.std_type}. Should be 'scalar' or 'log'")
+            raise ValueError(f"Unknown std_dev_type: {self.noise_std_type}. Should be 'scalar' or 'log'")
 
         # Action distribution (populated in update_distribution)
         self.distribution = None
