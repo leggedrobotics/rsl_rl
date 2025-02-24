@@ -98,4 +98,4 @@ class Memory(torch.nn.Module):
         if self.hidden_states is None:
             return
         for hidden_state in self.hidden_states:
-            hidden_state[..., dones == 1] = 0.0
+            hidden_state[..., dones == 1, :] = 0.0
