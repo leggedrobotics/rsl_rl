@@ -72,7 +72,7 @@ class ActorCritic(nn.Module):
             self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
             self.std = torch.exp(self.log_std)
         else:
-            raise ValueError(f"Unknown std_dev_type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
 
         # Action distribution (populated in update_distribution)
         self.distribution = None
