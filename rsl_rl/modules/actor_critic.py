@@ -70,7 +70,6 @@ class ActorCritic(nn.Module):
             self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
         elif self.noise_std_type == "log":
             self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
-            self.std = torch.exp(self.log_std)
         else:
             raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
 
@@ -110,8 +109,16 @@ class ActorCritic(nn.Module):
         return self.distribution.entropy().sum(dim=-1)
 
     def update_distribution(self, observations):
+        # compute mean
         mean = self.actor(observations)
-        std = self.std.expand_as(mean)
+        # compute standard deviation
+        if self.noise_std_type == "scalar":
+            std = self.std.expand_as(mean)
+        elif self.noise_std_type == "log":
+            std = torch.exp(self.log_std).expand_as(mean)
+        else:
+            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+        # create distribution
         self.distribution = Normal(mean, std)
 
     def act(self, observations, **kwargs):
