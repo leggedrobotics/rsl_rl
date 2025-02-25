@@ -1,6 +1,8 @@
 algorithm:
   class_name: PPO
   # training parameters
+  # -- advantage normalization
+  normalize_advantage_per_mini_batch: false
   # -- value function
   value_loss_coef: 1.0
   clip_param: 0.2

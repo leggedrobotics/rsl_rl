@@ -38,6 +38,7 @@ class PPO:
         schedule="fixed",
         desired_kl=0.01,
         device="cpu",
+        normalize_advantage_per_mini_batch=False,
         # RND parameters
         rnd_cfg: dict | None = None,
         # Symmetry parameters
@@ -48,6 +49,7 @@ class PPO:
         self.desired_kl = desired_kl
         self.schedule = schedule
         self.learning_rate = learning_rate
+        self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
 
         # RND components
         if rnd_cfg is not None:
@@ -84,8 +86,10 @@ class PPO:
         # PPO components
         self.actor_critic = actor_critic
         self.actor_critic.to(self.device)
-        self.storage = None  # initialized later
+        # Create optimizer
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
+        # Create rollout storage
+        self.storage: RolloutStorage = None  # type: ignore
         self.transition = RolloutStorage.Transition()
 
         # PPO parameters
@@ -168,7 +172,9 @@ class PPO:
     def compute_returns(self, last_critic_obs):
         # compute value for the last step
         last_values = self.actor_critic.evaluate(last_critic_obs).detach()
-        self.storage.compute_returns(last_values, self.gamma, self.lam)
+        self.storage.compute_returns(
+            last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
+        )
 
     def update(self):  # noqa: C901
         mean_value_loss = 0
@@ -212,6 +218,11 @@ class PPO:
             num_aug = 1
             # original batch size
             original_batch_size = obs_batch.shape[0]
+
+            # check if we should normalize advantages per mini batch
+            if self.normalize_advantage_per_mini_batch:
+                with torch.no_grad():
+                    advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
 
             # Perform symmetric augmentation
             if self.symmetry and self.symmetry["use_data_augmentation"]:

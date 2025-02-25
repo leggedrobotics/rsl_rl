@@ -129,7 +129,7 @@ class RolloutStorage:
     def clear(self):
         self.step = 0
 
-    def compute_returns(self, last_values, gamma, lam):
+    def compute_returns(self, last_values, gamma, lam, normalize_advantage: bool = True):
         advantage = 0
         for step in reversed(range(self.num_transitions_per_env)):
             # if we are at the last step, bootstrap the return value
@@ -146,9 +146,12 @@ class RolloutStorage:
             # Return: R_t = A(s_t, a_t) + V(s_t)
             self.returns[step] = advantage + self.values[step]
 
-        # Compute and normalize the advantages
+        # Compute the advantages
         self.advantages = self.returns - self.values
-        self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
+        # Normalize the advantages if flag is set
+        # This is to prevent double normalization (i.e. if per minibatch normalization is used)
+        if normalize_advantage:
+            self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
 
     def get_statistics(self):
         done = self.dones
