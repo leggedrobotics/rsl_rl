@@ -32,5 +32,6 @@ Please keep the lists sorted alphabetically.
 * Lorenzo Terenzi
 * Marko Bjelonic
 * Matthijs van der Boon
+* Pascal Roth
 * Zhang Chong
 * Ziqi Fan

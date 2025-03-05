@@ -41,7 +41,7 @@ class OnPolicyRunner:
         ).to(self.device)
 
         # resolve dimension of rnd gated state
-        if "rnd_cfg" in self.alg_cfg:
+        if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
             # check if rnd gated state is present
             rnd_state = extras["observations"].get("rnd_state")
             if rnd_state is None:
@@ -54,7 +54,7 @@ class OnPolicyRunner:
             self.alg_cfg["rnd_cfg"]["weight"] *= env.dt
 
         # if using symmetry then pass the environment config object
-        if "symmetry_cfg" in self.alg_cfg:
+        if "symmetry_cfg" in self.alg_cfg and self.alg_cfg["symmetry_cfg"] is not None:
             # this is used by the symmetry function for handling different observation terms
             self.alg_cfg["symmetry_cfg"]["_env"] = env
 
@@ -89,7 +89,7 @@ class OnPolicyRunner:
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
 
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
+    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
         # initialize writer
         if self.log_dir is not None and self.writer is None:
             # Launch either Tensorboard or Neptune & Tensorboard summary writer(s), default: Tensorboard.
