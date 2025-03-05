@@ -41,7 +41,7 @@ class OnPolicyRunner:
         ).to(self.device)
 
         # resolve dimension of rnd gated state
-        if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
+        if self.alg_cfg.get("rnd_cfg") is not None:
             # check if rnd gated state is present
             rnd_state = extras["observations"].get("rnd_state")
             if rnd_state is None:
@@ -54,7 +54,7 @@ class OnPolicyRunner:
             self.alg_cfg["rnd_cfg"]["weight"] *= env.dt
 
         # if using symmetry then pass the environment config object
-        if "symmetry_cfg" in self.alg_cfg and self.alg_cfg["symmetry_cfg"] is not None:
+        if self.alg_cfg.get("symmetry_cfg") is not None:
             # this is used by the symmetry function for handling different observation terms
             self.alg_cfg["symmetry_cfg"]["_env"] = env
 
@@ -161,11 +161,11 @@ class OnPolicyRunner:
                     else:
                         critic_obs = obs
 
-                    # Intrinsic rewards (extracted here only for logging)!
-                    intrinsic_rewards = self.alg.intrinsic_rewards if self.alg.rnd else None
-
                     # Process env step and store in buffer
                     self.alg.process_env_step(rewards, dones, infos)
+
+                    # Intrinsic rewards (extracted here only for logging)!
+                    intrinsic_rewards = self.alg.intrinsic_rewards if self.alg.rnd else None
 
                     if self.log_dir is not None:
                         # Book keeping
