@@ -188,4 +188,6 @@ class RandomNetworkDistillation(nn.Module):
         elif step > final_step:
             return final_value
         else:
-            return self.initial_weight + (final_value - self.initial_weight) * (step - initial_step) / (final_step - initial_step)
+            return self.initial_weight + (final_value - self.initial_weight) * (step - initial_step) / (
+                final_step - initial_step
+            )
