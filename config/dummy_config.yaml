@@ -23,16 +23,12 @@ algorithm:
   rnd_cfg:
       weight: 0.0  # initial weight of the RND reward
 
-      # note: This is a dictionary with a required key called "mode" which can be one of "constant" or "step".
-      #   - If "constant", then the weight is constant.
-      #   - If "step", then the weight is updated using the step scheduler. The dictionary should contain additional parameters:
-      #     - max_num_steps: maximum number of steps to update the weight
-      #     - final_value: final value of the weight
-      # If None, then no scheduler is used.
+      # note: This is a dictionary with a required key called "mode".
+      #   Please check the RND module for more information.
       weight_schedule: null
 
       reward_normalization: false  # whether to normalize RND reward
-      gate_normalization: true  # whether to normalize RND gate observations
+      state_normalization: true  # whether to normalize RND state observations
 
       # -- Learning parameters
       learning_rate: 0.001  # learning rate for RND
@@ -72,6 +68,7 @@ policy:
   critic_hidden_dims: [128, 128, 128]
   init_noise_std: 1.0
   noise_std_type: "scalar"  # 'scalar' or 'log'
+
   # only needed for `ActorCriticRecurrent`
   # rnn_type: 'lstm'
   # rnn_hidden_size: 512

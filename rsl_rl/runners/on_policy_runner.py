@@ -49,9 +49,9 @@ class OnPolicyRunner:
             # get dimension of rnd gated state
             num_rnd_state = rnd_state.shape[1]
             # add rnd gated state to config
-            self.alg_cfg["rnd_cfg"]["num_state"] = num_rnd_state
+            self.alg_cfg["rnd_cfg"]["num_states"] = num_rnd_state
             # scale down the rnd weight with timestep (similar to how rewards are scaled down in legged_gym envs)
-            self.alg_cfg["rnd_cfg"]["weight"] *= env.dt
+            self.alg_cfg["rnd_cfg"]["weight"] *= env.unwrapped.step_dt
 
         # if using symmetry then pass the environment config object
         if self.alg_cfg.get("symmetry_cfg") is not None:
