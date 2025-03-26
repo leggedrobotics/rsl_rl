@@ -13,7 +13,7 @@ from rsl_rl.utils import resolve_nn_activation
 
 
 class RandomNetworkDistillation(nn.Module):
-    """Implementation of Random Network Distillation (RND) [1]_
+    """Implementation of Random Network Distillation (RND) [1]
 
     References:
         .. [1] Burda, Yuri, et al. "Exploration by random network distillation." arXiv preprint arXiv:1810.12894 (2018).

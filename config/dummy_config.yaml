@@ -51,7 +51,7 @@ algorithm:
     #
     #     @torch.no_grad()
     #     def get_symmetric_states(
-    #        obs: Optional[torch.Tensor] = None, actions: Optional[torch.Tensor] = None, cfg: "BaseEnvCfg" = None, is_critic: bool = False,
+    #        obs: Optional[torch.Tensor] = None, actions: Optional[torch.Tensor] = None, cfg: "BaseEnvCfg" = None, obs_type: str = "policy"
     #     ) -> Tuple[torch.Tensor, torch.Tensor]:
     #
     data_augmentation_func: null
@@ -87,7 +87,6 @@ runner:
     neptune_project: legged_gym
     wandb_project: legged_gym
     # -- load and resuming
-    resume: false
     load_run: -1  # -1 means load latest run
     resume_path: null  # updated from load_run and checkpoint
     checkpoint: -1  # -1 means load latest checkpoint

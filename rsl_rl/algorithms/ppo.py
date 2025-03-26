@@ -19,12 +19,12 @@ from rsl_rl.utils import string_to_callable
 class PPO:
     """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
 
-    actor_critic: ActorCritic
+    policy: ActorCritic
     """The actor critic module."""
 
     def __init__(
         self,
-        actor_critic,
+        policy,
         num_learning_epochs=1,
         num_mini_batches=1,
         clip_param=0.2,
@@ -84,10 +84,10 @@ class PPO:
             self.symmetry = None
 
         # PPO components
-        self.actor_critic = actor_critic
-        self.actor_critic.to(self.device)
+        self.policy = policy
+        self.policy.to(self.device)
         # Create optimizer
-        self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
         # Create rollout storage
         self.storage: RolloutStorage = None  # type: ignore
         self.transition = RolloutStorage.Transition()
@@ -103,7 +103,9 @@ class PPO:
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
 
-    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
+    def init_storage(
+        self, training_type, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, actions_shape
+    ):
         # create memory for RND as well :)
         if self.rnd:
             rnd_state_shape = [self.rnd.num_states]
@@ -111,33 +113,28 @@ class PPO:
             rnd_state_shape = None
         # create rollout storage
         self.storage = RolloutStorage(
+            training_type,
             num_envs,
             num_transitions_per_env,
             actor_obs_shape,
             critic_obs_shape,
-            action_shape,
+            actions_shape,
             rnd_state_shape,
             self.device,
         )
 
-    def test_mode(self):
-        self.actor_critic.test()
-
-    def train_mode(self):
-        self.actor_critic.train()
-
     def act(self, obs, critic_obs):
-        if self.actor_critic.is_recurrent:
-            self.transition.hidden_states = self.actor_critic.get_hidden_states()
-        # Compute the actions and values
-        self.transition.actions = self.actor_critic.act(obs).detach()
-        self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
-        self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
-        self.transition.action_mean = self.actor_critic.action_mean.detach()
-        self.transition.action_sigma = self.actor_critic.action_std.detach()
+        if self.policy.is_recurrent:
+            self.transition.hidden_states = self.policy.get_hidden_states()
+        # compute the actions and values
+        self.transition.actions = self.policy.act(obs).detach()
+        self.transition.values = self.policy.evaluate(critic_obs).detach()
+        self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
+        self.transition.action_mean = self.policy.action_mean.detach()
+        self.transition.action_sigma = self.policy.action_std.detach()
         # need to record obs and critic_obs before env.step()
         self.transition.observations = obs
-        self.transition.critic_observations = critic_obs
+        self.transition.privileged_observations = critic_obs
         return self.transition.actions
 
     def process_env_step(self, rewards, dones, infos):
@@ -164,14 +161,14 @@ class PPO:
                 self.transition.values * infos["time_outs"].unsqueeze(1).to(self.device), 1
             )
 
-        # Record the transition
+        # record the transition
         self.storage.add_transitions(self.transition)
         self.transition.clear()
-        self.actor_critic.reset(dones)
+        self.policy.reset(dones)
 
     def compute_returns(self, last_critic_obs):
         # compute value for the last step
-        last_values = self.actor_critic.evaluate(last_critic_obs).detach()
+        last_values = self.policy.evaluate(last_critic_obs).detach()
         self.storage.compute_returns(
             last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
         )
@@ -192,7 +189,7 @@ class PPO:
             mean_symmetry_loss = None
 
         # generator for mini batches
-        if self.actor_critic.is_recurrent:
+        if self.policy.is_recurrent:
             generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -230,10 +227,10 @@ class PPO:
                 data_augmentation_func = self.symmetry["data_augmentation_func"]
                 # returned shape: [batch_size * num_aug, ...]
                 obs_batch, actions_batch = data_augmentation_func(
-                    obs=obs_batch, actions=actions_batch, env=self.symmetry["_env"], is_critic=False
+                    obs=obs_batch, actions=actions_batch, env=self.symmetry["_env"], obs_type="policy"
                 )
                 critic_obs_batch, _ = data_augmentation_func(
-                    obs=critic_obs_batch, actions=None, env=self.symmetry["_env"], is_critic=True
+                    obs=critic_obs_batch, actions=None, env=self.symmetry["_env"], obs_type="critic"
                 )
                 # compute number of augmentations per sample
                 num_aug = int(obs_batch.shape[0] / original_batch_size)
@@ -246,19 +243,17 @@ class PPO:
                 returns_batch = returns_batch.repeat(num_aug, 1)
 
             # Recompute actions log prob and entropy for current batch of transitions
-            # Note: we need to do this because we updated the actor_critic with the new parameters
+            # Note: we need to do this because we updated the policy with the new parameters
             # -- actor
-            self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
-            actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
+            self.policy.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+            actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch)
             # -- critic
-            value_batch = self.actor_critic.evaluate(
-                critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1]
-            )
+            value_batch = self.policy.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
             # -- entropy
             # we only keep the entropy of the first augmentation (the original one)
-            mu_batch = self.actor_critic.action_mean[:original_batch_size]
-            sigma_batch = self.actor_critic.action_std[:original_batch_size]
-            entropy_batch = self.actor_critic.entropy[:original_batch_size]
+            mu_batch = self.policy.action_mean[:original_batch_size]
+            sigma_batch = self.policy.action_std[:original_batch_size]
+            entropy_batch = self.policy.entropy[:original_batch_size]
 
             # KL
             if self.desired_kl is not None and self.schedule == "adaptive":
@@ -308,13 +303,13 @@ class PPO:
                 if not self.symmetry["use_data_augmentation"]:
                     data_augmentation_func = self.symmetry["data_augmentation_func"]
                     obs_batch, _ = data_augmentation_func(
-                        obs=obs_batch, actions=None, env=self.symmetry["_env"], is_critic=False
+                        obs=obs_batch, actions=None, env=self.symmetry["_env"], obs_type="policy"
                     )
                     # compute number of augmentations per sample
                     num_aug = int(obs_batch.shape[0] / original_batch_size)
 
                 # actions predicted by the actor for symmetrically-augmented observations
-                mean_actions_batch = self.actor_critic.act_inference(obs_batch.detach().clone())
+                mean_actions_batch = self.policy.act_inference(obs_batch.detach().clone())
 
                 # compute the symmetrically augmented actions
                 # note: we are assuming the first augmentation is the original one.
@@ -322,7 +317,7 @@ class PPO:
                 #   However, the symmetry loss is computed using the mean of the distribution.
                 action_mean_orig = mean_actions_batch[:original_batch_size]
                 _, actions_mean_symm_batch = data_augmentation_func(
-                    obs=None, actions=action_mean_orig, env=self.symmetry["_env"], is_critic=False
+                    obs=None, actions=action_mean_orig, env=self.symmetry["_env"], obs_type="policy"
                 )
 
                 # compute the loss (we skip the first augmentation as it is the original one)
@@ -349,7 +344,7 @@ class PPO:
             # -- For PPO
             self.optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+            nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.optimizer.step()
             # -- For RND
             if self.rnd_optimizer:
@@ -382,4 +377,15 @@ class PPO:
         # -- Clear the storage
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss, mean_entropy, mean_rnd_loss, mean_symmetry_loss
+        # construct the loss dictionary
+        loss_dict = {
+            "value_function": mean_value_loss,
+            "surrogate": mean_surrogate_loss,
+            "entropy": mean_entropy,
+        }
+        if self.rnd:
+            loss_dict["rnd"] = mean_rnd_loss
+        if self.symmetry:
+            loss_dict["symmetry"] = mean_symmetry_loss
+
+        return loss_dict
