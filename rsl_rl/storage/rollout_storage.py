@@ -176,7 +176,9 @@ class RolloutStorage:
                 privileged_observations = self.privileged_observations[i]
             else:
                 privileged_observations = self.observations[i]
-            yield self.observations[i], privileged_observations, self.actions[i], self.privileged_actions[i]
+            yield self.observations[i], privileged_observations, self.actions[i], self.privileged_actions[
+                i
+            ], self.dones[i]
 
     # for reinforcement learning with feedforward networks
     def mini_batch_generator(self, num_mini_batches, num_epochs=8):
@@ -246,9 +248,9 @@ class RolloutStorage:
             raise ValueError("This function is only available for reinforcement learning training.")
         padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.observations, self.dones)
         if self.privileged_observations is not None:
-            padded_critic_obs_trajectories, _ = split_and_pad_trajectories(self.privileged_observations, self.dones)
+            padded_privileged_obs_trajectories, _ = split_and_pad_trajectories(self.privileged_observations, self.dones)
         else:
-            padded_critic_obs_trajectories = padded_obs_trajectories
+            padded_privileged_obs_trajectories = padded_obs_trajectories
 
         if self.rnd_state_shape is not None:
             padded_rnd_state_trajectories, _ = split_and_pad_trajectories(self.rnd_state, self.dones)
@@ -271,7 +273,7 @@ class RolloutStorage:
 
                 masks_batch = trajectory_masks[:, first_traj:last_traj]
                 obs_batch = padded_obs_trajectories[:, first_traj:last_traj]
-                privileged_obs_batch = padded_critic_obs_trajectories[:, first_traj:last_traj]
+                privileged_obs_batch = padded_privileged_obs_trajectories[:, first_traj:last_traj]
 
                 if padded_rnd_state_trajectories is not None:
                     rnd_state_batch = padded_rnd_state_trajectories[:, first_traj:last_traj]

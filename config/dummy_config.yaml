@@ -71,7 +71,7 @@ policy:
 
   # only needed for `ActorCriticRecurrent`
   # rnn_type: 'lstm'
-  # rnn_hidden_size: 512
+  # rnn_hidden_dim: 512
   # rnn_num_layers: 1
 
 runner:

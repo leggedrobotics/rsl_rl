@@ -8,14 +8,14 @@ import torch.nn as nn
 import torch.optim as optim
 
 # rsl-rl
-from rsl_rl.modules import StudentTeacher
+from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent
 from rsl_rl.storage import RolloutStorage
 
 
 class Distillation:
     """Distillation algorithm for training a student model to mimic a teacher model."""
 
-    policy: StudentTeacher
+    policy: StudentTeacher | StudentTeacherRecurrent
     """The student teacher model."""
 
     def __init__(
@@ -24,6 +24,7 @@ class Distillation:
         num_learning_epochs=1,
         gradient_length=15,
         learning_rate=1e-3,
+        loss_type="mse",
         device="cpu",
     ):
         self.device = device
@@ -37,10 +38,19 @@ class Distillation:
         self.storage = None  # initialized later
         self.optimizer = optim.Adam(self.policy.student.parameters(), lr=self.learning_rate)
         self.transition = RolloutStorage.Transition()
+        self.last_hidden_states = None
 
         # distillation parameters
         self.num_learning_epochs = num_learning_epochs
         self.gradient_length = gradient_length
+
+        # initialize the loss function
+        if loss_type == "mse":
+            self.loss_fn = nn.functional.mse_loss
+        elif loss_type == "huber":
+            self.loss_fn = nn.functional.huber_loss
+        else:
+            raise ValueError(f"Unknown loss type: {loss_type}. Supported types are: mse, huber")
 
         self.num_updates = 0
 
@@ -79,25 +89,24 @@ class Distillation:
 
     def update(self):
         self.num_updates += 1
-        mean_behaviour_loss = 0
+        mean_behavior_loss = 0
         loss = 0
         cnt = 0
 
-        for epoch in range(self.num_learning_epochs):  # TODO unify num_steps_per_env and gradient_length
-            self.policy.reset()
+        for epoch in range(self.num_learning_epochs):
+            self.policy.reset(hidden_states=self.last_hidden_states)
             self.policy.detach_hidden_states()
-            for obs, _, _, privileged_actions in self.storage.generator():
+            for obs, _, _, privileged_actions, dones in self.storage.generator():
 
                 # inference the student for gradient computation
                 actions = self.policy.act_inference(obs)
 
-                # behaviour cloning loss
-                behaviour_loss = nn.functional.mse_loss(actions, privileged_actions)
+                # behavior cloning loss
+                behavior_loss = self.loss_fn(actions, privileged_actions)
 
                 # total loss
-                loss = loss + behaviour_loss
-
-                mean_behaviour_loss += behaviour_loss.item()
+                loss = loss + behavior_loss
+                mean_behavior_loss += behavior_loss.item()
                 cnt += 1
 
                 # gradient step
@@ -108,11 +117,16 @@ class Distillation:
                     self.policy.detach_hidden_states()
                     loss = 0
 
-        mean_behaviour_loss /= cnt
+                # reset dones
+                self.policy.reset(dones.view(-1))
+                self.policy.detach_hidden_states(dones.view(-1))
+
+        mean_behavior_loss /= cnt
         self.storage.clear()
-        self.policy.reset()  # TODO needed?
+        self.last_hidden_states = self.policy.get_hidden_states()
+        self.policy.detach_hidden_states()
 
         # construct the loss dictionary
-        loss_dict = {"behaviour": mean_behaviour_loss}
+        loss_dict = {"behavior": mean_behavior_loss}
 
         return loss_dict

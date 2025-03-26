@@ -72,7 +72,7 @@ class StudentTeacher(nn.Module):
         # disable args validation for speedup
         Normal.set_default_validate_args = False
 
-    def reset(self, dones=None):
+    def reset(self, dones=None, hidden_states=None):
         pass
 
     def forward(self):
@@ -128,6 +128,9 @@ class StudentTeacher(nn.Module):
                 if "actor." in key:
                     teacher_state_dict[key.replace("actor.", "")] = value
             self.teacher.load_state_dict(teacher_state_dict, strict=strict)
+            # also load recurrent memory if teacher is recurrent
+            if self.is_recurrent and self.teacher_recurrent:
+                raise NotImplementedError("Loading recurrent memory for the teacher is not implemented yet")  # TODO
             # set flag for successfully loading the parameters
             self.loaded_teacher = True
             self.teacher.eval()
@@ -141,5 +144,8 @@ class StudentTeacher(nn.Module):
         else:
             raise ValueError("state_dict does not contain student or teacher parameters")
 
-    def detach_hidden_states(self):
+    def get_hidden_states(self):
+        return None
+
+    def detach_hidden_states(self, dones=None):
         pass
