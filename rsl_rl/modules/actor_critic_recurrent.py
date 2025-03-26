@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 from rsl_rl.modules import ActorCritic
 from rsl_rl.networks import Memory
 from rsl_rl.utils import resolve_nn_activation
@@ -27,6 +29,14 @@ class ActorCriticRecurrent(ActorCritic):
         init_noise_std=1.0,
         **kwargs,
     ):
+        if "rnn_hidden_size" in kwargs:
+            warnings.warn(
+                "The argument `rnn_hidden_size` is deprecated and will be removed in a future version. "
+                "Please use `rnn_hidden_dim` instead.",
+                DeprecationWarning,
+            )
+            if rnn_hidden_dim == 256:  # Only override if the new argument is at its default
+                rnn_hidden_dim = kwargs.pop("rnn_hidden_size")
         if kwargs:
             print(
                 "ActorCriticRecurrent.__init__ got unexpected arguments, which will be ignored: " + str(kwargs.keys()),
