@@ -14,11 +14,12 @@ from collections import deque
 import rsl_rl
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
-from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization
+from rsl_rl.runners import OnPolicyRunner
+from rsl_rl.modules import ActorCriticRecurrentEmbeddings, EmpiricalNormalization
 from rsl_rl.utils import store_code_state
 
 
-class OnPolicyRunner:
+class OnPolicyRunnerRecurrentEmbeddings(OnPolicyRunner):
     """On-policy runner for training and evaluation."""
 
     def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device="cpu"):
@@ -28,36 +29,21 @@ class OnPolicyRunner:
         self.device = device
         self.env = env
 
+
         # resolve dimensions of observations
         obs, extras = self.env.get_observations()
-        num_obs = obs.shape[1]
+
+        num_proprio_obs = obs["proprioception"].shape[1]
+        num_privileged_obs = obs["privileged"].shape[1]
+
         if "critic" in extras["observations"]:
-            num_critic_obs = extras["observations"]["critic"].shape[1]
+            num_critic_proprio_obs = extras["observations"]["critic"].shape[1]
         else:
-            num_critic_obs = num_obs
+            num_critic_proprio_obs = num_proprio_obs
         
-        actor_critic_class = eval(self.policy_cfg.pop("class_name"))  # ActorCritic
-        actor_critic: ActorCritic | ActorCriticRecurrent = actor_critic_class(
-            num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg
+        actor_critic: ActorCriticRecurrentEmbeddings = ActorCriticRecurrentEmbeddings(
+            num_proprio_obs, num_critic_proprio_obs, num_privileged_obs, self.env.num_actions, **self.policy_cfg
         ).to(self.device)
-
-        # resolve dimension of rnd gated state
-        if self.alg_cfg.get("rnd_cfg") is not None:
-            # check if rnd gated state is present
-            rnd_state = extras["observations"].get("rnd_state")
-            if rnd_state is None:
-                raise ValueError("Observations for they key 'rnd_state' not found in infos['observations'].")
-            # get dimension of rnd gated state
-            num_rnd_state = rnd_state.shape[1]
-            # add rnd gated state to config
-            self.alg_cfg["rnd_cfg"]["num_states"] = num_rnd_state
-            # scale down the rnd weight with timestep (similar to how rewards are scaled down in legged_gym envs)
-            self.alg_cfg["rnd_cfg"]["weight"] *= env.unwrapped.step_dt
-
-        # if using symmetry then pass the environment config object
-        if self.alg_cfg.get("symmetry_cfg") is not None:
-            # this is used by the symmetry function for handling different observation terms
-            self.alg_cfg["symmetry_cfg"]["_env"] = env
 
         # init algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
@@ -67,9 +53,10 @@ class OnPolicyRunner:
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
+
         if self.empirical_normalization:
-            self.obs_normalizer = EmpiricalNormalization(shape=[num_obs], until=1.0e8).to(self.device)
-            self.critic_obs_normalizer = EmpiricalNormalization(shape=[num_critic_obs], until=1.0e8).to(self.device)
+            self.obs_normalizer = EmpiricalNormalization(shape=[num_proprio_obs], until=1.0e8).to(self.device)
+            self.critic_obs_normalizer = EmpiricalNormalization(shape=[num_critic_proprio_obs], until=1.0e8).to(self.device)
         else:
             self.obs_normalizer = torch.nn.Identity().to(self.device)  # no normalization
             self.critic_obs_normalizer = torch.nn.Identity().to(self.device)  # no normalization
@@ -77,8 +64,8 @@ class OnPolicyRunner:
         self.alg.init_storage(
             self.env.num_envs,
             self.num_steps_per_env,
-            [num_obs],
-            [num_critic_obs],
+            [num_proprio_obs + num_privileged_obs],
+            [num_critic_proprio_obs + num_privileged_obs],
             [self.env.num_actions],
         )
 
@@ -122,8 +109,14 @@ class OnPolicyRunner:
 
         # start learning
         obs, extras = self.env.get_observations()
-        critic_obs = extras["observations"].get("critic", obs)
+        proprio_obs = obs["proprioception"]
+        proprio_critic_obs = extras["observations"].get("critic", {}).get("proprioception", proprio_obs)
+        priv_obs = obs["privileged"]
+        obs = torch.cat([proprio_obs, priv_obs], dim=1)
+
+        critic_obs = torch.cat([proprio_critic_obs, priv_obs], dim=1)
         obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
+
         self.train_mode()  # switch to train mode (for dropout for example)
 
         # Book keeping
@@ -150,17 +143,24 @@ class OnPolicyRunner:
                     actions = self.alg.act(obs, critic_obs)
                     # Step environment
                     obs, rewards, dones, infos = self.env.step(actions.to(self.env.device))
+                    obs_proprioception = obs["proprioception"]
+                    obs_privileged = obs["privileged"]
 
                     # Move to the agent device
-                    obs, rewards, dones = obs.to(self.device), rewards.to(self.device), dones.to(self.device)
+                    obs_proprioception, obs_privileged, rewards, dones = obs_proprioception.to(self.device), obs_privileged.to(self.device), rewards.to(self.device), dones.to(self.device)
+
 
                     # Normalize observations
-                    obs = self.obs_normalizer(obs)
+                    obs_proprioception = self.obs_normalizer(obs_proprioception)
                     # Extract critic observations and normalize
                     if "critic" in infos["observations"]:
-                        critic_obs = self.critic_obs_normalizer(infos["observations"]["critic"].to(self.device))
+                        critic_proprio_obs = extras["observations"].get("critic", {}).get("proprioception", obs["proprioception"])
                     else:
-                        critic_obs = obs
+                        critic_proprio_obs = obs_proprioception
+
+                    # Concatenate image observations with proprioceptive observations
+                    obs = torch.cat([obs_proprioception, obs_privileged], dim=1)
+                    critic_obs = torch.cat([critic_proprio_obs, obs_privileged], dim=1)
 
                     # Process env step and store in buffer
                     self.alg.process_env_step(rewards, dones, infos)
@@ -360,6 +360,12 @@ class OnPolicyRunner:
     def save(self, path: str, infos=None):
         # -- Save PPO model
         saved_dict = {
+            "actor_embedding_model_state_dict": self.alg.actor_critic.priv_mlp.state_dict(),
+            "actor_model_state_dict": self.alg.actor_critic.actor.state_dict(),
+            "actor_rnn_model_state_dict": self.alg.actor_critic.rnn_a.state_dict(),
+            "critic_embedding_model_state_dict": self.alg.actor_critic.priv_mlp.state_dict(),
+            "critic_model_state_dict": self.alg.actor_critic.critic.state_dict(),
+            "critic_rnn_model_state_dict": self.alg.actor_critic.rnn_c.state_dict(),
             "model_state_dict": self.alg.actor_critic.state_dict(),
             "optimizer_state_dict": self.alg.optimizer.state_dict(),
             "iter": self.current_learning_iteration,
@@ -379,27 +385,75 @@ class OnPolicyRunner:
         if self.logger_type in ["neptune", "wandb"]:
             self.writer.save_model(path, self.current_learning_iteration)
 
+
     def load(self, path: str, load_optimizer: bool = True):
+        # Check if parameters are defined
+        if "load_embeddings_model" not in self.cfg:
+            print("\n" + "--" * 50 + "\n[WARNING]: Parameter load_embeddings_model is not defined in the agent-config file, it defaults to true\n" + "--" * 50)
+            self.cfg["load_embeddings_model"] = True
+        if "load_policy_model" not in self.cfg:
+            print("\n" + "--" * 50 + "\n[WARNING]: Parameter load_policy_model is not defined in the agent-config file, it defaults to true\n" + "--" * 50)
+            self.cfg["load_policy_model"] = True
+
+        if "freeze_embeddings_model" not in self.cfg:
+            print("\n" + "--" * 50 + "\n[WARNING]: Parameter freeze_embeddings_model is not defined in the agent-config file, it defaults to false\n" + "--" * 50)
+        if "freeze_policy_model" not in self.cfg:
+            print("\n" + "--" * 50 + "\n[WARNING]: Parameter freeze_policy_model is not defined in the agent-config file, it defaults to false\n" + "--" * 50)
+
+        # Load weights
         loaded_dict = torch.load(path, weights_only=False)
-        # -- Load PPO model
-        self.alg.actor_critic.load_state_dict(loaded_dict["model_state_dict"])
+
+        if self.cfg["load_embeddings_model"]:
+            self.alg.actor_critic.priv_mlp.load_state_dict(loaded_dict["actor_embedding_model_state_dict"])
+        if self.cfg["load_policy_model"]:
+            self.alg.actor_critic.rnn_a.load_state_dict(loaded_dict["actor_rnn_model_state_dict"])
+            self.alg.actor_critic.rnn_c.load_state_dict(loaded_dict["critic_rnn_model_state_dict"])
+            self.alg.actor_critic.actor.load_state_dict(loaded_dict["actor_model_state_dict"])
+            self.alg.actor_critic.critic.load_state_dict(loaded_dict["critic_model_state_dict"])
+
+        # Freeze weights
+        if "freeze_embeddings_model" in self.cfg and self.cfg["freeze_embeddings_model"]:
+            print("\n" + "--" * 50 + "\n[INFO]: Weights of embeddings model are frozen\n" + "--" * 50)
+            for param in self.alg.actor_critic.priv_mlp.parameters():
+                param.requires_grad = False
+
+        if "freeze_policy_model" in self.cfg and self.cfg["freeze_policy_model"]:
+            print("\n" + "--" * 50 + "\n[INFO]: Weights of policy are frozen\n" + "--" * 50)
+            for param in self.alg.actor_critic.rnn_a.parameters():
+                param.requires_grad = False
+            for param in self.alg.actor_critic.actor.parameters():
+                param.requires_grad = False
+
         # -- Load RND model if used
         if self.alg.rnd:
             self.alg.rnd.load_state_dict(loaded_dict["rnd_state_dict"])
+        
         # -- Load observation normalizer if used
         if self.empirical_normalization:
             self.obs_normalizer.load_state_dict(loaded_dict["obs_norm_state_dict"])
             self.critic_obs_normalizer.load_state_dict(loaded_dict["critic_obs_norm_state_dict"])
-        # -- Load optimizer if used
+    
         if load_optimizer:
-            # -- PPO
+            # Load old optimizer state
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
-            # -- RND optimizer if used
-            if self.alg.rnd:
-                self.alg.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
-        # -- Load current learning iteration
+            
+            # Get trainable parameters -> only these required gradient
+            trainable_params = [p for p in self.alg.actor_critic.parameters() if p.requires_grad]
+            
+            # Create new optimizer with only trainable parameters
+            old_optimizer = self.alg.optimizer
+            optimizer_class = type(old_optimizer)
+            self.alg.optimizer = optimizer_class(
+                trainable_params,
+                lr=old_optimizer.param_groups[0]['lr'],
+                **{k: v for k, v in old_optimizer.param_groups[0].items() 
+                if k not in ['params', 'lr']}  # copy all other hyperparameters
+            )
+        
         self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
+        
+
 
     def get_inference_policy(self, device=None):
         self.eval_mode()  # switch to evaluation mode (dropout for example)

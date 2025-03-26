@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 import warnings
 
-from rsl_rl.modules import ActorCritic
+from rsl_rl.modules import ActorCritic, ActorCriticRecurrentEmbeddings
 from rsl_rl.modules.rnd import RandomNetworkDistillation
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import string_to_callable
@@ -19,7 +19,7 @@ from rsl_rl.utils import string_to_callable
 class PPO:
     """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
 
-    actor_critic: ActorCritic
+    actor_critic: ActorCritic | ActorCriticRecurrentEmbeddings
     """The actor critic module."""
 
     def __init__(
@@ -212,7 +212,7 @@ class PPO:
             masks_batch,
             rnd_state_batch,
         ) in generator:
-
+            
             # number of augmentations per sample
             # we start with 1 and increase it if we use symmetry augmentation
             num_aug = 1
