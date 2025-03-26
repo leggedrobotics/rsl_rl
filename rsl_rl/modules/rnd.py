@@ -106,6 +106,9 @@ class RandomNetworkDistillation(nn.Module):
         self.predictor = self._build_mlp(num_states, predictor_hidden_dims, num_outputs, activation).to(self.device)
         self.target = self._build_mlp(num_states, target_hidden_dims, num_outputs, activation).to(self.device)
 
+        # make target network not trainable
+        self.target.eval()
+
     def get_intrinsic_reward(self, rnd_state) -> tuple[torch.Tensor, torch.Tensor]:
         # note: the counter is updated number of env steps per learning iteration
         self.update_counter += 1

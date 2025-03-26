@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 # torch
+import torch
 import torch.nn as nn
 import torch.optim as optim
 
@@ -26,9 +27,19 @@ class Distillation:
         learning_rate=1e-3,
         loss_type="mse",
         device="cpu",
+        # Distributed training parameters
+        multi_gpu_cfg: dict | None = None,
     ):
+        # device-related parameters
         self.device = device
-        self.learning_rate = learning_rate
+        self.is_multi_gpu = multi_gpu_cfg is not None
+        # Multi-GPU parameters
+        if multi_gpu_cfg is not None:
+            self.gpu_global_rank = multi_gpu_cfg["global_rank"]
+            self.gpu_world_size = multi_gpu_cfg["world_size"]
+        else:
+            self.gpu_global_rank = 0
+            self.gpu_world_size = 1
 
         self.rnd = None  # TODO: remove when runner has a proper base class
 
@@ -36,13 +47,14 @@ class Distillation:
         self.policy = policy
         self.policy.to(self.device)
         self.storage = None  # initialized later
-        self.optimizer = optim.Adam(self.policy.student.parameters(), lr=self.learning_rate)
+        self.optimizer = optim.Adam(self.policy.student.parameters(), lr=learning_rate)
         self.transition = RolloutStorage.Transition()
         self.last_hidden_states = None
 
         # distillation parameters
         self.num_learning_epochs = num_learning_epochs
         self.gradient_length = gradient_length
+        self.learning_rate = learning_rate
 
         # initialize the loss function
         if loss_type == "mse":
@@ -113,6 +125,8 @@ class Distillation:
                 if cnt % self.gradient_length == 0:
                     self.optimizer.zero_grad()
                     loss.backward()
+                    if self.is_multi_gpu:
+                        self.reduce_parameters()
                     self.optimizer.step()
                     self.policy.detach_hidden_states()
                     loss = 0
@@ -130,3 +144,37 @@ class Distillation:
         loss_dict = {"behavior": mean_behavior_loss}
 
         return loss_dict
+
+    """
+    Helper functions
+    """
+
+    def broadcast_parameters(self):
+        """Broadcast model parameters to all GPUs."""
+        # obtain the model parameters on current GPU
+        model_params = [self.policy.state_dict()]
+        # broadcast the model parameters
+        torch.distributed.broadcast_object_list(model_params, src=0)
+        # load the model parameters on all GPUs from source GPU
+        self.policy.load_state_dict(model_params[0])
+
+    def reduce_parameters(self):
+        """Collect gradients from all GPUs and average them.
+
+        This function is called after the backward pass to synchronize the gradients across all GPUs.
+        """
+        # Create a tensor to store the gradients
+        grads = [param.grad.view(-1) for param in self.policy.parameters() if param.grad is not None]
+        all_grads = torch.cat(grads)
+        # Average the gradients across all GPUs
+        torch.distributed.all_reduce(all_grads, op=torch.distributed.ReduceOp.SUM)
+        all_grads /= self.gpu_world_size
+        # Update the gradients for all parameters with the reduced gradients
+        offset = 0
+        for param in self.policy.parameters():
+            if param.grad is not None:
+                numel = param.numel()
+                # copy data back from shared buffer
+                param.grad.data.copy_(all_grads[offset : offset + numel].view_as(param.grad.data))
+                # update the offset for the next parameter
+                offset += numel

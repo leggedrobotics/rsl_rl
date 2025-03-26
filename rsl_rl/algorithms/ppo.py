@@ -8,7 +8,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import warnings
+from itertools import chain
 
 from rsl_rl.modules import ActorCritic
 from rsl_rl.modules.rnd import RandomNetworkDistillation
@@ -43,13 +43,19 @@ class PPO:
         rnd_cfg: dict | None = None,
         # Symmetry parameters
         symmetry_cfg: dict | None = None,
+        # Distributed training parameters
+        multi_gpu_cfg: dict | None = None,
     ):
+        # device-related parameters
         self.device = device
-
-        self.desired_kl = desired_kl
-        self.schedule = schedule
-        self.learning_rate = learning_rate
-        self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.is_multi_gpu = multi_gpu_cfg is not None
+        # Multi-GPU parameters
+        if multi_gpu_cfg is not None:
+            self.gpu_global_rank = multi_gpu_cfg["global_rank"]
+            self.gpu_world_size = multi_gpu_cfg["world_size"]
+        else:
+            self.gpu_global_rank = 0
+            self.gpu_world_size = 1
 
         # RND components
         if rnd_cfg is not None:
@@ -68,7 +74,7 @@ class PPO:
             use_symmetry = symmetry_cfg["use_data_augmentation"] or symmetry_cfg["use_mirror_loss"]
             # Print that we are not using symmetry
             if not use_symmetry:
-                warnings.warn("Symmetry not used for learning. We will use it for logging instead.")
+                print("Symmetry not used for learning. We will use it for logging instead.")
             # If function is a string then resolve it to a function
             if isinstance(symmetry_cfg["data_augmentation_func"], str):
                 symmetry_cfg["data_augmentation_func"] = string_to_callable(symmetry_cfg["data_augmentation_func"])
@@ -102,6 +108,10 @@ class PPO:
         self.lam = lam
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
+        self.desired_kl = desired_kl
+        self.schedule = schedule
+        self.learning_rate = learning_rate
+        self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
 
     def init_storage(
         self, training_type, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, actions_shape
@@ -267,11 +277,28 @@ class PPO:
                     )
                     kl_mean = torch.mean(kl)
 
-                    if kl_mean > self.desired_kl * 2.0:
-                        self.learning_rate = max(1e-5, self.learning_rate / 1.5)
-                    elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                        self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                    # Reduce the KL divergence across all GPUs
+                    if self.is_multi_gpu:
+                        torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
+                        kl_mean /= self.gpu_world_size
 
+                    # Update the learning rate
+                    # Perform this adaptation only on the main process
+                    # TODO: Is this needed? If KL-divergence is the "same" across all GPUs,
+                    #       then the learning rate should be the same across all GPUs.
+                    if self.gpu_global_rank == 0:
+                        if kl_mean > self.desired_kl * 2.0:
+                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                        elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
+                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+
+                    # Update the learning rate for all GPUs
+                    if self.is_multi_gpu:
+                        lr_tensor = torch.tensor(self.learning_rate, device=self.device)
+                        torch.distributed.broadcast(lr_tensor, src=0)
+                        self.learning_rate = lr_tensor.item()
+
+                    # Update the learning rate for all parameter groups
                     for param_group in self.optimizer.param_groups:
                         param_group["lr"] = self.learning_rate
 
@@ -335,21 +362,30 @@ class PPO:
             if self.rnd:
                 # predict the embedding and the target
                 predicted_embedding = self.rnd.predictor(rnd_state_batch)
-                target_embedding = self.rnd.target(rnd_state_batch)
+                target_embedding = self.rnd.target(rnd_state_batch).detach()
                 # compute the loss as the mean squared error
                 mseloss = torch.nn.MSELoss()
-                rnd_loss = mseloss(predicted_embedding, target_embedding.detach())
+                rnd_loss = mseloss(predicted_embedding, target_embedding)
 
-            # Gradient step
+            # Compute the gradients
             # -- For PPO
             self.optimizer.zero_grad()
             loss.backward()
+            # -- For RND
+            if self.rnd:
+                self.rnd_optimizer.zero_grad()  # type: ignore
+                rnd_loss.backward()
+
+            # Collect gradients from all GPUs
+            if self.is_multi_gpu:
+                self.reduce_parameters()
+
+            # Apply the gradients
+            # -- For PPO
             nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.optimizer.step()
             # -- For RND
             if self.rnd_optimizer:
-                self.rnd_optimizer.zero_grad()
-                rnd_loss.backward()
                 self.rnd_optimizer.step()
 
             # Store the losses
@@ -389,3 +425,50 @@ class PPO:
             loss_dict["symmetry"] = mean_symmetry_loss
 
         return loss_dict
+
+    """
+    Helper functions
+    """
+
+    def broadcast_parameters(self):
+        """Broadcast model parameters to all GPUs."""
+        # obtain the model parameters on current GPU
+        model_params = [self.policy.state_dict()]
+        if self.rnd:
+            model_params.append(self.rnd.predictor.state_dict())
+        # broadcast the model parameters
+        torch.distributed.broadcast_object_list(model_params, src=0)
+        # load the model parameters on all GPUs from source GPU
+        self.policy.load_state_dict(model_params[0])
+        if self.rnd:
+            self.rnd.predictor.load_state_dict(model_params[1])
+
+    def reduce_parameters(self):
+        """Collect gradients from all GPUs and average them.
+
+        This function is called after the backward pass to synchronize the gradients across all GPUs.
+        """
+        # Create a tensor to store the gradients
+        grads = [param.grad.view(-1) for param in self.policy.parameters() if param.grad is not None]
+        if self.rnd:
+            grads += [param.grad.view(-1) for param in self.rnd.parameters() if param.grad is not None]
+        all_grads = torch.cat(grads)
+
+        # Average the gradients across all GPUs
+        torch.distributed.all_reduce(all_grads, op=torch.distributed.ReduceOp.SUM)
+        all_grads /= self.gpu_world_size
+
+        # Get all parameters
+        all_params = self.policy.parameters()
+        if self.rnd:
+            all_params = chain(all_params, self.rnd.parameters())
+
+        # Update the gradients for all parameters with the reduced gradients
+        offset = 0
+        for param in all_params:
+            if param.grad is not None:
+                numel = param.numel()
+                # copy data back from shared buffer
+                param.grad.data.copy_(all_grads[offset : offset + numel].view_as(param.grad.data))
+                # update the offset for the next parameter
+                offset += numel

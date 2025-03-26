@@ -34,6 +34,9 @@ class OnPolicyRunner:
         self.device = device
         self.env = env
 
+        # check if multi-gpu is enabled
+        self._configure_multi_gpu()
+
         # resolve training type depending on the algorithm
         if self.alg_cfg["class_name"] == "PPO":
             self.training_type = "rl"
@@ -90,7 +93,7 @@ class OnPolicyRunner:
 
         # initialize algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
-        self.alg: PPO | Distillation = alg_class(policy, device=self.device, **self.alg_cfg)
+        self.alg: PPO | Distillation = alg_class(policy, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
 
         # store training configuration
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
@@ -115,7 +118,10 @@ class OnPolicyRunner:
             [self.env.num_actions],
         )
 
-        # Log
+        # Decide whether to disable logging
+        # We only log from the process with rank 0 (main process)
+        self.disable_logs = self.is_distributed and self.gpu_global_rank != 0
+        # Logging
         self.log_dir = log_dir
         self.writer = None
         self.tot_timesteps = 0
@@ -125,7 +131,7 @@ class OnPolicyRunner:
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
         # initialize writer
-        if self.log_dir is not None and self.writer is None:
+        if self.log_dir is not None and self.writer is None and not self.disable_logs:
             # Launch either Tensorboard or Neptune & Tensorboard summary writer(s), default: Tensorboard.
             self.logger_type = self.cfg.get("logger", "tensorboard")
             self.logger_type = self.logger_type.lower()
@@ -177,13 +183,14 @@ class OnPolicyRunner:
             cur_ereward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
             cur_ireward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
-        # create buffers for logging extrinsic and intrinsic rewards
-        if self.alg.rnd:
-            erewbuffer = deque(maxlen=100)
-            irewbuffer = deque(maxlen=100)
-            cur_ereward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
-            cur_ireward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        # Ensure all parameters are in-synced
+        if self.is_distributed:
+            print(f"Synchronizing parameters for rank {self.gpu_global_rank}...")
+            self.alg.broadcast_parameters()
+            # TODO: Do we need to synchronize empirical normalizers?
+            #   Right now: No, because they all should converge to the same values "asymptotically".
 
+        # Start training
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
@@ -201,15 +208,17 @@ class OnPolicyRunner:
                     obs = self.obs_normalizer(obs)
                     if self.privileged_obs_type is not None:
                         privileged_obs = self.privileged_obs_normalizer(
-                            infos["observations"][self.privileged_obs_type]
-                        ).to(self.device)
+                            infos["observations"][self.privileged_obs_type].to(self.device)
+                        )
                     else:
                         privileged_obs = obs
-                    # Extract intrinsic rewards (only for logging)
-                    intrinsic_rewards = self.alg.intrinsic_rewards if self.alg.rnd else None
 
                     # process the step
                     self.alg.process_env_step(rewards, dones, infos)
+
+                    # Extract intrinsic rewards (only for logging)
+                    intrinsic_rewards = self.alg.intrinsic_rewards if self.alg.rnd else None
+
                     # book keeping
                     if self.log_dir is not None:
                         if "episode" in infos:
@@ -219,7 +228,7 @@ class OnPolicyRunner:
                         # Update rewards
                         if self.alg.rnd:
                             cur_ereward_sum += rewards
-                            cur_ireward_sum += intrinsic_rewards
+                            cur_ireward_sum += intrinsic_rewards  # type: ignore
                             cur_reward_sum += rewards + intrinsic_rewards
                         else:
                             cur_reward_sum += rewards
@@ -254,7 +263,7 @@ class OnPolicyRunner:
             learn_time = stop - start
             self.current_learning_iteration = it
             # log info
-            if self.log_dir is not None:
+            if self.log_dir is not None and not self.disable_logs:
                 # Log information
                 self.log(locals())
                 # Save model
@@ -264,7 +273,7 @@ class OnPolicyRunner:
             # Clear episode infos
             ep_infos.clear()
             # Save code state
-            if it == start_iter:
+            if it == start_iter and not self.disable_logs:
                 # obtain all the diff files
                 git_file_paths = store_code_state(self.log_dir, self.git_status_repos)
                 # if possible store them to wandb
@@ -273,11 +282,14 @@ class OnPolicyRunner:
                         self.writer.save_file(path)
 
         # Save the final model after training
-        if self.log_dir is not None:
+        if self.log_dir is not None and not self.disable_logs:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
 
     def log(self, locs: dict, width: int = 80, pad: int = 35):
-        self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
+        # Compute the collection size
+        collection_size = self.num_steps_per_env * self.env.num_envs * self.gpu_world_size
+        # Update total time-steps and time
+        self.tot_timesteps += collection_size
         self.tot_time += locs["collection_time"] + locs["learn_time"]
         iteration_time = locs["collection_time"] + locs["learn_time"]
 
@@ -303,8 +315,9 @@ class OnPolicyRunner:
                 else:
                     self.writer.add_scalar("Episode/" + key, value, locs["it"])
                     ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
-        mean_std = self.alg.policy.std.mean()
-        fps = int(self.num_steps_per_env * self.env.num_envs / (locs["collection_time"] + locs["learn_time"]))
+
+        mean_std = self.alg.policy.action_std.mean()
+        fps = int(collection_size / (locs["collection_time"] + locs["learn_time"]))
 
         # -- Losses
         for key, value in locs["loss_dict"].items():
@@ -395,9 +408,12 @@ class OnPolicyRunner:
         if self.empirical_normalization:
             saved_dict["obs_norm_state_dict"] = self.obs_normalizer.state_dict()
             saved_dict["privileged_obs_norm_state_dict"] = self.privileged_obs_normalizer.state_dict()
-        # save and upload model to external logging service
+
+        # save model
         torch.save(saved_dict, path)
-        if self.logger_type in ["neptune", "wandb"]:
+
+        # upload model to external logging service
+        if self.logger_type in ["neptune", "wandb"] and not self.disable_logs:
             self.writer.save_model(path, self.current_learning_iteration)
 
     def load(self, path: str, load_optimizer: bool = True):
@@ -466,3 +482,47 @@ class OnPolicyRunner:
 
     def add_git_repo_to_log(self, repo_file_path):
         self.git_status_repos.append(repo_file_path)
+
+    """
+    Helper functions.
+    """
+
+    def _configure_multi_gpu(self):
+        """Configure multi-gpu training."""
+        # check if distributed training is enabled
+        self.gpu_world_size = int(os.getenv("WORLD_SIZE", "1"))
+        self.is_distributed = self.gpu_world_size > 1
+
+        # if not distributed training, set local and global rank to 0 and return
+        if not self.is_distributed:
+            self.gpu_local_rank = 0
+            self.gpu_global_rank = 0
+            self.multi_gpu_cfg = None
+            return
+
+        # get rank and world size
+        self.gpu_local_rank = int(os.getenv("LOCAL_RANK", "0"))
+        self.gpu_global_rank = int(os.getenv("RANK", "0"))
+
+        # make a configuration dictionary
+        self.multi_gpu_cfg = {
+            "global_rank": self.gpu_global_rank,  # rank of the main process
+            "local_rank": self.gpu_local_rank,  # rank of the current process
+            "world_size": self.gpu_world_size,  # total number of processes
+        }
+
+        # check if user has device specified for local rank
+        if self.device != f"cuda:{self.gpu_local_rank}":
+            raise ValueError(f"Device '{self.device}' does not match expected device for local rank '{self.gpu_local_rank}'.")
+        # validate multi-gpu configuration
+        if self.gpu_local_rank >= self.gpu_world_size:
+            raise ValueError(f"Local rank '{self.gpu_local_rank}' is greater than or equal to world size '{self.gpu_world_size}'.")
+        if self.gpu_global_rank >= self.gpu_world_size:
+            raise ValueError(f"Global rank '{self.gpu_global_rank}' is greater than or equal to world size '{self.gpu_world_size}'.")
+
+        # initialize torch distributed
+        torch.distributed.init_process_group(
+            backend="nccl", rank=self.gpu_global_rank, world_size=self.gpu_world_size
+        )
+        # set device to the local rank
+        torch.cuda.set_device(self.gpu_local_rank)
