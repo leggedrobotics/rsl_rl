@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from torch.distributions import Normal
+from torch.distributions import Beta
 
 from rsl_rl.utils import resolve_nn_activation
 
 
-class ActorCritic(nn.Module):
+class ActorCriticBeta(nn.Module):
     is_recurrent = False
 
     def __init__(
@@ -25,7 +25,7 @@ class ActorCritic(nn.Module):
         activation="elu",
         init_noise_std=1.0,
         noise_std_type: str = "scalar",
-        clip_actions: bool = False,
+        clip_actions: bool = True,
         clip_actions_range: tuple = (-1.0, 1.0),
         **kwargs,
     ):
@@ -45,17 +45,17 @@ class ActorCritic(nn.Module):
         actor_layers.append(activation)
         for layer_index in range(len(actor_hidden_dims)):
             if layer_index == len(actor_hidden_dims) - 1:
-                actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], num_actions))
+                self.alpha = nn.Linear(actor_hidden_dims[layer_index], num_actions)
+                self.beta = nn.Linear(actor_hidden_dims[layer_index], num_actions)
+                self.alpha_activation = nn.Softplus()
+                self.beta_activation = nn.Softplus()
             else:
                 actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], actor_hidden_dims[layer_index + 1]))
                 actor_layers.append(activation)
         self.actor = nn.Sequential(*actor_layers)
 
-        self.clip_actions = clip_actions
         self.clip_actions_range = clip_actions_range
-        if self.clip_actions:
-            self.clipping_layer = nn.Tanh()
-    
+
         # Value function
         critic_layers = []
         critic_layers.append(nn.Linear(mlp_input_dim_c, critic_hidden_dims[0]))
@@ -71,19 +71,12 @@ class ActorCritic(nn.Module):
         print(f"Actor MLP: {self.actor}")
         print(f"Critic MLP: {self.critic}")
 
-        # Action noise
-        self.noise_std_type = noise_std_type
-        if self.noise_std_type == "scalar":
-            self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
-        elif self.noise_std_type == "log":
-            self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
-        else:
-            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
-
         # Action distribution (populated in update_distribution)
         self.distribution = None
+        self.a = None
+        self.b = None
         # disable args validation for speedup
-        Normal.set_default_validate_args(False)
+        Beta.set_default_validate_args(False)
 
     @staticmethod
     # not used at the moment
@@ -101,70 +94,56 @@ class ActorCritic(nn.Module):
 
     @property
     def action_mean(self):
-        mode = self.distribution.mean
-        if self.clip_actions:
-            mode = ((mode + 1) /2.0)* (self.clip_actions_range[1] - self.clip_actions_range[0]) + self.clip_actions_range[0]
-        return mode
+        mode = self.a / (self.a + self.b)
+        mode_rescaled = mode * (self.clip_actions_range[1] - self.clip_actions_range[0]) + self.clip_actions_range[0]
+        return mode_rescaled
     
     @property
     def action_std(self):
-        return self.distribution.stddev
-    
-    @property
-    def actions_distribution(self) -> torch.Tensor:
-        # Mean and Std concatenated on an extra dimension
-        return torch.stack([self.distribution.mean, self.distribution.stddev], dim=-1)
+        return torch.sqrt(self.a * self.b / ((self.a + self.b + 1) * (self.a + self.b) ** 2))
 
+    @property
+    def actions_distribution(self):
+        # Alpha and beta concatenated on an extra dimension
+        return torch.stack([self.a, self.b], dim=-1)
+    
     @property
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
     def build_distribution(self, parameters):
-        # build the distribution
-        return Normal(parameters[..., 0], parameters[..., 1])
+        # create distribution
+        return Beta(parameters[...,0], parameters[...,1])
 
     def update_distribution(self, observations):
         # compute mean
-        mean = self.actor(observations)
-        if self.clip_actions:
-            mean = self.clipping_layer(mean)
+        latent = self.actor(observations)
+        self.a = self.alpha_activation(self.alpha(latent)) + 1.0
+        self.b = self.beta_activation(self.beta(latent)) + 1.0
 
-        # compute standard deviation
-        if self.noise_std_type == "scalar":
-            std = self.std.expand_as(mean)
-        elif self.noise_std_type == "log":
-            std = torch.exp(self.log_std).expand_as(mean)
-        else:
-            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         # create distribution
-        self.distribution = Normal(mean, std)
+        self.distribution = Beta(self.a, self.b)
 
     def act(self, observations, **kwargs):
         self.update_distribution(observations)
         act = self.distribution.sample()
-        if self.clip_actions:
-            # Apply tanh to clip the actions to [-1, 1]
-            act = self.clipping_layer(act)
-            # Rescale the actions to the desired range
-            act = ((act + 1) / 2.0) * (self.clip_actions_range[1] - self.clip_actions_range[0]) + self.clip_actions_range[0]
-        return act
+        act_rescaled = act * (self.clip_actions_range[1] - self.clip_actions_range[0]) + self.clip_actions_range[0]
+        return act_rescaled
 
     def get_actions_log_prob(self, actions):
-        # Scale the actions to [-1, 1] before computing the log probability.
-        if self.clip_actions:
-            # The unscaled actions still have the tanh applied to them.
-            unscaled_actions = (actions - self.clip_actions_range[0]) / (self.clip_actions_range[1] - self.clip_actions_range[0]) * 2.0 - 1.0
-            # Revert the tanh to get the original actions. We use the TanhBijector to avoid numerical issues.
-            gaussian_actions = self.inverse_tanh(unscaled_actions)
-            return (self.distribution.log_prob(gaussian_actions) - torch.log(1 - unscaled_actions*unscaled_actions + 1e-6)).sum(dim=-1)
-        else:
-            return self.distribution.log_prob(actions).sum(dim=-1)
+        # Unscale the actions to [0, 1] before computing the log probability.
+        unscaled_actions = (actions - self.clip_actions_range[0]) / (self.clip_actions_range[1] - self.clip_actions_range[0])
+        # For numerical stability, clip the actions to [1e-5, 1 - 1e-5].
+        unscaled_actions = torch.clamp(unscaled_actions, 1e-5, 1 - 1e-5)
+        return self.distribution.log_prob(unscaled_actions).sum(dim=-1)
 
     def act_inference(self, observations):
-        mode= self.actor(observations)
-        if self.clip_actions:
-            mode = ((mode + 1) / 2.0) * (self.clip_actions_range[1] - self.clip_actions_range[0]) + self.clip_actions_range[0]
-        return mode
+        latent = self.actor(observations)
+        self.a = self.alpha_activation(self.alpha(latent))
+        self.b = self.beta_activation(self.beta(latent))
+        mode = self.a / (self.a + self.b)
+        mode_rescaled = mode * (self.clip_actions_range[1] - self.clip_actions_range[0]) + self.clip_actions_range[0]
+        return mode_rescaled
 
     def evaluate(self, critic_observations, **kwargs):
         value = self.critic(critic_observations)
@@ -185,12 +164,3 @@ class ActorCritic(nn.Module):
 
         super().load_state_dict(state_dict, strict=strict)
         return True
-    
-    @staticmethod
-    def atanh(x):
-        return 0.5 * (x.log1p() - (-x).log1p())
-    
-    @staticmethod
-    def inverse_tanh(y):
-        eps = torch.finfo(y.dtype).eps
-        return ActorCritic.atanh(y.clamp(min=-1.0 + eps, max=1.0 - eps))
