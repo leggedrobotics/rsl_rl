@@ -8,8 +8,7 @@ Environment repositories using the framework:
 * **`Isaac Lab`** (built on top of NVIDIA Isaac Sim): https://github.com/isaac-sim/IsaacLab
 * **`Legged-Gym`** (built on top of NVIDIA Isaac Gym): https://leggedrobotics.github.io/legged_gym/
 
-The main branch supports PPO with additional features from our research.
-These include:
+The main branch supports **PPO** and **Student-Teacher Distillation** with additional features from our research. These include:
 
 * [Random Network Distillation (RND)](https://proceedings.mlr.press/v229/schwarke23a.html) - Encourages exploration by adding
   a curiosity driven intrinsic reward.

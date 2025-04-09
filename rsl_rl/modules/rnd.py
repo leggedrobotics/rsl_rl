@@ -13,7 +13,7 @@ from rsl_rl.utils import resolve_nn_activation
 
 
 class RandomNetworkDistillation(nn.Module):
-    """Implementation of Random Network Distillation (RND) [1]_
+    """Implementation of Random Network Distillation (RND) [1]
 
     References:
         .. [1] Burda, Yuri, et al. "Exploration by random network distillation." arXiv preprint arXiv:1810.12894 (2018).
@@ -105,6 +105,9 @@ class RandomNetworkDistillation(nn.Module):
         # Create network architecture
         self.predictor = self._build_mlp(num_states, predictor_hidden_dims, num_outputs, activation).to(self.device)
         self.target = self._build_mlp(num_states, target_hidden_dims, num_outputs, activation).to(self.device)
+
+        # make target network not trainable
+        self.target.eval()
 
     def get_intrinsic_reward(self, rnd_state) -> tuple[torch.Tensor, torch.Tensor]:
         # note: the counter is updated number of env steps per learning iteration
