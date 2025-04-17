@@ -25,6 +25,7 @@ class Distillation:
         num_learning_epochs=1,
         gradient_length=15,
         learning_rate=1e-3,
+        max_grad_norm=1.,
         loss_type="mse",
         device="cpu",
         # Distributed training parameters
@@ -55,6 +56,8 @@ class Distillation:
         self.num_learning_epochs = num_learning_epochs
         self.gradient_length = gradient_length
         self.learning_rate = learning_rate
+        self.max_grad_norm = max_grad_norm
+
 
         # initialize the loss function
         if loss_type == "mse":
@@ -127,6 +130,7 @@ class Distillation:
                     loss.backward()
                     if self.is_multi_gpu:
                         self.reduce_parameters()
+                    nn.utils.clip_grad_norm_(self.policy.student.parameters(), self.max_grad_norm)
                     self.optimizer.step()
                     self.policy.detach_hidden_states()
                     loss = 0
