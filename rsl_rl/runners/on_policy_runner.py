@@ -350,6 +350,10 @@ class OnPolicyRunner:
 
         str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 
+        # Upload video to wandb
+        if self.logger_type == "wandb" and not self.disable_logs:
+            self.writer.add_video_files(self.log_dir, fps=self.cfg["video_fps"], step=locs["it"])
+            
         if len(locs["rewbuffer"]) > 0:
             log_string = (
                 f"""{'#' * width}\n"""

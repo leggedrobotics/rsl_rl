@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-import os
+import os, pathlib, json
 from dataclasses import asdict
 from torch.utils.tensorboard import SummaryWriter
 
@@ -44,6 +44,7 @@ class WandbSummaryWriter(SummaryWriter):
             "Train/mean_reward/time": "Train/mean_reward_time",
             "Train/mean_episode_length/time": "Train/mean_episode_length_time",
         }
+        self.video_files = []
 
     def store_config(self, env_cfg, runner_cfg, alg_cfg, policy_cfg):
         wandb.config.update({"runner_cfg": runner_cfg})
@@ -75,6 +76,22 @@ class WandbSummaryWriter(SummaryWriter):
 
     def save_file(self, path, iter=None):
         wandb.save(path, base_path=os.path.dirname(path))
+
+    def add_video_files(self, log_dir: str, step: int, fps: int = 30):
+        # Check if there are video files in the video directory
+        videos_dir = os.path.join(log_dir, "videos")
+        if os.path.exists(videos_dir):
+            # append the new video files to the existing list
+            for video_file in os.listdir(videos_dir):
+                if video_file.endswith(".mp4") and video_file not in self.video_files:
+                    self.video_files.append(video_file)
+                    # add the new video file to wandb only if video file is not updating
+                    video_path = os.path.join(videos_dir, video_file)
+                    wandb.log(
+                        {"Video": wandb.Video(video_path, fps=fps, format="mp4")},
+                        step = step
+                    )
+
 
     """
     Private methods.
