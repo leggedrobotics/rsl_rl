@@ -352,7 +352,12 @@ class OnPolicyRunner:
 
         # Upload video to wandb
         if self.logger_type == "wandb" and not self.disable_logs:
-            self.writer.add_video_files(self.log_dir, fps=self.cfg["video_fps"], step=locs["it"])
+            # use video_fps from cfg if available or default to 30
+            if "video_fps" in self.cfg:
+                video_fps = self.cfg["video_fps"]
+            else:
+                video_fps = 30
+            self.writer.add_video_files(self.log_dir, fps=video_fps, step=locs["it"])
             
         if len(locs["rewbuffer"]) > 0:
             log_string = (
