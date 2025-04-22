@@ -79,18 +79,18 @@ class WandbSummaryWriter(SummaryWriter):
 
     def add_video_files(self, log_dir: str, step: int, fps: int = 30):
         # Check if there are video files in the video directory
-        videos_dir = os.path.join(log_dir, "videos", "train")
-        if os.path.exists(videos_dir):
+        if os.path.exists(log_dir):
             # append the new video files to the existing list
-            for video_file in os.listdir(videos_dir):
-                if video_file.endswith(".mp4") and video_file not in self.video_files:
-                    self.video_files.append(video_file)
-                    # add the new video file to wandb only if video file is not updating
-                    video_path = os.path.join(videos_dir, video_file)
-                    wandb.log(
-                        {"Video": wandb.Video(video_path, fps=fps, format="mp4")},
-                        step = step
-                    )
+            for root, dirs, files in os.walk(log_dir):
+                for video_file in files:
+                    if video_file.endswith(".mp4") and video_file not in self.video_files:
+                        self.video_files.append(video_file)
+                        # add the new video file to wandb only if video file is not updating
+                        video_path = os.path.join(root, video_file)
+                        wandb.log(
+                            {"Video": wandb.Video(video_path, fps=fps, format="mp4")},
+                            step = step
+                        )
 
 
     """
