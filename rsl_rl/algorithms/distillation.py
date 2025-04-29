@@ -30,6 +30,8 @@ class Distillation:
         device="cpu",
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        # Unused parameter
+        class_name: str = "Distillation",
     ):
         # device-related parameters
         self.device = device

@@ -68,7 +68,7 @@ class OnPolicyRunner:
             num_privileged_obs = num_obs
 
         # evaluate the policy class
-        policy_class = eval(self.policy_cfg.pop("class_name"))
+        policy_class = eval(self.policy_cfg.get("class_name"))
         policy: ActorCritic | ActorCriticRecurrent | StudentTeacher | StudentTeacherRecurrent = policy_class(
             num_obs, num_privileged_obs, self.env.num_actions, **self.policy_cfg
         ).to(self.device)
@@ -92,7 +92,7 @@ class OnPolicyRunner:
             self.alg_cfg["symmetry_cfg"]["_env"] = env
 
         # initialize algorithm
-        alg_class = eval(self.alg_cfg.pop("class_name"))
+        alg_class = eval(self.alg_cfg.get("class_name"))
         self.alg: PPO | Distillation = alg_class(
             policy, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
         )
