@@ -59,12 +59,13 @@ class PPO:
 
         # RND components
         if rnd_cfg is not None:
+            # Extract learning rate and remove it from the original dict
+            learning_rate = rnd_cfg.pop("learning_rate", 1e-3)
             # Create RND module
-            rnd_cfg_ = {k: v for k, v in rnd_cfg.items() if k != "learning_rate"}  # remove lr key for the RND class
-            self.rnd = RandomNetworkDistillation(device=self.device, **rnd_cfg_)
+            self.rnd = RandomNetworkDistillation(device=self.device, **rnd_cfg)
             # Create RND optimizer
             params = self.rnd.predictor.parameters()
-            self.rnd_optimizer = optim.Adam(params, lr=rnd_cfg.get("learning_rate", 1e-3))
+            self.rnd_optimizer = optim.Adam(params, lr=learning_rate)
         else:
             self.rnd = None
             self.rnd_optimizer = None
