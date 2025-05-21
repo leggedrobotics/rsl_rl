@@ -8,8 +8,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from rsl_rl.modules.normalizer import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
-from rsl_rl.utils import resolve_nn_activation
+from rsl_rl.networks import MLP, EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
 
 
 class RandomNetworkDistillation(nn.Module):
@@ -22,6 +21,7 @@ class RandomNetworkDistillation(nn.Module):
     def __init__(
         self,
         num_states: int,
+        obs_groups: dict,
         num_outputs: int,
         predictor_hidden_dims: list[int],
         target_hidden_dims: list[int],
@@ -76,6 +76,7 @@ class RandomNetworkDistillation(nn.Module):
 
         # Store parameters
         self.num_states = num_states
+        self.obs_groups = obs_groups
         self.num_outputs = num_outputs
         self.initial_weight = weight
         self.device = device
@@ -103,16 +104,17 @@ class RandomNetworkDistillation(nn.Module):
         else:
             self.weight_scheduler = None
         # Create network architecture
-        self.predictor = self._build_mlp(num_states, predictor_hidden_dims, num_outputs, activation).to(self.device)
-        self.target = self._build_mlp(num_states, target_hidden_dims, num_outputs, activation).to(self.device)
+        self.predictor = MLP(num_states, num_outputs, predictor_hidden_dims, activation).to(self.device)
+        self.target = MLP(num_states, num_outputs, target_hidden_dims, activation).to(self.device)
 
         # make target network not trainable
         self.target.eval()
 
-    def get_intrinsic_reward(self, rnd_state) -> tuple[torch.Tensor, torch.Tensor]:
-        # note: the counter is updated number of env steps per learning iteration
+    def get_intrinsic_reward(self, obs) -> torch.Tensor:
+        # Note: the counter is updated number of env steps per learning iteration
         self.update_counter += 1
-        # Normalize rnd state
+        # Extract the rnd state from the observation
+        rnd_state = self.get_rnd_state(obs)
         rnd_state = self.state_normalizer(rnd_state)
         # Obtain the embedding of the rnd state from the target and predictor networks
         target_embedding = self.target(rnd_state).detach()
@@ -130,7 +132,7 @@ class RandomNetworkDistillation(nn.Module):
         # Scale intrinsic reward
         intrinsic_reward *= self.weight
 
-        return intrinsic_reward, rnd_state
+        return intrinsic_reward
 
     def forward(self, *args, **kwargs):
         raise RuntimeError("Forward method is not implemented. Use get_intrinsic_reward instead.")
@@ -147,33 +149,17 @@ class RandomNetworkDistillation(nn.Module):
     def eval(self):
         return self.train(False)
 
-    """
-    Private Methods
-    """
+    def get_rnd_state(self, obs):
+        obs_list = []
+        for obs_group in self.obs_groups["rnd_state"]:
+            obs_list.append(obs[obs_group])
+        return torch.cat(obs_list, dim=-1)
 
-    @staticmethod
-    def _build_mlp(input_dims: int, hidden_dims: list[int], output_dims: int, activation_name: str = "elu"):
-        """Builds target and predictor networks"""
-
-        network_layers = []
-        # resolve hidden dimensions
-        # if dims is -1 then we use the number of observations
-        hidden_dims = [input_dims if dim == -1 else dim for dim in hidden_dims]
-        # resolve activation function
-        activation = resolve_nn_activation(activation_name)
-        # first layer
-        network_layers.append(nn.Linear(input_dims, hidden_dims[0]))
-        network_layers.append(activation)
-        # subsequent layers
-        for layer_index in range(len(hidden_dims)):
-            if layer_index == len(hidden_dims) - 1:
-                # last layer
-                network_layers.append(nn.Linear(hidden_dims[layer_index], output_dims))
-            else:
-                # hidden layers
-                network_layers.append(nn.Linear(hidden_dims[layer_index], hidden_dims[layer_index + 1]))
-                network_layers.append(activation)
-        return nn.Sequential(*network_layers)
+    def update_normalization(self, obs):
+        # Normalize the state
+        if self.state_normalization:
+            rnd_state = self.get_rnd_state(obs)
+            self.state_normalizer.update(rnd_state)
 
     """
     Different weight schedules.
@@ -194,3 +180,30 @@ class RandomNetworkDistillation(nn.Module):
             return self.initial_weight + (final_value - self.initial_weight) * (step - initial_step) / (
                 final_step - initial_step
             )
+
+
+def resolve_rnd_config(alg_cfg, obs, obs_groups, env):
+    """Resolve the RND configuration.
+
+    Args:
+        alg_cfg: The algorithm configuration dictionary.
+        obs: The observation dictionary.
+        obs_groups: The observation groups dictionary.
+        env: The environment.
+
+    Returns:
+        The resolved algorithm configuration dictionary.
+    """
+    # resolve dimension of rnd gated state
+    if "rnd_cfg" in alg_cfg and alg_cfg["rnd_cfg"] is not None:
+        # get dimension of rnd gated state
+        num_rnd_state = 0
+        for obs_group in obs_groups["rnd_state"]:
+            assert len(obs[obs_group].shape) == 2, "The RND module only supports 1D observations."
+            num_rnd_state += obs[obs_group].shape[-1]
+        # add rnd gated state to config
+        alg_cfg["rnd_cfg"]["num_states"] = num_rnd_state
+        alg_cfg["rnd_cfg"]["obs_groups"] = obs_groups
+        # scale down the rnd weight with timestep
+        alg_cfg["rnd_cfg"]["weight"] *= env.unwrapped.step_dt
+    return alg_cfg

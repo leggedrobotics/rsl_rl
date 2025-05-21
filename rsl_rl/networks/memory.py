@@ -5,13 +5,18 @@
 
 from __future__ import annotations
 
-import torch
 import torch.nn as nn
 
 from rsl_rl.utils import unpad_trajectories
 
 
-class Memory(torch.nn.Module):
+class Memory(nn.Module):
+    """Memory module for recurrent networks.
+
+    This module is used to store the hidden states of the policy.
+    Currently only supports GRU and LSTM.
+    """
+
     def __init__(self, input_size, type="lstm", num_layers=1, hidden_size=256):
         super().__init__()
         # RNN

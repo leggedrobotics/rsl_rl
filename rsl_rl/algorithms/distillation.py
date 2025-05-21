@@ -3,14 +3,12 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-# torch
 import torch
 import torch.nn as nn
-import torch.optim as optim
 
-# rsl-rl
 from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent
 from rsl_rl.storage import RolloutStorage
+from rsl_rl.utils import resolve_optimizer
 
 
 class Distillation:
@@ -27,6 +25,7 @@ class Distillation:
         learning_rate=1e-3,
         max_grad_norm=None,
         loss_type="mse",
+        optimizer="adam",
         device="cpu",
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
@@ -42,13 +41,15 @@ class Distillation:
             self.gpu_global_rank = 0
             self.gpu_world_size = 1
 
-        self.rnd = None  # TODO: remove when runner has a proper base class
-
         # distillation components
         self.policy = policy
         self.policy.to(self.device)
         self.storage = None  # initialized later
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
+
+        # initialize the optimizer
+        self.optimizer = resolve_optimizer(optimizer)(self.policy.parameters(), lr=learning_rate)
+
+        # initialize the transition
         self.transition = RolloutStorage.Transition()
         self.last_hidden_states = None
 
@@ -59,40 +60,40 @@ class Distillation:
         self.max_grad_norm = max_grad_norm
 
         # initialize the loss function
-        if loss_type == "mse":
-            self.loss_fn = nn.functional.mse_loss
-        elif loss_type == "huber":
-            self.loss_fn = nn.functional.huber_loss
+        loss_fn_dict = {
+            "mse": nn.functional.mse_loss,
+            "huber": nn.functional.huber_loss,
+        }
+        if loss_type in loss_fn_dict:
+            self.loss_fn = loss_fn_dict[loss_type]
         else:
-            raise ValueError(f"Unknown loss type: {loss_type}. Supported types are: mse, huber")
+            raise ValueError(f"Unknown loss type: {loss_type}. Supported types are: {list(loss_fn_dict.keys())}")
 
         self.num_updates = 0
 
-    def init_storage(
-        self, training_type, num_envs, num_transitions_per_env, student_obs_shape, teacher_obs_shape, actions_shape
-    ):
+    def init_storage(self, training_type, num_envs, num_transitions_per_env, obs, actions_shape):
         # create rollout storage
         self.storage = RolloutStorage(
             training_type,
             num_envs,
             num_transitions_per_env,
-            student_obs_shape,
-            teacher_obs_shape,
+            obs,
             actions_shape,
-            None,
             self.device,
         )
 
-    def act(self, obs, teacher_obs):
+    def act(self, obs):
         # compute the actions
         self.transition.actions = self.policy.act(obs).detach()
-        self.transition.privileged_actions = self.policy.evaluate(teacher_obs).detach()
+        self.transition.privileged_actions = self.policy.evaluate(obs).detach()
         # record the observations
         self.transition.observations = obs
-        self.transition.privileged_observations = teacher_obs
         return self.transition.actions
 
-    def process_env_step(self, rewards, dones, infos):
+    def process_env_step(self, obs, rewards, dones, extras):
+        # update the normalizers
+        self.policy.update_normalization(obs)
+
         # record the rewards and dones
         self.transition.rewards = rewards
         self.transition.dones = dones
@@ -110,7 +111,7 @@ class Distillation:
         for epoch in range(self.num_learning_epochs):
             self.policy.reset(hidden_states=self.last_hidden_states)
             self.policy.detach_hidden_states()
-            for obs, _, _, privileged_actions, dones in self.storage.generator():
+            for obs, _, privileged_actions, dones in self.storage.generator():
 
                 # inference the student for gradient computation
                 actions = self.policy.act_inference(obs)

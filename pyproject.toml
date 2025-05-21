@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rsl-rl-lib"
-version = "2.3.3"
+version = "3.0.0"
 keywords = ["reinforcement-learning", "isaac", "leggedrobotics", "rl-pytorch"]
 maintainers = [
   { name="Clemens Schwarke", email="cschwarke@ethz.ch" },
@@ -26,8 +26,9 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "torch>=1.10.0",
+    "torch>=2.6.0",
     "torchvision>=0.5.0",
+    "tensordict>=0.7.0",
     "numpy>=1.16.4",
     "GitPython",
     "onnx",
@@ -46,7 +47,7 @@ include = ["rsl_rl*"]
 
 [tool.isort]
 
-py_version = 37
+py_version = 38
 line_length = 120
 group_by_package = true
 
@@ -79,7 +80,7 @@ known_first_party = "rsl_rl"
 include = ["rsl_rl"]
 
 typeCheckingMode = "basic"
-pythonVersion = "3.7"
+pythonVersion = "3.8"
 pythonPlatform = "Linux"
 enableTypeIgnoreComments = true
 

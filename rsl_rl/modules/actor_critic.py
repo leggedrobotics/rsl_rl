@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 
-from rsl_rl.utils import resolve_nn_activation
+from rsl_rl.networks import MLP, EmpiricalNormalization
 
 
 class ActorCritic(nn.Module):
@@ -17,9 +17,11 @@ class ActorCritic(nn.Module):
 
     def __init__(
         self,
-        num_actor_obs,
-        num_critic_obs,
+        obs,
+        obs_groups,
         num_actions,
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],
         activation="elu",
@@ -33,35 +35,36 @@ class ActorCritic(nn.Module):
                 + str([key for key in kwargs.keys()])
             )
         super().__init__()
-        activation = resolve_nn_activation(activation)
 
-        mlp_input_dim_a = num_actor_obs
-        mlp_input_dim_c = num_critic_obs
-        # Policy
-        actor_layers = []
-        actor_layers.append(nn.Linear(mlp_input_dim_a, actor_hidden_dims[0]))
-        actor_layers.append(activation)
-        for layer_index in range(len(actor_hidden_dims)):
-            if layer_index == len(actor_hidden_dims) - 1:
-                actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], num_actions))
-            else:
-                actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], actor_hidden_dims[layer_index + 1]))
-                actor_layers.append(activation)
-        self.actor = nn.Sequential(*actor_layers)
+        # get the observation dimensions
+        self.obs_groups = obs_groups
+        num_actor_obs = 0
+        for obs_group in obs_groups["policy"]:
+            assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
+            num_actor_obs += obs[obs_group].shape[-1]
+        num_critic_obs = 0
+        for obs_group in obs_groups["critic"]:
+            assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
+            num_critic_obs += obs[obs_group].shape[-1]
 
-        # Value function
-        critic_layers = []
-        critic_layers.append(nn.Linear(mlp_input_dim_c, critic_hidden_dims[0]))
-        critic_layers.append(activation)
-        for layer_index in range(len(critic_hidden_dims)):
-            if layer_index == len(critic_hidden_dims) - 1:
-                critic_layers.append(nn.Linear(critic_hidden_dims[layer_index], 1))
-            else:
-                critic_layers.append(nn.Linear(critic_hidden_dims[layer_index], critic_hidden_dims[layer_index + 1]))
-                critic_layers.append(activation)
-        self.critic = nn.Sequential(*critic_layers)
-
+        # actor
+        self.actor = MLP(num_actor_obs, num_actions, actor_hidden_dims, activation)
+        # actor observation normalization
+        self.actor_obs_normalization = actor_obs_normalization
+        if actor_obs_normalization:
+            self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs)
+        else:
+            self.actor_obs_normalizer = torch.nn.Identity()
         print(f"Actor MLP: {self.actor}")
+
+        # critic
+        self.critic = MLP(num_critic_obs, 1, critic_hidden_dims, activation)
+        # critic observation normalization
+        self.critic_obs_normalization = critic_obs_normalization
+        if critic_obs_normalization:
+            self.critic_obs_normalizer = EmpiricalNormalization(num_critic_obs)
+        else:
+            self.critic_obs_normalizer = torch.nn.Identity()
         print(f"Critic MLP: {self.critic}")
 
         # Action noise
@@ -77,14 +80,6 @@ class ActorCritic(nn.Module):
         self.distribution = None
         # disable args validation for speedup
         Normal.set_default_validate_args(False)
-
-    @staticmethod
-    # not used at the moment
-    def init_weights(sequential, scales):
-        [
-            torch.nn.init.orthogonal_(module.weight, gain=scales[idx])
-            for idx, module in enumerate(mod for mod in sequential if isinstance(mod, nn.Linear))
-        ]
 
     def reset(self, dones=None):
         pass
@@ -104,9 +99,9 @@ class ActorCritic(nn.Module):
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
-    def update_distribution(self, observations):
+    def update_distribution(self, obs):
         # compute mean
-        mean = self.actor(observations)
+        mean = self.actor(obs)
         # compute standard deviation
         if self.noise_std_type == "scalar":
             std = self.std.expand_as(mean)
@@ -117,20 +112,44 @@ class ActorCritic(nn.Module):
         # create distribution
         self.distribution = Normal(mean, std)
 
-    def act(self, observations, **kwargs):
-        self.update_distribution(observations)
+    def act(self, obs, **kwargs):
+        obs = self.get_actor_obs(obs)
+        obs = self.actor_obs_normalizer(obs)
+        self.update_distribution(obs)
         return self.distribution.sample()
+
+    def act_inference(self, obs):
+        obs = self.get_actor_obs(obs)
+        obs = self.actor_obs_normalizer(obs)
+        return self.actor(obs)
+
+    def evaluate(self, obs, **kwargs):
+        obs = self.get_critic_obs(obs)
+        obs = self.critic_obs_normalizer(obs)
+        return self.critic(obs)
+
+    def get_actor_obs(self, obs):
+        obs_list = []
+        for obs_group in self.obs_groups["policy"]:
+            obs_list.append(obs[obs_group])
+        return torch.cat(obs_list, dim=-1)
+
+    def get_critic_obs(self, obs):
+        obs_list = []
+        for obs_group in self.obs_groups["critic"]:
+            obs_list.append(obs[obs_group])
+        return torch.cat(obs_list, dim=-1)
 
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def act_inference(self, observations):
-        actions_mean = self.actor(observations)
-        return actions_mean
-
-    def evaluate(self, critic_observations, **kwargs):
-        value = self.critic(critic_observations)
-        return value
+    def update_normalization(self, obs):
+        if self.actor_obs_normalization:
+            actor_obs = self.get_actor_obs(obs)
+            self.actor_obs_normalizer.update(actor_obs)
+        if self.critic_obs_normalization:
+            critic_obs = self.get_critic_obs(obs)
+            self.critic_obs_normalizer.update(critic_obs)
 
     def load_state_dict(self, state_dict, strict=True):
         """Load the parameters of the actor-critic model.
@@ -146,4 +165,4 @@ class ActorCritic(nn.Module):
         """
 
         super().load_state_dict(state_dict, strict=strict)
-        return True
+        return True  # training resumes

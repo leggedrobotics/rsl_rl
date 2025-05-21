@@ -1,0 +1,76 @@
+runner:
+  class_name: OnPolicyRunner
+  # -- general
+  num_steps_per_env: 24  # number of steps per environment per iteration
+  max_iterations: 1500  # number of policy updates
+  seed: 1
+  # -- observations
+  obs_groups: {"policy": ["policy"], "critic": ["policy", "privileged"]} # maps observation groups to types. See `vec_env.py` for more information
+  # -- logging parameters
+  save_interval: 50  # check for potential saves every `save_interval` iterations
+  experiment_name: walking_experiment
+  run_name: ""
+  # -- logging writer
+  logger: tensorboard  # tensorboard, neptune, wandb
+  neptune_project: legged_gym
+  wandb_project: legged_gym
+
+  # -- policy
+  policy:
+    class_name: ActorCritic
+    activation: elu
+    actor_obs_normalization: false
+    critic_obs_normalization: false
+    actor_hidden_dims: [256, 256, 256]
+    critic_hidden_dims: [256, 256, 256]
+    init_noise_std: 1.0
+    noise_std_type: "scalar"  # 'scalar' or 'log'
+
+  # -- algorithm
+  algorithm:
+    class_name: PPO
+    # -- training
+    learning_rate: 0.001
+    num_learning_epochs: 5
+    num_mini_batches: 4  # mini batch size = num_envs * num_steps / num_mini_batches
+    schedule: adaptive  # adaptive, fixed
+    # -- value function
+    value_loss_coef: 1.0
+    clip_param: 0.2
+    use_clipped_value_loss: true
+    # -- surrogate loss
+    desired_kl: 0.01
+    entropy_coef: 0.01
+    gamma: 0.99
+    lam: 0.95
+    max_grad_norm: 1.0
+    # -- miscellaneous
+    normalize_advantage_per_mini_batch: false
+
+    # -- random network distillation
+    rnd_cfg:
+        weight: 0.0  # initial weight of the RND reward
+        weight_schedule: null # note: this is a dictionary with a required key called "mode". Please check the RND module for more information
+        reward_normalization: false  # whether to normalize RND reward
+        # -- learning parameters
+        learning_rate: 0.001  # learning rate for RND
+        # -- network parameters
+        num_outputs: 1  # number of outputs of RND network. Note: if -1, then the network will use dimensions of the observation
+        predictor_hidden_dims: [-1] # hidden dimensions of predictor network
+        target_hidden_dims: [-1]  # hidden dimensions of target network
+
+    # -- symmetry augmentation
+    symmetry_cfg:
+      use_data_augmentation: true  # this adds symmetric trajectories to the batch
+      use_mirror_loss: false  # this adds symmetry loss term to the loss function
+      data_augmentation_func: null # string containing the module and function name to import
+      # Example: "legged_gym.envs.locomotion.anymal_c.symmetry:get_symmetric_states"
+      #
+      # .. code-block:: python
+      #
+      #     @torch.no_grad()
+      #     def get_symmetric_states(
+      #        obs: Optional[torch.Tensor] = None, actions: Optional[torch.Tensor] = None, cfg: "BaseEnvCfg" = None, obs_type: str = "policy"
+      #     ) -> Tuple[torch.Tensor, torch.Tensor]:
+      #
+      mirror_loss_coeff: 0.0 #coefficient for symmetry loss term. If 0, no symmetry loss is used

@@ -10,65 +10,122 @@ import importlib
 import os
 import pathlib
 import torch
+from tensordict import TensorDict
 from typing import Callable
 
 
 def resolve_nn_activation(act_name: str) -> torch.nn.Module:
-    if act_name == "elu":
-        return torch.nn.ELU()
-    elif act_name == "selu":
-        return torch.nn.SELU()
-    elif act_name == "relu":
-        return torch.nn.ReLU()
-    elif act_name == "crelu":
-        return torch.nn.CELU()
-    elif act_name == "lrelu":
-        return torch.nn.LeakyReLU()
-    elif act_name == "tanh":
-        return torch.nn.Tanh()
-    elif act_name == "sigmoid":
-        return torch.nn.Sigmoid()
-    elif act_name == "identity":
-        return torch.nn.Identity()
-    else:
-        raise ValueError(f"Invalid activation function '{act_name}'.")
+    """Resolves the activation function from the name.
 
+    Args:
+        act_name: The name of the activation function.
 
-def split_and_pad_trajectories(tensor, dones):
-    """Splits trajectories at done indices. Then concatenates them and pads with zeros up to the length og the longest trajectory.
-    Returns masks corresponding to valid parts of the trajectories
-    Example:
-        Input: [ [a1, a2, a3, a4 | a5, a6],
-                 [b1, b2 | b3, b4, b5 | b6]
-                ]
+    Returns:
+        The activation function.
 
-        Output:[ [a1, a2, a3, a4], | [  [True, True, True, True],
-                 [a5, a6, 0, 0],   |    [True, True, False, False],
-                 [b1, b2, 0, 0],   |    [True, True, False, False],
-                 [b3, b4, b5, 0],  |    [True, True, True, False],
-                 [b6, 0, 0, 0]     |    [True, False, False, False],
-                ]                  | ]
-
-    Assumes that the inputy has the following dimension order: [time, number of envs, additional dimensions]
+    Raises:
+        ValueError: If the activation function is not found.
     """
+    act_dict = {
+        "elu": torch.nn.ELU(),
+        "selu": torch.nn.SELU(),
+        "relu": torch.nn.ReLU(),
+        "crelu": torch.nn.CELU(),
+        "lrelu": torch.nn.LeakyReLU(),
+        "tanh": torch.nn.Tanh(),
+        "sigmoid": torch.nn.Sigmoid(),
+        "softplus": torch.nn.Softplus(),
+        "gelu": torch.nn.GELU(),
+        "swish": torch.nn.SiLU(),
+        "mish": torch.nn.Mish(),
+        "identity": torch.nn.Identity(),
+    }
+
+    act_name = act_name.lower()
+    if act_name in act_dict:
+        return act_dict[act_name]
+    else:
+        raise ValueError(f"Invalid activation function '{act_name}'. Valid activations are: {list(act_dict.keys())}")
+
+
+def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
+    """Resolves the optimizer from the name.
+
+    Args:
+        optimizer_name: The name of the optimizer.
+
+    Returns:
+        The optimizer.
+
+    Raises:
+        ValueError: If the optimizer is not found.
+    """
+    optimizer_dict = {
+        "adam": torch.optim.Adam,
+        "adamw": torch.optim.AdamW,
+        "sgd": torch.optim.SGD,
+        "rmsprop": torch.optim.RMSprop,
+    }
+
+    optimizer_name = optimizer_name.lower()
+    if optimizer_name in optimizer_dict:
+        return optimizer_dict[optimizer_name]
+    else:
+        raise ValueError(f"Invalid optimizer '{optimizer_name}'. Valid optimizers are: {list(optimizer_dict.keys())}")
+
+
+def split_and_pad_trajectories(
+    tensor: torch.Tensor | TensorDict, dones: torch.Tensor
+) -> tuple[torch.Tensor | TensorDict, torch.Tensor]:
+    """Splits trajectories at done indices. Then concatenates them and pads with zeros up to the length of the longest
+    trajectory. Returns masks corresponding to valid parts of the trajectories.
+
+    Example:
+        Input: [[a1, a2, a3, a4 | a5, a6],
+                 [b1, b2 | b3, b4, b5 | b6]]
+
+        Output:[[a1, a2, a3, a4], | [[True, True, True, True],
+                [a5, a6, 0, 0],   |  [True, True, False, False],
+                [b1, b2, 0, 0],   |  [True, True, False, False],
+                [b3, b4, b5, 0],  |  [True, True, True, False],
+                [b6, 0, 0, 0]]    |  [True, False, False, False]]
+
+    Assumes that the input has the following order of dimensions: [time, number of envs, additional dimensions]
+    """
+
     dones = dones.clone()
     dones[-1] = 1
     # Permute the buffers to have order (num_envs, num_transitions_per_env, ...), for correct reshaping
     flat_dones = dones.transpose(1, 0).reshape(-1, 1)
-
     # Get length of trajectory by counting the number of successive not done elements
     done_indices = torch.cat((flat_dones.new_tensor([-1], dtype=torch.int64), flat_dones.nonzero()[:, 0]))
     trajectory_lengths = done_indices[1:] - done_indices[:-1]
     trajectory_lengths_list = trajectory_lengths.tolist()
     # Extract the individual trajectories
-    trajectories = torch.split(tensor.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
-    # add at least one full length trajectory
-    trajectories = trajectories + (torch.zeros(tensor.shape[0], *tensor.shape[2:], device=tensor.device),)
-    # pad the trajectories to the length of the longest trajectory
-    padded_trajectories = torch.nn.utils.rnn.pad_sequence(trajectories)
-    # remove the added tensor
-    padded_trajectories = padded_trajectories[:, :-1]
-
+    if isinstance(tensor, TensorDict):
+        padded_trajectories = {}
+        for k, v in tensor.items():
+            # split the tensor into trajectories
+            trajectories = torch.split(v.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
+            # add at least one full length trajectory
+            trajectories = trajectories + (torch.zeros(v.shape[0], *v.shape[2:], device=v.device),)
+            # pad the trajectories to the length of the longest trajectory
+            padded_trajectories[k] = torch.nn.utils.rnn.pad_sequence(trajectories)
+            # remove the added tensor
+            padded_trajectories[k] = padded_trajectories[k][:, :-1]
+        padded_trajectories = TensorDict(
+            padded_trajectories, batch_size=[tensor.batch_size[0], len(trajectory_lengths_list)]
+        )
+    else:
+        # split the tensor into trajectories
+        trajectories = torch.split(tensor.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
+        # add at least one full length trajectory
+        trajectories = trajectories + (torch.zeros(tensor.shape[0], *tensor.shape[2:], device=tensor.device),)
+        # pad the trajectories to the length of the longest trajectory
+        padded_trajectories = torch.nn.utils.rnn.pad_sequence(trajectories)
+        # remove the added tensor
+        padded_trajectories = padded_trajectories[:, :-1]
+    # create masks for the valid parts of the trajectories
     trajectory_masks = trajectory_lengths > torch.arange(0, tensor.shape[0], device=tensor.device).unsqueeze(1)
     return padded_trajectories, trajectory_masks
 
@@ -115,14 +172,14 @@ def string_to_callable(name: str) -> Callable:
     """Resolves the module and function names to return the function.
 
     Args:
-        name (str): The function name. The format should be 'module:attribute_name'.
+        name: The function name. The format should be 'module:attribute_name'.
 
     Raises:
         ValueError: When the resolved attribute is not a function.
         ValueError: When unable to resolve the attribute.
 
     Returns:
-        Callable: The function loaded from the module.
+        The function loaded from the module.
     """
     try:
         mod_name, attr_name = name.split(":")
@@ -139,3 +196,83 @@ def string_to_callable(name: str) -> Callable:
             f" 'module:attribute_name'\nWhile processing input '{name}', received the error:\n {e}."
         )
         raise ValueError(msg)
+
+
+def resolve_obs_types(
+    obs: TensorDict, obs_groups: dict[str, list[str]], default_types: list[str]
+) -> dict[str, list[str]]:
+    """Validates the observation types configuration and defaults missing observation types.
+
+    The input is an observation dictionary `obs` containing observation groups and a configuration dictionary
+    `obs_groups` where the keys are the observation types and the values are lists of observation groups. A detailed
+    description is found in `rsl_rl/env/vec_env.py`.
+
+    The configuration dictionary could for example look like:
+        {
+            "policy": ["group_1", "group_2"],
+            "critic": ["group_1", "group_3"]
+        }
+
+    This means that the 'policy' type will contain the observations "group_1" and "group_2" and the 'critic' type will
+    contain the observations "group_1" and "group_3". The function will check that all the observations in the 'policy'
+    and 'critic' groups are present in the observation dictionary from the environment.
+
+    Additionally, if one of the `default_types`, e.g. "critic", is not present in the configuration dictionary,
+    this function will:
+        1. Check if a group with the same name exists in the observations and assign this group to the observation type.
+        2. If not, it will assign the observations from the 'policy' type to the observation type.
+
+    Args:
+        obs: Observations from the environment in the form of a dictionary.
+        obs_groups: Observation types configuration.
+        default_types: Reserved type names used by the algorithm (besides 'policy').
+            If not provided in 'obs_groups', a default behavior gets triggered.
+
+    Returns:
+        The resolved observation groups.
+
+    Raises:
+        ValueError: If the "policy" observation type is not present in the provided observation groups configuration.
+        ValueError: If any observation type is an empty list.
+        ValueError: If any observation type contains an observation term that is not present in the observations.
+    """
+    # check if policy observation type exists
+    if "policy" not in obs_groups.keys():
+        raise ValueError(
+            "The observation type configuration dictionary must contain the 'policy' key."
+            f" Found keys: {list(obs_groups.keys())}"
+        )
+
+    # check all observation types for valid observation groups
+    for type, groups in obs_groups.items():
+        # check if the list is empty
+        if len(groups) == 0:
+            msg = f"The '{type}' key in the 'obs_groups' dictionary can not be an empty list."
+            if type in default_types:
+                if type not in obs:
+                    msg += " Consider removing the key to default to the observations used for the 'policy' type."
+                else:
+                    msg += f" Consider removing the key to default to the observation '{type}' from the environment."
+            raise ValueError(msg)
+        # check groups exist inside the observations from the environment
+        for group in groups:
+            if group not in obs:
+                raise ValueError(
+                    f"Observation '{group}' in observation type '{type}' not found in the observations from the"
+                    f" environment. Available observations from the environment: {list(obs.keys())}"
+                )
+
+    # fill missing observation types
+    for default_type in default_types:
+        if default_type not in obs_groups.keys():
+            if default_type in obs:
+                obs_groups[default_type] = [default_type]
+            else:
+                obs_groups[default_type] = obs_groups["policy"].copy()
+
+    # print the final parsed observation types
+    print("Resolved observation types: ")
+    for type, groups in obs_groups.items():
+        print("\t", type, ": ", groups)
+
+    return obs_groups
