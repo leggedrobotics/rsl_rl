@@ -16,7 +16,7 @@ import rsl_rl
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, resolve_rnd_config, resolve_symmetry_config
-from rsl_rl.utils import resolve_obs_types, store_code_state
+from rsl_rl.utils import resolve_obs_groups, store_code_state
 
 
 class OnPolicyRunner:
@@ -38,10 +38,10 @@ class OnPolicyRunner:
 
         # query observations from environment for algorithm construction
         obs = self.env.get_observations()
-        default_types = ["critic"]
+        default_sets = ["critic"]
         if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
-            default_types.append("rnd_state")
-        self.cfg["obs_groups"] = resolve_obs_types(obs, self.cfg["obs_groups"], default_types)
+            default_sets.append("rnd_state")
+        self.cfg["obs_groups"] = resolve_obs_groups(obs, self.cfg["obs_groups"], default_sets)
 
         # create the algorithm
         self.alg = self._construct_algorithm(obs)

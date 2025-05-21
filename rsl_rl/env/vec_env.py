@@ -67,28 +67,32 @@ class VecEnv(ABC):
                 dones (torch.Tensor): Done flags from the environment. Shape: (num_envs,)
                 extras (dict): Extra information from the environment.
 
-        Notes:
-            Observations:
-            The observations TensorDict usually contains multiple observation groups. The `obs_groups` dictionary of the
-            runner configuration specifies which observation groups are used for which purpose, i.e., it maps the
-            available observation groups to observation types. The observation types (keys of the `obs_groups`
-            dictionary) currently used by rsl_rl are:
-                - "policy": Specified observation groups are used as input to the policy/actor network.
-                - "critic": Specified observation groups are used as input to the critic network.
-                - "teacher": Specified observation groups are used as input to the teacher network.
-                - "rnd_state": Specified observation groups are used as input to the RND network.
-            The "policy" observation type is always required. The other observation types are optional and if not
-            provided, the observation groups specified for the "policy" observation type are used.
+        Observations:
 
-            Extras:
+            The observations TensorDict usually contains multiple observation groups. The `obs_groups`
+            dictionary of the runner configuration specifies which observation groups are used for which
+            purpose, i.e., it maps the available observation groups to observation sets. The observation sets
+            (keys of the `obs_groups` dictionary) currently used by rsl_rl are:
+
+            - "policy": Specified observation groups are used as input to the actor/student network.
+            - "critic": Specified observation groups are used as input to the critic network.
+            - "teacher": Specified observation groups are used as input to the teacher network.
+            - "rnd_state": Specified observation groups are used as input to the RND network.
+
+            Incomplete or incorrect configurations are handled in the `resolve_obs_groups()` function in
+            `rsl_rl/utils/utils.py`.
+
+        Extras:
+
             The extras dictionary includes metrics such as the episode reward, episode length, etc. The following
             dictionary keys are used by rsl_rl:
-                - "time_outs" (torch.Tensor): Timeouts for the environments. These correspond to terminations that
-                    happen due to time limits and not due to the environment reaching a terminal state. This is useful
-                    for environments that have a fixed episode length.
 
-                - "log" (dict[str, float | torch.Tensor]): Additional information for logging and debugging purposes.
-                    The key should be a string and start with "/" for namespacing. The value can be a scalar or a
-                    tensor. If it is a tensor, the mean of the tensor is used for logging.
+            - "time_outs" (torch.Tensor): Timeouts for the environments. These correspond to terminations that
+               happen due to time limits and not due to the environment reaching a terminal state. This is useful
+               for environments that have a fixed episode length.
+
+            - "log" (dict[str, float | torch.Tensor]): Additional information for logging and debugging purposes.
+               The key should be a string and start with "/" for namespacing. The value can be a scalar or a
+               tensor. If it is a tensor, the mean of the tensor is used for logging.
         """
         raise NotImplementedError
