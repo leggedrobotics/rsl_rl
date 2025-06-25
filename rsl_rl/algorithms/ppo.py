@@ -39,6 +39,7 @@ class PPO:
         desired_kl=0.01,
         device="cpu",
         normalize_advantage_per_mini_batch=False,
+        reshuffle_each_epoch=False,
         # RND parameters
         rnd_cfg: dict | None = None,
         # Symmetry parameters
@@ -114,6 +115,7 @@ class PPO:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.reshuffle_each_epoch = reshuffle_each_epoch
 
     def init_storage(
         self, training_type, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, actions_shape
@@ -204,7 +206,9 @@ class PPO:
         if self.policy.is_recurrent:
             generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
-            generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+            generator = self.storage.mini_batch_generator(
+                self.num_mini_batches, self.num_learning_epochs, self.reshuffle_each_epoch
+            )
 
         # iterate over batches
         for (

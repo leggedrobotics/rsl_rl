@@ -181,7 +181,7 @@ class RolloutStorage:
             ], self.dones[i]
 
     # for reinforcement learning with feedforward networks
-    def mini_batch_generator(self, num_mini_batches, num_epochs=8):
+    def mini_batch_generator(self, num_mini_batches, num_epochs=8, reshuffle_each_epoch: bool = False):
         if self.training_type != "rl":
             raise ValueError("This function is only available for reinforcement learning training.")
         batch_size = self.num_envs * self.num_transitions_per_env
@@ -210,6 +210,9 @@ class RolloutStorage:
             rnd_state = self.rnd_state.flatten(0, 1)
 
         for epoch in range(num_epochs):
+            if reshuffle_each_epoch and epoch > 0:
+                indices = torch.randperm(num_mini_batches * mini_batch_size, requires_grad=False, device=self.device)
+
             for i in range(num_mini_batches):
                 # Select the indices for the mini-batch
                 start = i * mini_batch_size
