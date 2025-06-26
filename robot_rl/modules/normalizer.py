@@ -71,7 +71,7 @@ class EmpiricalNormalization(nn.Module):
         self._var += rate * (var_x - self._var + delta_mean * (mean_x - self._mean))
         self._std = torch.sqrt(self._var)
 
-    @torch.jit.unused
+    # @torch.jit.unused
     def inverse(self, y):
         return y * (self._std + self.eps) + self._mean
 

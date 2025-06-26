@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import torch
 
-from rsl_rl.utils import split_and_pad_trajectories
+from robot_rl.utils import split_and_pad_trajectories
 
 
 class RolloutStorage:
@@ -25,6 +25,7 @@ class RolloutStorage:
             self.action_sigma = None
             self.hidden_states = None
             self.rnd_state = None
+            self.estimate_observations = None
 
         def clear(self):
             self.__init__()
@@ -38,6 +39,7 @@ class RolloutStorage:
         privileged_obs_shape,
         actions_shape,
         rnd_state_shape=None,
+        estimator_shape=None,
         device="cpu",
     ):
         # store inputs
@@ -49,6 +51,7 @@ class RolloutStorage:
         self.privileged_obs_shape = privileged_obs_shape
         self.rnd_state_shape = rnd_state_shape
         self.actions_shape = actions_shape
+        self.estimator_shape = estimator_shape
 
         # Core
         self.observations = torch.zeros(num_transitions_per_env, num_envs, *obs_shape, device=self.device)
@@ -78,6 +81,10 @@ class RolloutStorage:
         # For RND
         if rnd_state_shape is not None:
             self.rnd_state = torch.zeros(num_transitions_per_env, num_envs, *rnd_state_shape, device=self.device)
+        
+        # For Estimation
+        if estimator_shape is not None:
+            self.estimator_state = torch.zeros(num_transitions_per_env, num_envs, *estimator_shape, device=self.device)
 
         # For RNN networks
         self.saved_hidden_states_a = None
@@ -113,6 +120,10 @@ class RolloutStorage:
         # For RND
         if self.rnd_state_shape is not None:
             self.rnd_state[self.step].copy_(transition.rnd_state)
+
+        # For Estimation
+        if self.estimator_shape is not None:
+            self.estimator_state[self.step].copy_(transition.estimate_observations)
 
         # For RNN networks
         self._save_hidden_states(transition.hidden_states)
@@ -208,6 +219,10 @@ class RolloutStorage:
         # For RND
         if self.rnd_state_shape is not None:
             rnd_state = self.rnd_state.flatten(0, 1)
+        
+        # For Estimation
+        if self.estimator_shape is not None:
+            estimate = self.estimator_state.flatten(0, 1)
 
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
@@ -235,12 +250,18 @@ class RolloutStorage:
                     rnd_state_batch = rnd_state[batch_idx]
                 else:
                     rnd_state_batch = None
+                
+                # -- For Estimation
+                if self.estimator_shape is not None:
+                    estimate_batch = estimate[batch_idx]
+                else:
+                    estimate_batch = None
 
                 # yield the mini-batch
                 yield obs_batch, privileged_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (
                     None,
                     None,
-                ), None, rnd_state_batch
+                ), None, rnd_state_batch, estimate_batch
 
     # for reinfrocement learning with recurrent networks
     def recurrent_mini_batch_generator(self, num_mini_batches, num_epochs=8):
@@ -256,6 +277,11 @@ class RolloutStorage:
             padded_rnd_state_trajectories, _ = split_and_pad_trajectories(self.rnd_state, self.dones)
         else:
             padded_rnd_state_trajectories = None
+        
+        if self.estimator_shape is not None:
+            padded_estimate_trajectories, _ = split_and_pad_trajectories(self.estimator_state, self.dones)
+        else:
+            padded_estimate_trajectories = None
 
         mini_batch_size = self.num_envs // num_mini_batches
         for ep in range(num_epochs):
@@ -279,6 +305,11 @@ class RolloutStorage:
                     rnd_state_batch = padded_rnd_state_trajectories[:, first_traj:last_traj]
                 else:
                     rnd_state_batch = None
+                
+                if padded_estimate_trajectories is not None:
+                    estimate_batch = padded_estimate_trajectories[:, first_traj:last_traj]
+                else:
+                    estimate_batch = None
 
                 actions_batch = self.actions[:, start:stop]
                 old_mu_batch = self.mu[:, start:stop]
@@ -311,6 +342,6 @@ class RolloutStorage:
                 yield obs_batch, privileged_obs_batch, actions_batch, values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (
                     hid_a_batch,
                     hid_c_batch,
-                ), masks_batch, rnd_state_batch
+                ), masks_batch, rnd_state_batch, estimate_batch
 
                 first_traj = last_traj

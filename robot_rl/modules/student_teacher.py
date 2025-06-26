@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 
-from rsl_rl.utils import resolve_nn_activation
+from robot_rl.utils import resolve_nn_activation
 
 
 class StudentTeacher(nn.Module):
@@ -32,7 +32,6 @@ class StudentTeacher(nn.Module):
                 + str([key for key in kwargs.keys()])
             )
         super().__init__()
-        activation = resolve_nn_activation(activation)
         self.loaded_teacher = False  # indicates if teacher has been loaded
 
         mlp_input_dim_s = num_student_obs
@@ -41,25 +40,25 @@ class StudentTeacher(nn.Module):
         # student
         student_layers = []
         student_layers.append(nn.Linear(mlp_input_dim_s, student_hidden_dims[0]))
-        student_layers.append(activation)
+        student_layers.append(resolve_nn_activation(activation))
         for layer_index in range(len(student_hidden_dims)):
             if layer_index == len(student_hidden_dims) - 1:
                 student_layers.append(nn.Linear(student_hidden_dims[layer_index], num_actions))
             else:
                 student_layers.append(nn.Linear(student_hidden_dims[layer_index], student_hidden_dims[layer_index + 1]))
-                student_layers.append(activation)
+                student_layers.append(resolve_nn_activation(activation))
         self.student = nn.Sequential(*student_layers)
 
         # teacher
         teacher_layers = []
         teacher_layers.append(nn.Linear(mlp_input_dim_t, teacher_hidden_dims[0]))
-        teacher_layers.append(activation)
+        teacher_layers.append(resolve_nn_activation(activation))
         for layer_index in range(len(teacher_hidden_dims)):
             if layer_index == len(teacher_hidden_dims) - 1:
                 teacher_layers.append(nn.Linear(teacher_hidden_dims[layer_index], num_actions))
             else:
                 teacher_layers.append(nn.Linear(teacher_hidden_dims[layer_index], teacher_hidden_dims[layer_index + 1]))
-                teacher_layers.append(activation)
+                teacher_layers.append(resolve_nn_activation(activation))
         self.teacher = nn.Sequential(*teacher_layers)
         self.teacher.eval()
 

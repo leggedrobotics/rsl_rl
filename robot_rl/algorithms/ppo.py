@@ -1,8 +1,3 @@
-# Copyright (c) 2021-2025, ETH Zurich and NVIDIA CORPORATION
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 from __future__ import annotations
 
 import torch
@@ -10,16 +5,16 @@ import torch.nn as nn
 import torch.optim as optim
 from itertools import chain
 
-from rsl_rl.modules import ActorCritic
-from rsl_rl.modules.rnd import RandomNetworkDistillation
-from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import string_to_callable
+from robot_rl.modules import ActorCritic, ActorCriticEstimator
+from robot_rl.modules.rnd import RandomNetworkDistillation
+from robot_rl.storage import RolloutStorage
+from robot_rl.utils import string_to_callable
 
 
 class PPO:
     """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
 
-    policy: ActorCritic
+    policy: ActorCritic | ActorCriticEstimator
     """The actor critic module."""
 
     def __init__(
@@ -45,6 +40,9 @@ class PPO:
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        # Estimation parameters
+        estimation_cfg: dict | None = None,
+        **kwargs,
     ):
         # device-related parameters
         self.device = device
@@ -91,6 +89,15 @@ class PPO:
         else:
             self.symmetry = None
 
+        # Estimation components
+        if estimation_cfg is not None:
+            self.estimation = estimation_cfg
+            self.estimate_loss_coef = estimation_cfg["estimate_loss_coef"]
+            self.estimate_loss_ramp = max(estimation_cfg["estimate_loss_ramp"], 1)
+            self.counter = 0
+        else:
+            self.estimation = False
+
         # PPO components
         self.policy = policy
         self.policy.to(self.device)
@@ -116,8 +123,15 @@ class PPO:
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
 
     def init_storage(
-        self, training_type, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, actions_shape
-    ):
+        self,
+        training_type,
+        num_envs,
+        num_transitions_per_env,
+        actor_obs_shape,
+        critic_obs_shape,
+        actions_shape,
+        estimate_shape=None,
+    ) -> None:
         # create memory for RND as well :)
         if self.rnd:
             rnd_state_shape = [self.rnd.num_states]
@@ -132,10 +146,17 @@ class PPO:
             critic_obs_shape,
             actions_shape,
             rnd_state_shape,
+            estimate_shape,
             self.device,
         )
 
-    def act(self, obs, critic_obs):
+    def test_mode(self):
+        self.policy.test()
+
+    def train_mode(self):
+        self.policy.train()
+
+    def act(self, obs, critic_obs, estimate_obs=None):
         if self.policy.is_recurrent:
             self.transition.hidden_states = self.policy.get_hidden_states()
         # compute the actions and values
@@ -144,9 +165,11 @@ class PPO:
         self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.policy.action_mean.detach()
         self.transition.action_sigma = self.policy.action_std.detach()
-        # need to record obs and critic_obs before env.step()
+        # need to record obs, critic_obs, and estimate_obs before env.step()
         self.transition.observations = obs
         self.transition.privileged_observations = critic_obs
+        if estimate_obs is not None:
+            self.transition.estimate_observations = estimate_obs
         return self.transition.actions
 
     def process_env_step(self, rewards, dones, infos):
@@ -185,10 +208,16 @@ class PPO:
             last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
         )
 
-    def update(self):  # noqa: C901
+    # def compute_grad_penalty(self, obs_batch, actions_log_prob_batch):
+    #     grad_log_prob = torch.autograd.grad(actions_log_prob_batch.sum(), obs_batch, create_graph=True)[0]
+    #     gradient_penalty_loss = torch.sum(torch.square(grad_log_prob), dim=-1).mean()
+    #     return gradient_penalty_loss
+
+    def update(self, num_est_obs: int | None = None):  # noqa: C901
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
+        # mean_gradient_loss = 0
         # -- RND loss
         if self.rnd:
             mean_rnd_loss = 0
@@ -199,6 +228,12 @@ class PPO:
             mean_symmetry_loss = 0
         else:
             mean_symmetry_loss = None
+        if self.estimation:
+            mean_estimation_loss = 0
+            mean_estimation_errors = torch.zeros(num_est_obs, requires_grad=False, device=self.device)
+            self.counter += 1
+        else:
+            mean_estimation_loss = None
 
         # generator for mini batches
         if self.policy.is_recurrent:
@@ -220,7 +255,9 @@ class PPO:
             hid_states_batch,
             masks_batch,
             rnd_state_batch,
+            estimate_obs_batch,
         ) in generator:
+            # obs_batch = obs_batch.clone().requires_grad_()
 
             # number of augmentations per sample
             # we start with 1 and increase it if we use symmetry augmentation
@@ -266,6 +303,18 @@ class PPO:
             mu_batch = self.policy.action_mean[:original_batch_size]
             sigma_batch = self.policy.action_std[:original_batch_size]
             entropy_batch = self.policy.entropy[:original_batch_size]
+
+            # gradient_loss = self.compute_grad_penalty(
+            #     obs_batch,
+            #     actions_log_prob_batch
+            # )
+            # gradient_stage = min(max((self.counter - self.gradient_penalty_coef_schedule[2]), 0) / self.gradient_penalty_coef_schedule[3], 1)
+            """
+            < 700: stage=0, coef=0.002
+            >700, <1000: stage=(0->0.3), coef=0.002
+            >1000: stage=1, coef=0.002
+            """
+            # gradient_penalty_coef = gradient_stage * (self.gradient_penalty_coef_schedule[1] - self.gradient_penalty_coef_schedule[0]) + self.gradient_penalty_coef_schedule[0]
 
             # KL
             if self.desired_kl is not None and self.schedule == "adaptive":
@@ -324,6 +373,18 @@ class PPO:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+            # + self.gradient_penalty_coef * gradient_loss
+
+            # Estimation Loss
+            if self.estimation:
+                estimates_batch = self.policy.estimate(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+                estimate_diff = estimate_obs_batch - estimates_batch
+                estimate_loss = estimate_diff.pow(2) + estimate_diff.abs()  # L2 + L1 loss
+                estimate_loss = estimate_loss.mean()
+                estimate_errors = estimate_diff.abs().mean(dim=0)
+                est_coef = min(self.counter / self.estimate_loss_ramp, 1.0) * self.estimate_loss_coef
+
+                loss += est_coef * estimate_loss
 
             # Symmetry loss
             if self.symmetry:
@@ -400,33 +461,50 @@ class PPO:
             # -- Symmetry loss
             if mean_symmetry_loss is not None:
                 mean_symmetry_loss += symmetry_loss.item()
+            # mean_gradient_loss += gradient_loss.item()
+            if mean_estimation_loss is not None:
+                mean_estimation_loss += estimate_loss.item()
+                mean_estimation_errors += estimate_errors.clone()
 
         # -- For PPO
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
+        # mean_gradient_loss /= num_updates
         # -- For RND
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
         # -- For Symmetry
         if mean_symmetry_loss is not None:
             mean_symmetry_loss /= num_updates
+        # -- For Estimation
+        if mean_estimation_loss is not None:
+            mean_estimation_loss /= num_updates
+            mean_estimation_errors /= num_updates
         # -- Clear the storage
         self.storage.clear()
+        # self.counter += 1
 
         # construct the loss dictionary
         loss_dict = {
             "value_function": mean_value_loss,
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
+            # "gradient": mean_gradient_loss,
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
+        if self.estimation:
+            loss_dict["estimation"] = mean_estimation_loss
+            # loss_dict["estimation_errors"] = mean_estimation_errors
+            error_dict = {f"estimation_{str(i)}": estimate_errors[i] for i in range(num_est_obs)}
+        else:
+            error_dict = None
 
-        return loss_dict
+        return loss_dict, error_dict
 
     """
     Helper functions

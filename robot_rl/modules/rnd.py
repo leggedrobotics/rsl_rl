@@ -8,8 +8,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from rsl_rl.modules.normalizer import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
-from rsl_rl.utils import resolve_nn_activation
+from robot_rl.modules.normalizer import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
+from robot_rl.utils import resolve_nn_activation
 
 
 class RandomNetworkDistillation(nn.Module):
@@ -159,11 +159,9 @@ class RandomNetworkDistillation(nn.Module):
         # resolve hidden dimensions
         # if dims is -1 then we use the number of observations
         hidden_dims = [input_dims if dim == -1 else dim for dim in hidden_dims]
-        # resolve activation function
-        activation = resolve_nn_activation(activation_name)
         # first layer
         network_layers.append(nn.Linear(input_dims, hidden_dims[0]))
-        network_layers.append(activation)
+        network_layers.append(resolve_nn_activation(activation_name))
         # subsequent layers
         for layer_index in range(len(hidden_dims)):
             if layer_index == len(hidden_dims) - 1:
@@ -172,7 +170,7 @@ class RandomNetworkDistillation(nn.Module):
             else:
                 # hidden layers
                 network_layers.append(nn.Linear(hidden_dims[layer_index], hidden_dims[layer_index + 1]))
-                network_layers.append(activation)
+                network_layers.append(resolve_nn_activation(activation_name))
         return nn.Sequential(*network_layers)
 
     """

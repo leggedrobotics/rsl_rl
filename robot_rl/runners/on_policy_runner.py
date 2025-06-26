@@ -1,9 +1,6 @@
-# Copyright (c) 2021-2025, ETH Zurich and NVIDIA CORPORATION
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 from __future__ import annotations
+
+from typing import Callable
 
 import os
 import statistics
@@ -11,17 +8,18 @@ import time
 import torch
 from collections import deque
 
-import rsl_rl
-from rsl_rl.algorithms import PPO, Distillation
-from rsl_rl.env import VecEnv
-from rsl_rl.modules import (
+import robot_rl
+from robot_rl.algorithms import PPO, Distillation
+from robot_rl.env import VecEnv
+from robot_rl.modules import (
     ActorCritic,
     ActorCriticRecurrent,
+    ActorCriticEstimator,
     EmpiricalNormalization,
     StudentTeacher,
     StudentTeacherRecurrent,
 )
-from rsl_rl.utils import store_code_state
+from robot_rl.utils import store_code_state
 
 
 class OnPolicyRunner:
@@ -67,11 +65,42 @@ class OnPolicyRunner:
         else:
             num_privileged_obs = num_obs
 
+        if "estimator_cfg" in self.alg_cfg and self.alg_cfg["estimator_cfg"] is not None:
+            estimator_cfg = self.alg_cfg["estimator_cfg"]
+            estimates = extras["observations"].get("estimator")
+            if estimates is None:
+                raise ValueError("Observations for the key 'estimator' not found in infos['observations'].")
+            num_estimates = extras["observations"]["estimator"].shape[1]
+            self.num_estimates_all = num_estimates
+            self.estimate_idx = [num_estimates]
+            if estimator_cfg["estimate_obs"]:
+                self.num_estimates_all += num_obs
+                self.estimate_idx.append(self.num_estimates_all)
+            if estimator_cfg["estimate_next_obs"]:
+                self.num_estimates_all += num_obs
+                self.estimate_idx.append(self.num_estimates_all)
+            num_estimates_shape = [self.num_estimates_all]
+            # always normalize estimates
+            self.estimator_obs_normalizer = EmpiricalNormalization(shape=num_estimates_shape, until=1.0e8).to(
+                self.device
+            )
+            self.alg_cfg["estimator"] = True
+        else:
+            self.num_estimates_all = None
+            num_estimates_shape = None
+            self.alg_cfg["estimator"] = False
+
         # evaluate the policy class
         policy_class = eval(self.policy_cfg.pop("class_name"))
-        policy: ActorCritic | ActorCriticRecurrent | StudentTeacher | StudentTeacherRecurrent = policy_class(
-            num_obs, num_privileged_obs, self.env.num_actions, **self.policy_cfg
-        ).to(self.device)
+        policy: ActorCritic | ActorCriticRecurrent | ActorCriticEstimator | StudentTeacher | StudentTeacherRecurrent = (
+            policy_class(
+                num_obs,
+                num_privileged_obs,
+                self.env.num_actions,
+                num_estimates=self.num_estimates_all,
+                **self.policy_cfg,
+            ).to(self.device)
+        )
 
         # resolve dimension of rnd gated state
         if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
@@ -118,6 +147,7 @@ class OnPolicyRunner:
             [num_obs],
             [num_privileged_obs],
             [self.env.num_actions],
+            num_estimates_shape,
         )
 
         # Decide whether to disable logging
@@ -129,7 +159,7 @@ class OnPolicyRunner:
         self.tot_timesteps = 0
         self.tot_time = 0
         self.current_learning_iteration = 0
-        self.git_status_repos = [rsl_rl.__file__]
+        self.git_status_repos = [robot_rl.__file__]
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
         # initialize writer
@@ -139,12 +169,12 @@ class OnPolicyRunner:
             self.logger_type = self.logger_type.lower()
 
             if self.logger_type == "neptune":
-                from rsl_rl.utils.neptune_utils import NeptuneSummaryWriter
+                from robot_rl.utils.neptune_utils import NeptuneSummaryWriter
 
                 self.writer = NeptuneSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
                 self.writer.log_config(self.env.cfg, self.cfg, self.alg_cfg, self.policy_cfg)
             elif self.logger_type == "wandb":
-                from rsl_rl.utils.wandb_utils import WandbSummaryWriter
+                from robot_rl.utils.wandb_utils import WandbSummaryWriter
 
                 self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
                 self.writer.log_config(self.env.cfg, self.cfg, self.alg_cfg, self.policy_cfg)
@@ -169,6 +199,18 @@ class OnPolicyRunner:
         obs, extras = self.env.get_observations()
         privileged_obs = extras["observations"].get(self.privileged_obs_type, obs)
         obs, privileged_obs = obs.to(self.device), privileged_obs.to(self.device)
+        obs = self.obs_normalizer(obs)
+        next_obs = obs.clone()
+        privileged_obs = self.privileged_obs_normalizer(privileged_obs)
+        if self.alg_cfg["estimator"]:
+            estimator_obs = extras["observations"]["estimator"].to(self.device)
+            if self.alg_cfg["estimator_cfg"]["estimate_obs"]:
+                estimator_obs = torch.cat((estimator_obs, obs), dim=1)
+            if self.alg_cfg["estimator_cfg"]["estimate_next_obs"]:
+                estimator_obs = torch.cat((estimator_obs, next_obs), dim=1)
+            estimator_obs = self.estimator_obs_normalizer(estimator_obs)
+        else:
+            estimator_obs = None
         self.train_mode()  # switch to train mode (for dropout for example)
 
         # Book keeping
@@ -201,19 +243,31 @@ class OnPolicyRunner:
             with torch.inference_mode():
                 for _ in range(self.num_steps_per_env):
                     # Sample actions
-                    actions = self.alg.act(obs, privileged_obs)
+                    actions = self.alg.act(next_obs, privileged_obs, estimator_obs)
                     # Step the environment
-                    obs, rewards, dones, infos = self.env.step(actions.to(self.env.device))
+                    next_obs, rewards, dones, infos = self.env.step(actions.to(self.env.device))
                     # Move to device
-                    obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
-                    # perform normalization
-                    obs = self.obs_normalizer(obs)
+                    next_obs, rewards, dones = (
+                        next_obs.to(self.device),
+                        rewards.to(self.device),
+                        dones.to(self.device),
+                    )
                     if self.privileged_obs_type is not None:
                         privileged_obs = self.privileged_obs_normalizer(
                             infos["observations"][self.privileged_obs_type].to(self.device)
                         )
                     else:
                         privileged_obs = obs
+                    if self.alg_cfg["estimator"]:
+                        estimator_obs = infos["observations"]["estimator"].to(self.device)
+                        if self.alg_cfg["estimator_cfg"]["estimate_obs"]:
+                            estimator_obs = torch.cat((estimator_obs, obs), dim=1)
+                        if self.alg_cfg["estimator_cfg"]["estimate_next_obs"]:
+                            estimator_obs = torch.cat((estimator_obs, next_obs), dim=1)
+                        estimator_obs = self.estimator_obs_normalizer(estimator_obs)
+                    # perform normalization
+                    obs = next_obs.clone()
+                    next_obs = self.obs_normalizer(next_obs)
 
                     # process the step
                     self.alg.process_env_step(rewards, dones, infos)
@@ -259,7 +313,7 @@ class OnPolicyRunner:
                     self.alg.compute_returns(privileged_obs)
 
             # update policy
-            loss_dict = self.alg.update()
+            loss_dict, error_dict = self.alg.update(self.num_estimates_all)
 
             stop = time.time()
             learn_time = stop - start
@@ -313,10 +367,10 @@ class OnPolicyRunner:
                 # log to logger and terminal
                 if "/" in key:
                     self.writer.add_scalar(key, value, locs["it"])
-                    ep_string += f"""{f'{key}:':>{pad}} {value:.4f}\n"""
+                    ep_string += f"""{f"{key}:":>{pad}} {value:.4f}\n"""
                 else:
                     self.writer.add_scalar("Episode/" + key, value, locs["it"])
-                    ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
+                    ep_string += f"""{f"Mean episode {key}:":>{pad}} {value:.4f}\n"""
 
         mean_std = self.alg.policy.action_std.mean()
         fps = int(collection_size / (locs["collection_time"] + locs["learn_time"]))
@@ -325,6 +379,9 @@ class OnPolicyRunner:
         for key, value in locs["loss_dict"].items():
             self.writer.add_scalar(f"Loss/{key}", value, locs["it"])
         self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])
+        if locs["error_dict"] is not None:
+            for k, v in locs["error_dict"].items():
+                self.writer.add_scalar(f"Error/{k}", v, locs["it"])
 
         # -- Policy
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
@@ -350,52 +407,59 @@ class OnPolicyRunner:
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )
 
+        # callback for video logging
+        if self.logger_type in ["wandb"]:
+            self.writer.callback(locs["it"])
+
         str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 
         if len(locs["rewbuffer"]) > 0:
             log_string = (
-                f"""{'#' * width}\n"""
-                f"""{str.center(width, ' ')}\n\n"""
-                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                    'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
-                f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
+                f"""{"#" * width}\n"""
+                f"""{str.center(width, " ")}\n\n"""
+                f"""{"Computation:":>{pad}} {fps:.0f} steps/s (collection: {locs["collection_time"]:.3f}s, learning {
+                    locs["learn_time"]:.3f}s)\n"""
+                f"""{"Mean action noise std:":>{pad}} {mean_std.item():.2f}\n"""
             )
             # -- Losses
             for key, value in locs["loss_dict"].items():
-                log_string += f"""{f'Mean {key} loss:':>{pad}} {value:.4f}\n"""
+                log_string += f"""{f"Mean {key} loss:":>{pad}} {value:.4f}\n"""
             # -- Rewards
             if self.alg.rnd:
                 log_string += (
-                    f"""{'Mean extrinsic reward:':>{pad}} {statistics.mean(locs['erewbuffer']):.2f}\n"""
-                    f"""{'Mean intrinsic reward:':>{pad}} {statistics.mean(locs['irewbuffer']):.2f}\n"""
+                    f"""{"Mean extrinsic reward:":>{pad}} {statistics.mean(locs["erewbuffer"]):.2f}\n"""
+                    f"""{"Mean intrinsic reward:":>{pad}} {statistics.mean(locs["irewbuffer"]):.2f}\n"""
                 )
-            log_string += f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
+            log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(locs["rewbuffer"]):.2f}\n"""
             # -- episode info
-            log_string += f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
+            log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(locs["lenbuffer"]):.2f}\n"""
         else:
             log_string = (
-                f"""{'#' * width}\n"""
-                f"""{str.center(width, ' ')}\n\n"""
-                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                    'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
-                f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
+                f"""{"#" * width}\n"""
+                f"""{str.center(width, " ")}\n\n"""
+                f"""{"Computation:":>{pad}} {fps:.0f} steps/s (collection: {locs["collection_time"]:.3f}s, learning {
+                    locs["learn_time"]:.3f}s)\n"""
+                f"""{"Mean action noise std:":>{pad}} {mean_std.item():.2f}\n"""
             )
             for key, value in locs["loss_dict"].items():
-                log_string += f"""{f'{key}:':>{pad}} {value:.4f}\n"""
+                log_string += f"""{f"{key}:":>{pad}} {value:.4f}\n"""
 
         log_string += ep_string
         log_string += (
-            f"""{'-' * width}\n"""
-            f"""{'Total timesteps:':>{pad}} {self.tot_timesteps}\n"""
-            f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n"""
-            f"""{'Time elapsed:':>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
-            f"""{'ETA:':>{pad}} {time.strftime(
-                "%H:%M:%S",
-                time.gmtime(
-                    self.tot_time / (locs['it'] - locs['start_iter'] + 1)
-                    * (locs['start_iter'] + locs['num_learning_iterations'] - locs['it'])
+            f"""{"-" * width}\n"""
+            f"""{"Total timesteps:":>{pad}} {self.tot_timesteps}\n"""
+            f"""{"Iteration time:":>{pad}} {iteration_time:.2f}s\n"""
+            f"""{"Time elapsed:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
+            f"""{"ETA:":>{pad}} {
+                time.strftime(
+                    "%H:%M:%S",
+                    time.gmtime(
+                        self.tot_time
+                        / (locs["it"] - locs["start_iter"] + 1)
+                        * (locs["start_iter"] + locs["num_learning_iterations"] - locs["it"])
+                    ),
                 )
-            )}\n"""
+            }\n"""
         )
         print(log_string)
 
@@ -415,6 +479,8 @@ class OnPolicyRunner:
         if self.empirical_normalization:
             saved_dict["obs_norm_state_dict"] = self.obs_normalizer.state_dict()
             saved_dict["privileged_obs_norm_state_dict"] = self.privileged_obs_normalizer.state_dict()
+        if self.alg_cfg["estimator"]:
+            saved_dict["estimator_norm_state_dict"] = self.estimator_obs_normalizer.state_dict()
 
         # save model
         torch.save(saved_dict, path)
@@ -452,6 +518,8 @@ class OnPolicyRunner:
         # -- load current learning iteration
         if resumed_training:
             self.current_learning_iteration = loaded_dict["iter"]
+        if self.alg_cfg["estimator"]:
+            self.estimator_obs_normalizer.load_state_dict(loaded_dict["estimator_norm_state_dict"])
         return loaded_dict["infos"]
 
     def get_inference_policy(self, device=None):
@@ -465,6 +533,27 @@ class OnPolicyRunner:
             policy = lambda x: self.alg.policy.act_inference(self.obs_normalizer(x))  # noqa: E731
         return policy
 
+    def get_inference_estimator(self, unnorm=True, device=None) -> Callable:
+        if not self.alg_cfg["estimator"]:
+            raise ValueError("No estimator configuration found.")
+        self.eval_mode()  # switch to evaluation mode (dropout for example)
+        if device is not None:
+            self.alg.policy.to(device)
+            self.estimator_obs_normalizer.to(device)
+        estimator = self.alg.policy.estimate
+        if self.cfg["empirical_normalization"]:
+            if device is not None:
+                self.obs_normalizer.to(device)
+            estimator = lambda x: self.alg.policy.estimate(self.obs_normalizer(x))  # noqa: E731
+        if unnorm:
+            estimator_unnorm = lambda x: self.estimator_obs_normalizer.inverse(estimator(x))  # noqa: E731
+            return estimator_unnorm
+        else:
+            return estimator
+
+    def get_last_layer(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.alg.policy.get_last_layer()
+
     def train_mode(self):
         # -- PPO
         self.alg.policy.train()
@@ -475,6 +564,8 @@ class OnPolicyRunner:
         if self.empirical_normalization:
             self.obs_normalizer.train()
             self.privileged_obs_normalizer.train()
+        if self.alg_cfg["estimator"]:
+            self.estimator_obs_normalizer.train()
 
     def eval_mode(self):
         # -- PPO
@@ -486,6 +577,8 @@ class OnPolicyRunner:
         if self.empirical_normalization:
             self.obs_normalizer.eval()
             self.privileged_obs_normalizer.eval()
+        if self.alg_cfg["estimator"]:
+            self.estimator_obs_normalizer.eval()
 
     def add_git_repo_to_log(self, repo_file_path):
         self.git_status_repos.append(repo_file_path)

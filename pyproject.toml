@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rsl-rl-lib"
+name = "robot_rl"
 version = "2.3.3"
 keywords = ["reinforcement-learning", "isaac", "leggedrobotics", "rl-pytorch"]
 maintainers = [
@@ -34,15 +34,14 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/leggedrobotics/rsl_rl"
-Issues = "https://github.com/leggedrobotics/rsl_rl/issues"
+Homepage = "https://github.com/KyleM73/robot_rl"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["rsl_rl*"]
+include = ["robot_rl*"]
 
 [tool.setuptools.package-data]
-"rsl_rl" = ["config/*", "licenses/*"]
+"robot_rl" = ["config/*", "licenses/*"]
 
 [tool.isort]
 
@@ -72,11 +71,11 @@ extra_standard_library = [
     "git",
 ]
 # Imports from this repository
-known_first_party = "rsl_rl"
+known_first_party = "robot_rl"
 
 [tool.pyright]
 
-include = ["rsl_rl"]
+include = ["robot_rl"]
 
 typeCheckingMode = "basic"
 pythonVersion = "3.7"
