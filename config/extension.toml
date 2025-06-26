@@ -1,0 +1,107 @@
+[package]
+name="robot_rl"
+version = "2.3.3"
+description="HCRL fork of rsl_rl"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+keywords = ["reinforcement-learning", "isaac", "rl-pytorch"]
+readme  = "README.md"
+title = "HCRL fork of rsl_rl"
+author = "Kyle Morgenstein"
+maintainer = "Kyle Morgenstein"
+maintainer_email = "kylem@utexas.edu"
+license = { text = "BSD-3-Clause" }
+repository = "https://github.com/KyleM73/robot_rl.git"
+category = "robotics"
+
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "torch>=1.10.0",
+    "torchvision>=0.5.0",
+    "numpy>=1.16.4",
+    "GitPython",
+    "onnx",
+]
+
+[project.urls]
+Homepage = "https://github.com/KyleM73/robot_rl"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["robot_rl*"]
+
+[tool.setuptools.package-data]
+"robot_rl" = ["config/*", "licenses/*"]
+
+[tool.isort]
+py_version = 37
+line_length = 120
+group_by_package = true
+
+skip_glob = [".vscode/*"]
+
+sections = [
+    "FUTURE",
+    "STDLIB",
+    "THIRDPARTY",
+    "FIRSTPARTY",
+    "LOCALFOLDER",
+]
+
+extra_standard_library = [
+    "numpy",
+    "torch",
+    "tensordict",
+    "warp",
+    "typing_extensions",
+    "git",
+]
+# Imports from this repository
+known_first_party = "robot_rl"
+
+[tool.pyright]
+include = ["robot_rl"]
+
+typeCheckingMode = "basic"
+pythonVersion = "3.7"
+pythonPlatform = "Linux"
+enableTypeIgnoreComments = true
+
+# This is required as the CI pre-commit does not download the module (i.e. numpy, torch, prettytable)
+# Therefore, we have to ignore missing imports
+reportMissingImports = "none"
+# This is required to ignore for type checks of modules with stubs missing.
+reportMissingModuleSource = "none" # -> most common: prettytable in mdp managers
+
+reportGeneralTypeIssues = "none"       # -> raises 218 errors (usage of literal MISSING in dataclasses)
+reportOptionalMemberAccess = "warning" # -> raises 8 errors
+reportPrivateUsage = "warning"
+
+
+[dependencies]
+"isaaclab" = {}
+"isaaclab_assets" = {}
+"isaaclab_mimic" = {}
+"isaaclab_rl" = {}
+"isaaclab_tasks" = {}
+# NOTE: Add additional dependencies here
+
+[[python.module]]
+name = "robot_rl"
+
+[isaaclab_settings]
+# TODO: Uncomment and list any apt dependencies here.
+#       If none, leave it commented out.
+# apt_deps = ["example_package"]
+# TODO: Uncomment and provide path to a ros_ws
+#       with rosdeps to be installed. If none,
+#       leave it commented out.
+# ros_ws = "path/from/extension_root/to/ros_ws"
