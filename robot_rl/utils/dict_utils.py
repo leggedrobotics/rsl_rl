@@ -3,7 +3,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import MISSING
 
 
-def update_class_from_dict(obj, data: dict[str, Any], _ns: str = "") -> None:
+def update_class_from_dict(obj, data: dict[str, Any], _ns: str = "", ignore_extra_keys: bool = False) -> None:
     """Reads a dictionary and sets object variables recursively.
 
     This function performs in-place update of the class member attributes.
@@ -29,7 +29,7 @@ def update_class_from_dict(obj, data: dict[str, Any], _ns: str = "") -> None:
             obj_mem = obj[key] if isinstance(obj, dict) else getattr(obj, key)
             if isinstance(value, Mapping):
                 # recursively call if it is a dictionary
-                update_class_from_dict(obj_mem, value, _ns=key_ns)
+                update_class_from_dict(obj_mem, value, _ns=key_ns, ignore_extra_keys=ignore_extra_keys)
                 continue
             if isinstance(value, Iterable) and not isinstance(value, str):
                 # check length of value to be safe
@@ -48,7 +48,9 @@ def update_class_from_dict(obj, data: dict[str, Any], _ns: str = "") -> None:
                     # recursively call if iterable contains dictionaries
                     for i in range(len(obj_mem)):
                         if isinstance(value[i], dict):
-                            update_class_from_dict(obj_mem[i], value[i], _ns=key_ns)
+                            update_class_from_dict(
+                                obj_mem[i], value[i], _ns=key_ns, ignore_extra_keys=ignore_extra_keys
+                            )
                             set_obj = False
                     # do not set value to obj, otherwise it overwrites the cfg class with the dict
                     if not set_obj:
@@ -71,4 +73,7 @@ def update_class_from_dict(obj, data: dict[str, Any], _ns: str = "") -> None:
             else:
                 setattr(obj, key, value)
         elif value is not None:
-            raise KeyError(f"[Config]: Key not found under namespace: {key_ns}.")
+            if ignore_extra_keys:
+                print(f"\033[91m[WARN] Key not found under namespace: {key_ns}.\033[0m")
+            else:
+                raise KeyError(f"[Config]: Key not found under namespace: {key_ns}.")
