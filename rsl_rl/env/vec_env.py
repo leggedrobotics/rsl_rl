@@ -35,7 +35,7 @@ class VecEnv(ABC):
     episode_length_buf: torch.Tensor
     """Buffer for current episode lengths."""
 
-    device: torch.device
+    device: torch.device | str
     """Device to use."""
 
     cfg: dict | object
