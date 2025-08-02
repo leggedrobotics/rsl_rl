@@ -102,7 +102,7 @@ class OnPolicyRunner:
                     # Sample actions
                     actions = self.alg.act(obs)
                     # Step the environment
-                    obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
+                    obs, rewards, dones, extras = self.env.step(actions.to(self.device))
                     # Move to device
                     obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                     # process the step
