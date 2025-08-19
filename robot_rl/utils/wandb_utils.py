@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 from torch.utils.tensorboard import SummaryWriter
 
 try:
@@ -39,8 +40,8 @@ class WandbSummaryWriter(SummaryWriter):
         tags = ["log_videos_async"] if self.shared else []
         self.run = wandb.init(project=project, entity=entity, tags=tags, settings=settings)
 
-        # Change generated name to project-number format
-        self.run.name = project + self.run.name.split("-")[-1]
+        # Change generated name to project-number format (exclude any trailing version number from project name)
+        self.run.name = re.sub("_v[0-9]+$", "", project) + self.run.name.split("-")[-1]
 
         self.name_map = {
             "Train/mean_reward/time": "Train/mean_reward_time",
