@@ -19,11 +19,13 @@ class RobotRlActorCriticCfg(RslRlPpoActorCriticCfg):
 
 @configclass
 class MHACfg:
-    n_heads: int
-    n_latent: int
-    n_channels: int
-    kernel_size: int
-    dropout: float
+    n_heads: int = MISSING
+    n_latent: int = MISSING
+    n_channels: int = MISSING
+    kernel_size: int = MISSING
+    dropout: float = 0.0
+    n_rows: int = MISSING
+    n_cols: int = MISSING
 
 @configclass
 class ActorCriticMHACfg(RslRlPpoActorCriticCfg):

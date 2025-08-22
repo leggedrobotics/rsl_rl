@@ -13,10 +13,8 @@ class MHAEncoder(nn.Module):
         self,
         n_obs: int,
         n_latent: int,
-        n_history: int,
         n_heads: int,
         n_channels: int,
-        n_actions: int,
         kernel_size: int,
         dropout: float = 0,
         activation: str = "relu",
@@ -27,7 +25,6 @@ class MHAEncoder(nn.Module):
             nn.Linear(n_obs, n_latent),
             resolve_nn_activation(activation),
         )
-        # self.action_head = nn.Linear(n_history * (n_obs + n_latent), n_actions)
         self.height_enc = nn.Sequential(
             nn.Conv2d(1, n_channels, kernel_size, padding="same"),
             resolve_nn_activation(activation),
@@ -80,13 +77,12 @@ class ActorCriticMHA(nn.Module):
         num_actor_obs,
         num_critic_obs,
         num_actions,
-        n_obs: int,
         n_latent: int,
-        n_history: int,
         n_heads: int,
         n_channels: int,
-        n_actions: int,
         kernel_size: int,
+        n_rows: int,
+        n_cols: int,
         dropout: float = 0,
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],
@@ -102,20 +98,20 @@ class ActorCriticMHA(nn.Module):
             )
         super().__init__()
         self.encoder = MHAEncoder(
-            n_obs,
+            num_actor_obs,
             n_latent,
-            n_history,
             n_heads,
             n_channels,
-            n_actions,
             kernel_size,
             dropout,
             activation
         )
 
         d_enc = n_latent + n_obs
-        self.actor_head = mlp(d_enc, n_actions, actor_hidden_dims, activation)
+        self.actor_head = mlp(d_enc, num_actions, actor_hidden_dims, activation)
         self.critic_head = mlp(d_enc, 1, critic_hidden_dims, activation)
+        self.l = n_rows
+        self.w = n_cols
 
         print(f"MHA Encoder: {self.encoder}")
         print(f"Actor MLP: {self.actor_head}")
@@ -164,13 +160,15 @@ class ActorCriticMHA(nn.Module):
         return self.distribution.entropy().sum(dim=-1)
 
     def get_attention_map(self, observations) -> torch.Tensor:
-        proprio_obs, map_obs = observations
+        proprio_obs = observations[:, :-self.w * self.l * 3]
+        map_obs = observations[:, -self.w * self.l * 3:].view(-1, self.l, self.w, 3)
         _, weights = self.encoder(proprio_obs, map_obs, need_weights=True)
         return weights
 
     def update_distribution(self, observations, need_weights: bool = False):
         # compute mean
-        proprio_obs, map_obs = observations
+        proprio_obs = observations[:, :-self.w * self.l * 3]
+        map_obs = observations[:, -self.w * self.l * 3:].view(-1, self.l, self.w, 3)
         z, self.weights = self.encoder(proprio_obs, map_obs, need_weights=False)
         mean = self.actor_head(z)
         # compute standard deviation
@@ -191,13 +189,22 @@ class ActorCriticMHA(nn.Module):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     def act_inference(self, observations):
-        proprio_obs, map_obs = observations
+        proprio_obs = observations[:, :-self.w * self.l * 3]
+        map_obs = observations[:, -self.w * self.l * 3:].view(-1, self.l, self.w, 3)
         z, _ = self.encoder(proprio_obs, map_obs, need_weights=False)
         actions_mean = self.actor_head(z)
         return actions_mean
 
+    def act_inference_vis(self, observations):
+        proprio_obs = observations[:, :-self.w * self.l * 3]
+        map_obs = observations[:, -self.w * self.l * 3:].view(-1, self.l, self.w, 3)
+        z, weights = self.encoder(proprio_obs, map_obs, need_weights=True)
+        actions_mean = self.actor_head(z)
+        return actions_mean, weights
+
     def evaluate(self, critic_observations, **kwargs):
-        proprio_obs, map_obs = critic_observations
+        proprio_obs = critic_observations[:, :-self.w * self.l * 3]
+        map_obs = critic_observations[:, -self.w * self.l * 3:].view(-1, self.l, self.w, 3)
         z, _ = self.encoder(proprio_obs, map_obs, need_weights=False)
         value = self.critic_head(z)
         return value
@@ -224,10 +231,8 @@ if __name__ == "__main__":
     num_actions = 12
     n_obs: int = 48
     n_latent: int = 64
-    n_history: int = 1
     n_heads: int = 16
     n_channels: int = 16
-    n_actions: int = 12
     kernel_size: int = 5
     dropout: float = 0
     actor_hidden_dims=[256, 256, 256]
@@ -242,10 +247,8 @@ if __name__ == "__main__":
         num_actions,
         n_obs,
         n_latent,
-        n_history,
         n_heads,
         n_channels,
-        n_actions,
         kernel_size,
         dropout,
         actor_hidden_dims,
