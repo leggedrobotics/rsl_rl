@@ -97,8 +97,10 @@ class ActorCriticMHA(nn.Module):
                 + str([key for key in kwargs.keys()])
             )
         super().__init__()
+        d_proprio = num_actor_obs - (n_rows * n_cols * 3)
+        d_enc = n_latent + d_proprio
         self.encoder = MHAEncoder(
-            num_actor_obs,
+            d_proprio,
             n_latent,
             n_heads,
             n_channels,
@@ -107,7 +109,6 @@ class ActorCriticMHA(nn.Module):
             activation
         )
 
-        d_enc = n_latent + n_obs
         self.actor_head = mlp(d_enc, num_actions, actor_hidden_dims, activation)
         self.critic_head = mlp(d_enc, 1, critic_hidden_dims, activation)
         self.l = n_rows

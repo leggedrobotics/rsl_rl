@@ -18,7 +18,8 @@ class RobotRlActorCriticCfg(RslRlPpoActorCriticCfg):
     oracle: bool = False
 
 @configclass
-class MHACfg:
+class ActorCriticMHACfg(RslRlPpoActorCriticCfg):
+    class_name: str = "ActorCriticMHA"
     n_heads: int = MISSING
     n_latent: int = MISSING
     n_channels: int = MISSING
@@ -26,10 +27,6 @@ class MHACfg:
     dropout: float = 0.0
     n_rows: int = MISSING
     n_cols: int = MISSING
-
-@configclass
-class ActorCriticMHACfg(RslRlPpoActorCriticCfg):
-    mha: MHACfg = MISSING
 
 
 @configclass

@@ -12,6 +12,7 @@ from .rnd import RandomNetworkDistillation
 from .student_teacher import StudentTeacher
 from .student_teacher_recurrent import StudentTeacherRecurrent
 from .actor_critic_estimator import ActorCriticEstimator
+from .actor_critic_mha import ActorCriticMHA
 from .probe import Probe
 from .sae import SAE
 
@@ -19,6 +20,7 @@ __all__ = [
     "ActorCritic",
     "ActorCriticRecurrent",
     "ActorCriticEstimator",
+    "ActorCriticMHA",
     "EmpiricalNormalization",
     "RandomNetworkDistillation",
     "StudentTeacher",
