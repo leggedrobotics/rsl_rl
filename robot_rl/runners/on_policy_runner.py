@@ -92,8 +92,6 @@ class OnPolicyRunner:
             self.alg_cfg["estimator"] = False
 
         # evaluate the policy class
-        # if self.policy_cfg["class_name"] == "ActorCriticMHA":
-        #     self.policy_cfg = {**self.policy_cfg, **self.policy_cfg["mha"]}
         policy_class = eval(self.policy_cfg.pop("class_name"))
         policy: ActorCritic | ActorCriticRecurrent | ActorCriticEstimator | StudentTeacher | StudentTeacherRecurrent | ActorCriticMHA = (
             policy_class(
