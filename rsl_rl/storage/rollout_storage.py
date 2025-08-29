@@ -314,3 +314,83 @@ class RolloutStorage:
                 ), masks_batch, rnd_state_batch
 
                 first_traj = last_traj
+
+
+    # for reinforcement learning with recurrent networks + RL^2 style input (obs + prev_action)
+    def recurrent_mini_batch_generator_with_prev_action(self, num_mini_batches, num_epochs=8):
+        if self.training_type != "rl":
+            raise ValueError("This function is only available for reinforcement learning training.")
+
+        # pad observations
+        padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.observations, self.dones)
+        if self.privileged_observations is not None:
+            padded_privileged_obs_trajectories, _ = split_and_pad_trajectories(self.privileged_observations, self.dones)
+        else:
+            padded_privileged_obs_trajectories = padded_obs_trajectories
+
+        # pad rnd state if exists
+        if self.rnd_state_shape is not None:
+            padded_rnd_state_trajectories, _ = split_and_pad_trajectories(self.rnd_state, self.dones)
+        else:
+            padded_rnd_state_trajectories = None
+
+        # pad actions (for RL^2 input as prev_action)
+        padded_action_trajectories, _ = split_and_pad_trajectories(self.actions, self.dones)
+
+        mini_batch_size = self.num_envs // num_mini_batches
+        for ep in range(num_epochs):
+            first_traj = 0
+            for i in range(num_mini_batches):
+                start = i * mini_batch_size
+                stop = (i + 1) * mini_batch_size
+
+                dones = self.dones.squeeze(-1)
+                last_was_done = torch.zeros_like(dones, dtype=torch.bool)
+                last_was_done[1:] = dones[:-1]
+                last_was_done[0] = True
+                trajectories_batch_size = torch.sum(last_was_done[:, start:stop])
+                last_traj = first_traj + trajectories_batch_size
+
+                masks_batch = trajectory_masks[:, first_traj:last_traj]
+                obs_batch = padded_obs_trajectories[:, first_traj:last_traj]
+                privileged_obs_batch = padded_privileged_obs_trajectories[:, first_traj:last_traj]
+                # 新增 prev_action batch (for RL^2 input)
+                prev_actions_batch = padded_action_trajectories[:, first_traj:last_traj]
+
+                if padded_rnd_state_trajectories is not None:
+                    rnd_state_batch = padded_rnd_state_trajectories[:, first_traj:last_traj]
+                else:
+                    rnd_state_batch = None
+
+                actions_batch = self.actions[:, start:stop]
+                old_mu_batch = self.mu[:, start:stop]
+                old_sigma_batch = self.sigma[:, start:stop]
+                returns_batch = self.returns[:, start:stop]
+                advantages_batch = self.advantages[:, start:stop]
+                values_batch = self.values[:, start:stop]
+                old_actions_log_prob_batch = self.actions_log_prob[:, start:stop]
+
+                # hidden states reshape
+                last_was_done = last_was_done.permute(1, 0)
+                hid_a_batch = [
+                    saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
+                    .transpose(1, 0)
+                    .contiguous()
+                    for saved_hidden_states in self.saved_hidden_states_a
+                ]
+                hid_c_batch = [
+                    saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
+                    .transpose(1, 0)
+                    .contiguous()
+                    for saved_hidden_states in self.saved_hidden_states_c
+                ]
+                hid_a_batch = hid_a_batch[0] if len(hid_a_batch) == 1 else hid_a_batch
+                hid_c_batch = hid_c_batch[0] if len(hid_c_batch) == 1 else hid_c_batch
+
+                # 新增 prev_actions_batch 输出
+                yield obs_batch, prev_actions_batch, privileged_obs_batch, actions_batch, values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (
+                    hid_a_batch,
+                    hid_c_batch,
+                ), masks_batch, rnd_state_batch
+
+                first_traj = last_traj
