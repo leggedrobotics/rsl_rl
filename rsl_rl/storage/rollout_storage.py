@@ -356,6 +356,11 @@ class RolloutStorage:
                 privileged_obs_batch = padded_privileged_obs_trajectories[:, first_traj:last_traj]
                 # 新增 prev_action batch (for RL^2 input)
                 prev_actions_batch = padded_action_trajectories[:, first_traj:last_traj]
+                # RL^2: shift prev_actions by 1 step
+                prev_actions_batch = torch.cat(
+                    [torch.zeros_like(prev_actions_batch[:, :1, :], device=prev_actions_batch.device),
+                    prev_actions_batch[:, :-1, :]], dim=1
+                )
 
                 if padded_rnd_state_trajectories is not None:
                     rnd_state_batch = padded_rnd_state_trajectories[:, first_traj:last_traj]
