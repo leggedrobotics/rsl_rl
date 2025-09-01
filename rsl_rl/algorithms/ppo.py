@@ -215,7 +215,7 @@ class PPO:
             num_aug = 1
             # original batch size
             # we assume policy group is always there and needs augmentation
-            original_batch_size = obs_batch["policy"].shape[0]
+            original_batch_size = obs_batch.batch_size[0]
 
             # check if we should normalize advantages per mini batch
             if self.normalize_advantage_per_mini_batch:
@@ -227,14 +227,14 @@ class PPO:
                 # augmentation using symmetry
                 data_augmentation_func = self.symmetry["data_augmentation_func"]
                 # returned shape: [batch_size * num_aug, ...]
-                obs_batch, actions_batch = data_augmentation_func(  # TODO: needs changes on the isaac lab side
+                obs_batch, actions_batch = data_augmentation_func(
                     obs=obs_batch,
                     actions=actions_batch,
                     env=self.symmetry["_env"],
                 )
                 # compute number of augmentations per sample
                 # we assume policy group is always there and needs augmentation
-                num_aug = int(obs_batch["policy"].shape[0] / original_batch_size)
+                num_aug = int(obs_batch.batch_size[0] / original_batch_size)
                 # repeat the rest of the batch
                 # -- actor
                 old_actions_log_prob_batch = old_actions_log_prob_batch.repeat(num_aug, 1)
