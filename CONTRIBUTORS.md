@@ -35,5 +35,6 @@ Please keep the lists sorted alphabetically.
 * Matthijs van der Boon
 * Özhan Özen
 * Pascal Roth
+* Shaoshu Su
 * Zhang Chong
 * Ziqi Fan
