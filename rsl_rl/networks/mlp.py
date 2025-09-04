@@ -72,7 +72,7 @@ class MLP(nn.Sequential):
             total_out_dim = reduce(lambda x, y: x * y, output_dim)
             # add a layer to reshape the output to the desired shape
             layers.append(nn.Linear(hidden_dims_processed[-1], total_out_dim))
-            layers.append(nn.Unflatten(output_dim))
+            layers.append(nn.Unflatten(-1, output_dim))
 
         # add last activation function if specified
         if last_activation_mod is not None:
