@@ -399,3 +399,123 @@ class RolloutStorage:
                 ), masks_batch, rnd_state_batch
 
                 first_traj = last_traj
+
+
+    # for reinforcement learning with recurrent networks + RL^2 style input (obs + prev_action) + shuffle
+    def recurrent_mini_batch_generator_with_prev_action_shuffle(self, num_mini_batches, num_epochs=8):
+        if self.training_type != "rl":
+            raise ValueError("This function is only available for reinforcement learning training.")
+
+        # pad observations
+        padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.observations, self.dones)
+        if self.privileged_observations is not None:
+            padded_privileged_obs_trajectories, _ = split_and_pad_trajectories(self.privileged_observations, self.dones)
+        else:
+            padded_privileged_obs_trajectories = padded_obs_trajectories
+
+        # pad rnd state if exists
+        if self.rnd_state_shape is not None:
+            padded_rnd_state_trajectories, _ = split_and_pad_trajectories(self.rnd_state, self.dones)
+        else:
+            padded_rnd_state_trajectories = None
+
+        # pad actions (for RL^2 input as prev_action)
+        padded_action_trajectories, _ = split_and_pad_trajectories(self.actions, self.dones)
+
+        mini_batch_size = self.num_envs // num_mini_batches
+        for ep in range(num_epochs):
+            first_traj = 0
+
+            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            # shuffle the env
+            shuffle_env_index = torch.randperm(self.num_envs, device=self.device)
+
+            # re-pad the trajectories according to the shuffled env index
+            padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(
+                self.observations[:, shuffle_env_index],
+                self.dones[:, shuffle_env_index],
+            )
+            if self.privileged_observations is not None:
+                padded_privileged_obs_trajectories, _ = split_and_pad_trajectories(
+                    self.privileged_observations[:, shuffle_env_index],
+                    self.dones[:, shuffle_env_index],
+                )
+            else:
+                padded_privileged_obs_trajectories = padded_obs_trajectories
+
+            # re-pad rnd state if exists
+            if self.rnd_state_shape is not None:
+                padded_rnd_state_trajectories, _ = split_and_pad_trajectories(
+                    self.rnd_state[:, shuffle_env_index],
+                    self.dones[:, shuffle_env_index],
+                )
+            else:
+                padded_rnd_state_trajectories = None
+
+            # re-pad actions (for RL^2 input as prev_action)
+            padded_action_trajectories, _ = split_and_pad_trajectories(
+                self.actions[:, shuffle_env_index],
+                self.dones[:, shuffle_env_index],
+            )
+            # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+            for i in range(num_mini_batches):
+                start = i * mini_batch_size
+                stop = (i + 1) * mini_batch_size
+                shuffled_batch_envs = shuffle_env_index[start:stop]
+
+                dones = self.dones.squeeze(-1)
+                last_was_done = torch.zeros_like(dones, dtype=torch.bool)
+                last_was_done[1:] = dones[:-1]
+                last_was_done[0] = True
+                trajectories_batch_size = torch.sum(last_was_done[:, shuffled_batch_envs])
+                last_traj = first_traj + trajectories_batch_size
+
+                masks_batch = trajectory_masks[:, first_traj:last_traj]
+                obs_batch = padded_obs_trajectories[:, first_traj:last_traj]
+                privileged_obs_batch = padded_privileged_obs_trajectories[:, first_traj:last_traj]
+                # 新增 prev_action batch (for RL^2 input)
+                prev_actions_batch = padded_action_trajectories[:, first_traj:last_traj]
+                # RL^2: shift prev_actions by 1 step
+                prev_actions_batch = torch.cat(
+                    [torch.zeros_like(prev_actions_batch[:, :1, :], device=prev_actions_batch.device),
+                    prev_actions_batch[:, :-1, :]], dim=1
+                )
+
+                if padded_rnd_state_trajectories is not None:
+                    rnd_state_batch = padded_rnd_state_trajectories[:, first_traj:last_traj]
+                else:
+                    rnd_state_batch = None
+
+                actions_batch = self.actions[:, shuffled_batch_envs]
+                old_mu_batch = self.mu[:, shuffled_batch_envs]
+                old_sigma_batch = self.sigma[:, shuffled_batch_envs]
+                returns_batch = self.returns[:, shuffled_batch_envs]
+                advantages_batch = self.advantages[:, shuffled_batch_envs]
+                values_batch = self.values[:, shuffled_batch_envs]
+                old_actions_log_prob_batch = self.actions_log_prob[:, shuffled_batch_envs]
+
+                # hidden states reshape
+                last_was_done = last_was_done.permute(1, 0)
+                hid_a_batch = [
+                    saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
+                    .transpose(1, 0)
+                    .contiguous()
+                    for saved_hidden_states in self.saved_hidden_states_a
+                ]
+                hid_c_batch = [
+                    saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
+                    .transpose(1, 0)
+                    .contiguous()
+                    for saved_hidden_states in self.saved_hidden_states_c
+                ]
+                hid_a_batch = hid_a_batch[0] if len(hid_a_batch) == 1 else hid_a_batch
+                hid_c_batch = hid_c_batch[0] if len(hid_c_batch) == 1 else hid_c_batch
+
+                # 新增 prev_actions_batch 输出
+                yield obs_batch, prev_actions_batch, privileged_obs_batch, actions_batch, values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (
+                    hid_a_batch,
+                    hid_c_batch,
+                ), masks_batch, rnd_state_batch
+
+                first_traj = last_traj
