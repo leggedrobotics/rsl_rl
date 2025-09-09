@@ -80,6 +80,8 @@ class ActorCritic(nn.Module):
                 torch.nn.init.constant_(self.actor[-2].bias[num_actions:], init_noise_std)
             elif self.noise_std_type == "log":
                 self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
+            else:
+                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         else:
             if self.noise_std_type == "scalar":
                 self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
