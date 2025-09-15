@@ -137,8 +137,8 @@ class ActorCriticRecurrent(nn.Module):
             if self.noise_std_type == "scalar":
                 mean, std = torch.unbind(mean_and_std, dim=-2)
             elif self.noise_std_type == "log":
-                mean, self.log_std = torch.unbind(mean_and_std, dim=-2)
-                std = torch.exp(self.log_std)
+                mean, log_std = torch.unbind(mean_and_std, dim=-2)
+                std = torch.exp(log_std)
             else:
                 raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         else:
