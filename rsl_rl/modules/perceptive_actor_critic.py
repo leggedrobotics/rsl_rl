@@ -11,7 +11,7 @@ from torch.distributions import Normal
 
 from .actor_critic import ActorCritic
 
-from rsl_rl.networks import MLP, CNN, CNNConfig, EmpiricalNormalization
+from rsl_rl.networks import MLP, CNN, EmpiricalNormalization
 
 
 class PerceptiveActorCritic(ActorCritic):
@@ -24,8 +24,8 @@ class PerceptiveActorCritic(ActorCritic):
         critic_obs_normalization: bool = False,
         actor_hidden_dims: list[int] = [256, 256, 256],
         critic_hidden_dims: list[int] = [256, 256, 256],
-        actor_cnn_config: dict[str, CNNConfig] | CNNConfig | None = None,
-        critic_cnn_config: dict[str, CNNConfig] | CNNConfig | None = None,
+        actor_cnn_config: dict[str, dict] | dict | None = None,
+        critic_cnn_config: dict[str, dict] | dict | None = None,
         activation: str = "elu",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
@@ -45,10 +45,10 @@ class PerceptiveActorCritic(ActorCritic):
         self.actor_obs_group_1d = []
         self.actor_obs_group_2d = []
         for obs_group in obs_groups["policy"]:
-            if len(obs[obs_group].shape) == 2:  # FIXME: should be 3???
+            if len(obs[obs_group].shape) == 4:  # B, C, H, W
                 self.actor_obs_group_2d.append(obs_group)
-                num_actor_in_channels.append(obs[obs_group].shape[0])
-            elif len(obs[obs_group].shape) == 1:
+                num_actor_in_channels.append(obs[obs_group].shape[1])
+            elif len(obs[obs_group].shape) == 2:  # B, C
                 self.actor_obs_group_1d.append(obs_group)
                 num_actor_obs += obs[obs_group].shape[-1]
             else:
@@ -59,36 +59,36 @@ class PerceptiveActorCritic(ActorCritic):
         num_critic_obs = 0
         num_critic_in_channels = []
         for obs_group in obs_groups["critic"]:
-            if len(obs[obs_group].shape) == 2:  # FIXME: should be 3???
+            if len(obs[obs_group].shape) == 4:  # B, C, H, W
                 self.critic_obs_group_2d.append(obs_group)
-                num_critic_in_channels.append(obs[obs_group].shape[0])
-            else:
+                num_critic_in_channels.append(obs[obs_group].shape[1])
+            elif len(obs[obs_group].shape) == 2:  # B, C
                 self.critic_obs_group_1d.append(obs_group)
                 num_critic_obs += obs[obs_group].shape[-1]
+            else:
+                raise ValueError(f"Invalid observation shape for {obs_group}: {obs[obs_group].shape}")
 
         # actor cnn
         if self.actor_obs_group_2d:
             assert actor_cnn_config is not None, "Actor CNN config is required for 2D actor observations."
             
             # check if multiple 2D actor observations are provided
-            if len(self.actor_obs_group_2d) > 1 and isinstance(actor_cnn_config, CNNConfig):
+            if len(self.actor_obs_group_2d) > 1 and all(isinstance(item, dict) for item in actor_cnn_config.values()):
+                assert len(actor_cnn_config) == len(self.actor_obs_group_2d), "Number of CNN configs must match number of 2D actor observations."
+            elif len(self.actor_obs_group_2d) > 1:
                 print(f"Only one CNN config for multiple 2D actor observations given, using the same CNN for all groups.")
                 actor_cnn_config = dict(zip(self.actor_obs_group_2d, [actor_cnn_config] * len(self.actor_obs_group_2d)))
-            elif len(self.actor_obs_group_2d) > 1 and isinstance(actor_cnn_config, dict):
-                assert len(actor_cnn_config) == len(self.actor_obs_group_2d), "Number of CNN configs must match number of 2D actor observations."
-            elif len(self.actor_obs_group_2d) == 1 and isinstance(actor_cnn_config, CNNConfig):
-                actor_cnn_config = dict(zip(self.actor_obs_group_2d, [actor_cnn_config]))
             else:
-                raise ValueError(f"Invalid combination of 2D actor observations {self.actor_obs_group_2d} and actor CNN config {actor_cnn_config}.")
+                actor_cnn_config = dict(zip(self.actor_obs_group_2d, [actor_cnn_config]))
 
-            self.actor_cnns = {}
+            self.actor_cnns = nn.ModuleDict()
             encoding_dims = []
             for idx, obs_group in enumerate(self.actor_obs_group_2d):
-                self.actor_cnns[obs_group] = CNN(actor_cnn_config[obs_group], num_actor_in_channels[idx], activation)
+                self.actor_cnns[obs_group] = CNN(num_actor_in_channels[idx], activation, **actor_cnn_config[obs_group])
                 print(f"Actor CNN for {obs_group}: {self.actor_cnns[obs_group]}")
 
-                # compute the encoding dimension
-                encoding_dims.append(self.actor_cnns[obs_group](obs[obs_group]).shape[-1])
+                # compute the encoding dimension (cpu necessary as model not moved to device yet)
+                encoding_dims.append(self.actor_cnns[obs_group](obs[obs_group].to("cpu")).shape[-1])
             
             encoding_dim = sum(encoding_dims)
         else:
@@ -111,24 +111,22 @@ class PerceptiveActorCritic(ActorCritic):
             assert critic_cnn_config is not None, "Critic CNN config is required for 2D critic observations."
             
             # check if multiple 2D critic observations are provided
-            if len(self.critic_obs_group_2d) > 1 and isinstance(critic_cnn_config, CNNConfig):
+            if len(self.critic_obs_group_2d) > 1 and all(isinstance(item, dict) for item in critic_cnn_config.values()):
+                assert len(critic_cnn_config) == len(self.critic_obs_group_2d), "Number of CNN configs must match number of 2D critic observations."
+            elif len(self.critic_obs_group_2d) > 1:
                 print(f"Only one CNN config for multiple 2D critic observations given, using the same CNN for all groups.")
                 critic_cnn_config = dict(zip(self.critic_obs_group_2d, [critic_cnn_config] * len(self.critic_obs_group_2d)))
-            elif len(self.critic_obs_group_2d) > 1 and isinstance(critic_cnn_config, dict):
-                assert len(critic_cnn_config) == len(self.critic_obs_group_2d), "Number of CNN configs must match number of 2D critic observations."
-            elif len(self.critic_obs_group_2d) == 1 and isinstance(critic_cnn_config, CNNConfig):
-                critic_cnn_config = dict(zip(self.critic_obs_group_2d, [critic_cnn_config]))
             else:
-                raise ValueError(f"Invalid combination of 2D critic observations {self.critic_obs_group_2d} and critic CNN config {critic_cnn_config}.")
+                critic_cnn_config = dict(zip(self.critic_obs_group_2d, [critic_cnn_config]))
 
-            self.critic_cnns = {}
+            self.critic_cnns = nn.ModuleDict()
             encoding_dims = []
             for idx, obs_group in enumerate(self.critic_obs_group_2d):
-                self.critic_cnns[obs_group] = CNN(critic_cnn_config[obs_group], num_critic_in_channels[idx], activation)
+                self.critic_cnns[obs_group] = CNN(num_critic_in_channels[idx], activation, **critic_cnn_config[obs_group])
                 print(f"Critic CNN for {obs_group}: {self.critic_cnns[obs_group]}")
 
-                # compute the encoding dimension
-                encoding_dims.append(self.critic_cnns[obs_group](obs[obs_group]).shape[-1])
+                # compute the encoding dimension (cpu necessary as model not moved to device yet)
+                encoding_dims.append(self.critic_cnns[obs_group](obs[obs_group].to("cpu")).shape[-1])
             
             encoding_dim = sum(encoding_dims)
         else:

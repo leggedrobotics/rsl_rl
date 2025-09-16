@@ -6,25 +6,13 @@
 from __future__ import annotations
 
 import torch
-from dataclasses import MISSING, dataclass
 from torch import nn as nn
 
 from rsl_rl.utils import resolve_nn_activation
 
 
-@dataclass
-class CNNConfig:
-    out_channels: list[int] = MISSING
-    kernel_size: list[tuple[int, int]] | tuple[int, int] = MISSING
-    stride: list[int] | int = 1
-    flatten: bool = True
-    avg_pool: tuple[int, int] | None = None
-    batchnorm: bool | list[bool] = False
-    max_pool: bool | list[bool] = False
-
-
-class CNN(nn.Module):
-    def __init__(self, cfg: CNNConfig, in_channels: int, activation: str):
+class CNN(nn.Sequential):
+    def __init__(self, in_channels: int, activation: str, out_channels: list[int], kernel_size: list[tuple[int, int]] | tuple[int, int], stride: list[int] | int = 1, flatten: bool = True, avg_pool: tuple[int, int] | None = None, batchnorm: bool | list[bool] = False, max_pool: bool | list[bool] = False):
         """
         Convolutional Neural Network model.
 
@@ -33,52 +21,52 @@ class CNN(nn.Module):
         """
         super().__init__()
 
-        if isinstance(cfg.batchnorm, bool):
-            cfg.batchnorm = [cfg.batchnorm] * len(cfg.out_channels)
-        if isinstance(cfg.max_pool, bool):
-            cfg.max_pool = [cfg.max_pool] * len(cfg.out_channels)
-        if isinstance(cfg.kernel_size, tuple):
-            cfg.kernel_size = [cfg.kernel_size] * len(cfg.out_channels)
-        if isinstance(cfg.stride, int):
-            cfg.stride = [cfg.stride] * len(cfg.out_channels)
+        if isinstance(batchnorm, bool):
+            batchnorm = [batchnorm] * len(out_channels)
+        if isinstance(max_pool, bool):
+            max_pool = [max_pool] * len(out_channels)
+        if isinstance(kernel_size, tuple):
+            kernel_size = [kernel_size] * len(out_channels)
+        if isinstance(stride, int):
+            stride = [stride] * len(out_channels)
 
         # get activation function
         activation_function = resolve_nn_activation(activation)
 
         # build model layers
-        modules = []
+        layers = []
 
-        for idx in range(len(cfg.out_channels)):
-            in_channels = cfg.in_channels if idx == 0 else cfg.out_channels[idx - 1]
-            modules.append(
+        for idx in range(len(out_channels)):
+            in_channels = in_channels if idx == 0 else out_channels[idx - 1]
+            layers.append(
                 nn.Conv2d(
                     in_channels=in_channels,
-                    out_channels=cfg.out_channels[idx],
-                    kernel_size=cfg.kernel_size[idx],
-                    stride=cfg.stride[idx],
+                    out_channels=out_channels[idx],
+                    kernel_size=kernel_size[idx],
+                    stride=stride[idx],
                 )
             )
-            if cfg.batchnorm[idx]:
-                modules.append(nn.BatchNorm2d(num_features=cfg.out_channels[idx]))
-            modules.append(activation_function)
-            if cfg.max_pool[idx]:
-                modules.append(nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
+            if batchnorm[idx]:
+                layers.append(nn.BatchNorm2d(num_features=out_channels[idx]))
+            layers.append(activation_function)
+            if max_pool[idx]:
+                layers.append(nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
 
-        self.architecture = nn.Sequential(*modules)
+        # register the layers
+        for idx, layer in enumerate(layers):
+            self.add_module(f"{idx}", layer)
 
-        if cfg.avg_pool is not None:
-            self.avgpool = nn.AdaptiveAvgPool2d(cfg.avg_pool)
+        if avg_pool is not None:
+            self.avgpool = nn.AdaptiveAvgPool2d(avg_pool)
         else:
             self.avgpool = None
 
-        # initialize weights
-        self.init_weights(self.architecture)
-
         # save flatten config for forward function
-        self.flatten = cfg.flatten
+        self.flatten = flatten
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.architecture(x)
+        for layer in self:
+            x = layer(x)
         if self.flatten:
             x = x.flatten(start_dim=1)
         elif self.avgpool is not None:
@@ -86,9 +74,10 @@ class CNN(nn.Module):
             x = x.flatten(start_dim=1)
         return x
 
-    @staticmethod
-    def init_weights(sequential):
-        [
-            torch.nn.init.xavier_uniform_(module.weight)
-            for idx, module in enumerate(mod for mod in sequential if isinstance(mod, nn.Conv2d))
-        ]
+    def init_weights(self, scales: float | tuple[float]):
+        """Initialize the weights of the CNN."""
+
+        # initialize the weights
+        for idx, module in enumerate(self):
+            if isinstance(module, nn.Conv2d):
+                nn.init.xavier_uniform_(module.weight)

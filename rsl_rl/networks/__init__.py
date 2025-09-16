@@ -7,7 +7,7 @@
 
 from .memory import HiddenState, Memory
 from .mlp import MLP
-from .cnn import CNN, CNNConfig
+from .cnn import CNN
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
 
 __all__ = [
