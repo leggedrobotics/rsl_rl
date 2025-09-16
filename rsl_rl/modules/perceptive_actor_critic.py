@@ -9,13 +9,13 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 
-from .actor_critic import ActorCritic
+from rsl_rl.networks import CNN, MLP, EmpiricalNormalization
 
-from rsl_rl.networks import MLP, CNN, EmpiricalNormalization
+from .actor_critic import ActorCritic
 
 
 class PerceptiveActorCritic(ActorCritic):
-    def __init__(
+    def __init__(  # noqa: C901
         self,
         obs,
         obs_groups,
@@ -53,7 +53,7 @@ class PerceptiveActorCritic(ActorCritic):
                 num_actor_obs += obs[obs_group].shape[-1]
             else:
                 raise ValueError(f"Invalid observation shape for {obs_group}: {obs[obs_group].shape}")
-        
+
         self.critic_obs_group_1d = []
         self.critic_obs_group_2d = []
         num_critic_obs = 0
@@ -71,12 +71,16 @@ class PerceptiveActorCritic(ActorCritic):
         # actor cnn
         if self.actor_obs_group_2d:
             assert actor_cnn_config is not None, "Actor CNN config is required for 2D actor observations."
-            
+
             # check if multiple 2D actor observations are provided
             if len(self.actor_obs_group_2d) > 1 and all(isinstance(item, dict) for item in actor_cnn_config.values()):
-                assert len(actor_cnn_config) == len(self.actor_obs_group_2d), "Number of CNN configs must match number of 2D actor observations."
+                assert len(actor_cnn_config) == len(
+                    self.actor_obs_group_2d
+                ), "Number of CNN configs must match number of 2D actor observations."
             elif len(self.actor_obs_group_2d) > 1:
-                print(f"Only one CNN config for multiple 2D actor observations given, using the same CNN for all groups.")
+                print(
+                    "Only one CNN config for multiple 2D actor observations given, using the same CNN for all groups."
+                )
                 actor_cnn_config = dict(zip(self.actor_obs_group_2d, [actor_cnn_config] * len(self.actor_obs_group_2d)))
             else:
                 actor_cnn_config = dict(zip(self.actor_obs_group_2d, [actor_cnn_config]))
@@ -89,7 +93,7 @@ class PerceptiveActorCritic(ActorCritic):
 
                 # compute the encoding dimension (cpu necessary as model not moved to device yet)
                 encoding_dims.append(self.actor_cnns[obs_group](obs[obs_group].to("cpu")).shape[-1])
-            
+
             encoding_dim = sum(encoding_dims)
         else:
             self.actor_cnns = None
@@ -97,7 +101,7 @@ class PerceptiveActorCritic(ActorCritic):
 
         # actor mlp
         self.actor = MLP(num_actor_obs + encoding_dim, num_actions, actor_hidden_dims, activation)
-        
+
         # actor observation normalization (only for 1D actor observations)
         self.actor_obs_normalization = actor_obs_normalization
         if actor_obs_normalization:
@@ -109,25 +113,33 @@ class PerceptiveActorCritic(ActorCritic):
         # critic cnn
         if self.critic_obs_group_2d:
             assert critic_cnn_config is not None, "Critic CNN config is required for 2D critic observations."
-            
+
             # check if multiple 2D critic observations are provided
             if len(self.critic_obs_group_2d) > 1 and all(isinstance(item, dict) for item in critic_cnn_config.values()):
-                assert len(critic_cnn_config) == len(self.critic_obs_group_2d), "Number of CNN configs must match number of 2D critic observations."
+                assert len(critic_cnn_config) == len(
+                    self.critic_obs_group_2d
+                ), "Number of CNN configs must match number of 2D critic observations."
             elif len(self.critic_obs_group_2d) > 1:
-                print(f"Only one CNN config for multiple 2D critic observations given, using the same CNN for all groups.")
-                critic_cnn_config = dict(zip(self.critic_obs_group_2d, [critic_cnn_config] * len(self.critic_obs_group_2d)))
+                print(
+                    "Only one CNN config for multiple 2D critic observations given, using the same CNN for all groups."
+                )
+                critic_cnn_config = dict(
+                    zip(self.critic_obs_group_2d, [critic_cnn_config] * len(self.critic_obs_group_2d))
+                )
             else:
                 critic_cnn_config = dict(zip(self.critic_obs_group_2d, [critic_cnn_config]))
 
             self.critic_cnns = nn.ModuleDict()
             encoding_dims = []
             for idx, obs_group in enumerate(self.critic_obs_group_2d):
-                self.critic_cnns[obs_group] = CNN(num_critic_in_channels[idx], activation, **critic_cnn_config[obs_group])
+                self.critic_cnns[obs_group] = CNN(
+                    num_critic_in_channels[idx], activation, **critic_cnn_config[obs_group]
+                )
                 print(f"Critic CNN for {obs_group}: {self.critic_cnns[obs_group]}")
 
                 # compute the encoding dimension (cpu necessary as model not moved to device yet)
                 encoding_dims.append(self.critic_cnns[obs_group](obs[obs_group].to("cpu")).shape[-1])
-            
+
             encoding_dim = sum(encoding_dims)
         else:
             self.critic_cnns = None
@@ -135,7 +147,7 @@ class PerceptiveActorCritic(ActorCritic):
 
         # critic mlp
         self.critic = MLP(num_critic_obs + encoding_dim, 1, critic_hidden_dims, activation)
-        
+
         # critic observation normalization (only for 1D critic observations)
         self.critic_obs_normalization = critic_obs_normalization
         if critic_obs_normalization:
@@ -159,7 +171,7 @@ class PerceptiveActorCritic(ActorCritic):
         Normal.set_default_validate_args(False)
 
     def update_distribution(self, mlp_obs: torch.Tensor, cnn_obs: dict[str, torch.Tensor]):
-        
+
         if self.actor_cnns is not None:
             # encode the 2D actor observations
             cnn_enc_list = []
@@ -168,7 +180,7 @@ class PerceptiveActorCritic(ActorCritic):
             cnn_enc = torch.cat(cnn_enc_list, dim=-1)
             # update mlp obs
             mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
-        
+
         super().update_distribution(mlp_obs)
 
     def act(self, obs, **kwargs):
@@ -180,7 +192,7 @@ class PerceptiveActorCritic(ActorCritic):
     def act_inference(self, obs):
         mlp_obs, cnn_obs = self.get_actor_obs(obs)
         mlp_obs = self.actor_obs_normalizer(mlp_obs)
-        
+
         if self.actor_cnns is not None:
             # encode the 2D actor observations
             cnn_enc_list = []
@@ -189,7 +201,7 @@ class PerceptiveActorCritic(ActorCritic):
             cnn_enc = torch.cat(cnn_enc_list, dim=-1)
             # update mlp obs
             mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
-        
+
         return self.actor(mlp_obs)
 
     def evaluate(self, obs, **kwargs):
@@ -204,7 +216,7 @@ class PerceptiveActorCritic(ActorCritic):
             cnn_enc = torch.cat(cnn_enc_list, dim=-1)
             # update mlp obs
             mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
-        
+
         return self.critic(mlp_obs)
 
     def get_actor_obs(self, obs):

@@ -12,7 +12,18 @@ from rsl_rl.utils import resolve_nn_activation
 
 
 class CNN(nn.Sequential):
-    def __init__(self, in_channels: int, activation: str, out_channels: list[int], kernel_size: list[tuple[int, int]] | tuple[int, int], stride: list[int] | int = 1, flatten: bool = True, avg_pool: tuple[int, int] | None = None, batchnorm: bool | list[bool] = False, max_pool: bool | list[bool] = False):
+    def __init__(
+        self,
+        in_channels: int,
+        activation: str,
+        out_channels: list[int],
+        kernel_size: list[tuple[int, int]] | tuple[int, int],
+        stride: list[int] | int = 1,
+        flatten: bool = True,
+        avg_pool: tuple[int, int] | None = None,
+        batchnorm: bool | list[bool] = False,
+        max_pool: bool | list[bool] = False,
+    ):
         """
         Convolutional Neural Network model.
 
