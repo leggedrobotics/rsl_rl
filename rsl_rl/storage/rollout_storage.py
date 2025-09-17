@@ -519,3 +519,269 @@ class RolloutStorage:
                 ), masks_batch, rnd_state_batch
 
                 first_traj = last_traj
+
+
+    # chunk 生成器 9.16
+    def debug_chunk_mini_batch_generator(self, num_mini_batches, num_epochs=8, chunk_size=1):
+        """
+        Generator that yields mini-batches of experience in chunks of length `chunk_size`,
+
+        Yields:
+            Tuple: (
+                obs, privileged_obs, actions, values, returns,
+                log_probs, advantages, old_mu, old_sigma,
+                hid_states(first), masks(None), rnd_state
+            )
+            Shapes:
+                obs: [chunk_size, batch, obs_dim]
+                masks: [chunk_size, batch, 1] (1=valid, 0=padding)
+                hidden_state: [num_layers, batch, hidden_dim]
+        """
+        if self.training_type != "rl":
+            raise ValueError("This function is only available for reinforcement learning training.")
+
+        T = self.num_transitions_per_env
+        N = self.num_envs
+        assert T % chunk_size == 0, "T must be divisible by chunk_size"
+
+        num_chunks = T // chunk_size
+        batch_size = num_chunks * N
+        mini_batch_size = batch_size // num_mini_batches
+
+        indices = torch.randperm(batch_size, requires_grad=False, device=self.device)
+
+        # 切分chunk函数
+        def make_chunks(x):
+            T, N = x.shape[:2]
+            num_chunks = T // chunk_size
+
+            x = x.view(num_chunks, chunk_size, N, *x.shape[2:])
+            x = x.transpose(0, 1)
+
+            x = x.reshape(chunk_size, num_chunks * N, *x.shape[3:])
+            return x
+
+        # return hidden_chunks_first  # [num_layers, batch, hidden_dim]
+        def get_chunk_hidden_states(saved_hidden_states):
+            """
+            saved_hidden_states: list of [T, num_layers, num_envs, hidden_dim]
+            returns: tensor [num_layers, total_chunks, hidden_dim]
+            """
+            if len(saved_hidden_states) == 1:
+                h = saved_hidden_states[0]  # [T, num_layers, num_envs, hidden_dim]
+            else:
+                h = torch.stack(saved_hidden_states, dim=1)  # [T, num_layers, num_envs, hidden_dim] or list stacking
+
+            # take first timestep of each chunk
+            h = h.permute(2, 0, 1, 3)  # [num_envs, T, num_layers, hidden_dim]
+            h_chunks = h.view(N, num_chunks, chunk_size, h.shape[2], h.shape[3])
+            h_first = h_chunks[:, :, 0, :, :]  # [num_envs, num_chunks, num_layers, hidden_dim]
+            h_first = h_first.permute(2, 0, 1, 3).reshape(h_first.shape[2], num_chunks*N, h_first.shape[3])
+            return h_first  # [num_layers, batch, hidden_dim]
+
+        # Core
+        observations = make_chunks(self.observations)
+        if self.privileged_observations is not None:
+            privileged_observations = make_chunks(self.privileged_observations)
+        else:
+            privileged_observations = observations
+
+        actions = make_chunks(self.actions)
+        values = make_chunks(self.values)
+        returns = make_chunks(self.returns)
+
+        # prev_actions for RL^2 input
+        prev_actions = torch.zeros_like(self.actions)
+        prev_actions[1:, :, :] = self.actions[:-1, :, :]
+        prev_actions = make_chunks(prev_actions)
+
+        # For PPO
+        old_actions_log_prob = make_chunks(self.actions_log_prob)
+        advantages = make_chunks(self.advantages)
+        old_mu = make_chunks(self.mu)
+        old_sigma = make_chunks(self.sigma)
+
+        # For RND
+        if self.rnd_state_shape is not None:
+            rnd_state = make_chunks(self.rnd_state)
+
+        # For hidden_states_first
+        hid_a_chunks_first = get_chunk_hidden_states(self.saved_hidden_states_a)
+        hid_c_chunks_first = get_chunk_hidden_states(self.saved_hidden_states_c)
+
+        # 为了对齐后面RNN的输入，直接生成一个全true的mask
+        # 必须mask有值才会用输入的hid，mask=None默认用memory自己存的hid
+        masks_batch = torch.ones(observations[:, 0].shape[:2], dtype=torch.bool, device=observations.device)
+
+        for epoch in range(num_epochs):
+            for i in range(num_mini_batches):
+                # Select the indices for the mini-batch
+                start = i * mini_batch_size
+                end = (i + 1) * mini_batch_size
+                batch_idx = indices[start:end]
+
+                # Create the mini-batch
+                # [batch_size, batch, dim]，记得切第二维
+                # -- Core
+                obs_batch = observations[:, batch_idx]
+                privileged_observations_batch = privileged_observations[:, batch_idx]
+                actions_batch = actions[:, batch_idx]
+                prev_actions_batch = prev_actions[:, batch_idx]
+
+                # -- For PPO
+                target_values_batch = values[:, batch_idx]
+                returns_batch = returns[:, batch_idx]
+                old_actions_log_prob_batch = old_actions_log_prob[:, batch_idx]
+                advantages_batch = advantages[:, batch_idx]
+                old_mu_batch = old_mu[:, batch_idx]
+                old_sigma_batch = old_sigma[:, batch_idx]
+
+                # hidden_state_first
+                hid_a_batch = hid_a_chunks_first[:, batch_idx]
+                hid_c_batch = hid_c_chunks_first[:, batch_idx]
+                hid_states_batch = (hid_a_batch, hid_c_batch)
+
+                # -- For RND
+                if self.rnd_state_shape is not None:
+                    rnd_state_batch = rnd_state[:, batch_idx]
+                else:
+                    rnd_state_batch = None
+
+                # yield the mini-batch
+                yield obs_batch, privileged_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (
+                    None,
+                    None,
+                ), None, rnd_state_batch
+
+
+    # 旧的chunk生成器 已经弃用
+    def chunk_mini_batch_generator(self, num_mini_batches, num_epochs=8, chunk_size=2):
+        """
+        Fully vectorized chunk mini-batch generator.
+        Outputs are identical to your previous generator but with much less Python overhead.
+
+        Shapes:
+            obs: [chunk_size, batch, obs_dim]
+            masks: [chunk_size, batch]
+            hidden_state: [num_layers, batch, hidden_dim]
+        """
+        if self.training_type != "rl":
+            raise ValueError("This function is only available for reinforcement learning training.")
+
+        num_envs = self.num_envs
+        T = self.num_transitions_per_env
+        num_chunks_per_env = T // chunk_size
+        total_chunks = num_envs * num_chunks_per_env
+
+        device = self.device
+
+        # ========== 1. Permute to [num_envs, T, dim] ==========
+        obs_env = self.observations.permute(1, 0, 2)  # [num_envs, T, obs_dim]
+        priv_obs_env = obs_env if self.privileged_observations is None else self.privileged_observations.permute(1, 0, 2)
+        actions_env = self.actions.permute(1, 0, 2)
+        values_env = self.values.permute(1, 0, 2)
+        returns_env = self.returns.permute(1, 0, 2)
+        log_probs_env = self.actions_log_prob.permute(1, 0, 2)
+        advantages_env = self.advantages.permute(1, 0, 2)
+        old_mu_env = self.mu.permute(1, 0, 2)
+        old_sigma_env = self.sigma.permute(1, 0, 2)
+        dones_env = self.dones.permute(1, 0, 2)
+
+        prev_actions_env = torch.zeros_like(actions_env)
+        prev_actions_env[:, 1:, :] = actions_env[:, :-1, :]
+
+        rnd_env = None if self.rnd_state_shape is None else self.rnd_state.permute(1, 0, 2)
+
+        # ========== 2. Create chunk indices ==========
+        # chunk shape: [num_envs, num_chunks_per_env, chunk_size, dim]
+        def make_chunks(x):
+            x = x.view(num_envs, num_chunks_per_env, chunk_size, -1)
+            return x
+
+        obs_chunks = make_chunks(obs_env)
+        priv_obs_chunks = make_chunks(priv_obs_env)
+        actions_chunks = make_chunks(actions_env)
+        prev_actions_chunks = make_chunks(prev_actions_env)
+        values_chunks = make_chunks(values_env)
+        returns_chunks = make_chunks(returns_env)
+        log_probs_chunks = make_chunks(log_probs_env)
+        advantages_chunks = make_chunks(advantages_env)
+        old_mu_chunks = make_chunks(old_mu_env)
+        old_sigma_chunks = make_chunks(old_sigma_env)
+        masks_chunks = (~make_chunks(dones_env).bool().squeeze(-1))  # [num_envs, num_chunks, chunk_size]
+
+        if rnd_env is not None:
+            rnd_chunks = make_chunks(rnd_env)
+
+        # ========== 3. Prepare hidden states (first timestep of each chunk) ==========
+        def get_chunk_hidden_states(saved_hidden_states):
+            """
+            saved_hidden_states: list of [T, num_layers, num_envs, hidden_dim]
+            returns: tensor [num_layers, total_chunks, hidden_dim]
+            """
+            if len(saved_hidden_states) == 1:
+                h = saved_hidden_states[0]  # [T, num_layers, num_envs, hidden_dim]
+            else:
+                h = torch.stack(saved_hidden_states, dim=1)  # [T, num_layers, num_envs, hidden_dim] or list stacking
+
+            # take first timestep of each chunk
+            h = h.permute(2, 0, 1, 3)  # [num_envs, T, num_layers, hidden_dim]
+            h_chunks = h.view(num_envs, num_chunks_per_env, chunk_size, h.shape[2], h.shape[3])
+            h_first = h_chunks[:, :, 0, :, :]  # [num_envs, num_chunks, num_layers, hidden_dim]
+            h_first = h_first.permute(2, 0, 1, 3).reshape(h_first.shape[2], total_chunks, h_first.shape[3])
+            return h_first  # [num_layers, total_chunks, hidden_dim]
+
+        hid_a_chunks = get_chunk_hidden_states(self.saved_hidden_states_a)
+        hid_c_chunks = get_chunk_hidden_states(self.saved_hidden_states_c)
+        hid_states_chunks = (hid_a_chunks, hid_c_chunks)
+
+        # ========== 4. Flatten chunks ==========
+        def flatten_chunks(x):
+            return x.reshape(total_chunks, chunk_size, *x.shape[3:])  # [total_chunks, chunk_size, dim]
+
+        obs_chunks = flatten_chunks(obs_chunks)
+        priv_obs_chunks = flatten_chunks(priv_obs_chunks)
+        actions_chunks = flatten_chunks(actions_chunks)
+        prev_actions_chunks = flatten_chunks(prev_actions_chunks)
+        values_chunks = flatten_chunks(values_chunks)
+        returns_chunks = flatten_chunks(returns_chunks)
+        log_probs_chunks = flatten_chunks(log_probs_chunks)
+        advantages_chunks = flatten_chunks(advantages_chunks)
+        old_mu_chunks = flatten_chunks(old_mu_chunks)
+        old_sigma_chunks = flatten_chunks(old_sigma_chunks)
+        masks_chunks = flatten_chunks(masks_chunks)  # [total_chunks, chunk_size]
+        if rnd_env is not None:
+            rnd_chunks = flatten_chunks(rnd_chunks)
+
+        # ========== 5. Shuffle chunks ==========
+        indices = torch.randperm(total_chunks, device=device)
+
+        mini_batch_size = total_chunks // num_mini_batches
+
+        for epoch in range(num_epochs):
+            for i in range(num_mini_batches):
+                batch_idx = indices[i * mini_batch_size: (i + 1) * mini_batch_size]
+
+                # index all tensors
+                obs_batch = obs_chunks[batch_idx].transpose(0, 1)
+                prev_actions_batch = prev_actions_chunks[batch_idx].transpose(0, 1)
+                priv_obs_batch = priv_obs_chunks[batch_idx].transpose(0, 1)
+                actions_batch = actions_chunks[batch_idx].transpose(0, 1)
+                values_batch = values_chunks[batch_idx].transpose(0, 1)
+                returns_batch = returns_chunks[batch_idx].transpose(0, 1)
+                log_probs_batch = log_probs_chunks[batch_idx].transpose(0, 1)
+                advantages_batch = advantages_chunks[batch_idx].transpose(0, 1)
+                old_mu_batch = old_mu_chunks[batch_idx].transpose(0, 1)
+                old_sigma_batch = old_sigma_chunks[batch_idx].transpose(0, 1)
+                masks_batch = masks_chunks[batch_idx].transpose(0, 1)
+                hid_a_batch = hid_a_chunks[:, batch_idx, :]
+                hid_c_batch = hid_c_chunks[:, batch_idx, :]
+                hid_states_batch = (hid_a_batch, hid_c_batch)
+                rnd_state_batch = None if rnd_env is None else rnd_chunks[batch_idx].transpose(0, 1)
+
+                yield (
+                    obs_batch, prev_actions_batch, priv_obs_batch, actions_batch,
+                    values_batch, advantages_batch, returns_batch,
+                    log_probs_batch, old_mu_batch, old_sigma_batch,
+                    hid_states_batch, masks_batch, rnd_state_batch
+                )
