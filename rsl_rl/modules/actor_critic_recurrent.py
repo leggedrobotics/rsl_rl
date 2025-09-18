@@ -95,7 +95,9 @@ class ActorCriticRecurrent(nn.Module):
             if self.noise_std_type == "scalar":
                 torch.nn.init.constant_(self.actor[-2].bias[num_actions:], init_noise_std)
             elif self.noise_std_type == "log":
-                torch.nn.init.constant_(self.actor[-2].bias[num_actions:], torch.log(torch.tensor(init_noise_std + 1e-7)))
+                torch.nn.init.constant_(
+                    self.actor[-2].bias[num_actions:], torch.log(torch.tensor(init_noise_std + 1e-7))
+                )
             else:
                 raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         else:
