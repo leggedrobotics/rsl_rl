@@ -27,6 +27,7 @@ class ActorCritic(nn.Module):
         activation="elu",
         init_noise_std=1.0,
         noise_std_type: str = "scalar",
+        state_dependent_std=False,
         **kwargs,
     ):
         if kwargs:
@@ -47,8 +48,12 @@ class ActorCritic(nn.Module):
             assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
             num_critic_obs += obs[obs_group].shape[-1]
 
+        self.state_dependent_std = state_dependent_std
         # actor
-        self.actor = MLP(num_actor_obs, num_actions, actor_hidden_dims, activation)
+        if self.state_dependent_std:
+            self.actor = MLP(num_actor_obs, [2, num_actions], actor_hidden_dims, activation)
+        else:
+            self.actor = MLP(num_actor_obs, num_actions, actor_hidden_dims, activation)
         # actor observation normalization
         self.actor_obs_normalization = actor_obs_normalization
         if actor_obs_normalization:
@@ -69,12 +74,21 @@ class ActorCritic(nn.Module):
 
         # Action noise
         self.noise_std_type = noise_std_type
-        if self.noise_std_type == "scalar":
-            self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
-        elif self.noise_std_type == "log":
-            self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
+        if self.state_dependent_std:
+            torch.nn.init.zeros_(self.actor[-2].weight[num_actions:])
+            if self.noise_std_type == "scalar":
+                torch.nn.init.constant_(self.actor[-2].bias[num_actions:], init_noise_std)
+            elif self.noise_std_type == "log":
+                torch.nn.init.constant_(self.actor[-2].bias[num_actions:], torch.log(torch.tensor(init_noise_std + 1e-7)))
+            else:
+                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         else:
-            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+            if self.noise_std_type == "scalar":
+                self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+            elif self.noise_std_type == "log":
+                self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
+            else:
+                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
 
         # Action distribution (populated in update_distribution)
         self.distribution = None
@@ -100,15 +114,26 @@ class ActorCritic(nn.Module):
         return self.distribution.entropy().sum(dim=-1)
 
     def update_distribution(self, obs):
-        # compute mean
-        mean = self.actor(obs)
-        # compute standard deviation
-        if self.noise_std_type == "scalar":
-            std = self.std.expand_as(mean)
-        elif self.noise_std_type == "log":
-            std = torch.exp(self.log_std).expand_as(mean)
+        if self.state_dependent_std:
+            # compute mean and standard deviation
+            mean_and_std = self.actor(obs)
+            if self.noise_std_type == "scalar":
+                mean, std = torch.unbind(mean_and_std, dim=-2)
+            elif self.noise_std_type == "log":
+                mean, log_std = torch.unbind(mean_and_std, dim=-2)
+                std = torch.exp(log_std)
+            else:
+                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         else:
-            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+            # compute mean
+            mean = self.actor(obs)
+            # compute standard deviation
+            if self.noise_std_type == "scalar":
+                std = self.std.expand_as(mean)
+            elif self.noise_std_type == "log":
+                std = torch.exp(self.log_std).expand_as(mean)
+            else:
+                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         # create distribution
         self.distribution = Normal(mean, std)
 
