@@ -71,20 +71,14 @@ pre-commit run --all-files
 
 ## Citing
 
-**We are working on writing a white paper for this library.** Until then, please cite the following work
-if you use this library for your research:
+If you use this library for your research, please cite the following work:
 
 ```text
-@InProceedings{rudin2022learning,
-  title = 	 {Learning to Walk in Minutes Using Massively Parallel Deep Reinforcement Learning},
-  author =       {Rudin, Nikita and Hoeller, David and Reist, Philipp and Hutter, Marco},
-  booktitle = 	 {Proceedings of the 5th Conference on Robot Learning},
-  pages = 	 {91--100},
-  year = 	 {2022},
-  volume = 	 {164},
-  series = 	 {Proceedings of Machine Learning Research},
-  publisher =    {PMLR},
-  url = 	 {https://proceedings.mlr.press/v164/rudin22a.html},
+@article{schwarke2025rslrl,
+  title={RSL-RL: A Learning Library for Robotics Research},
+  author={Schwarke, Clemens and Mittal, Mayank and Rudin, Nikita and Hoeller, David and Hutter, Marco},
+  journal={arXiv preprint arXiv:2509.10771},
+  year={2025}
 }
 ```
 

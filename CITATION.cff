@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+title: "RSL-RL: A Learning Library for Robotics Research"
+message: "If you use this work, please cite the following paper."
+repository-code: "https://github.com/leggedrobotics/rsl_rl"
+license: BSD-3-Clause
+version: 3.1.0
+type: software
+authors:
+  - family-names: Schwarke
+    given-names: Clemens
+  - family-names: Mittal
+    given-names: Mayank
+  - family-names: Rudin
+    given-names: Nikita
+  - family-names: Hoeller
+    given-names: David
+keywords:
+  - reinforcement learning
+  - robotics
+  - control
+  - RSL-RL
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Schwarke
+      given-names: Clemens
+    - family-names: Mittal
+      given-names: Mayank
+    - family-names: Rudin
+      given-names: Nikita
+    - family-names: Hoeller
+      given-names: David
+    - family-names: Hutter
+      given-names: Marco
+  title: "RSL-RL: A Learning Library for Robotics Research"
+  journal: "arXiv preprint"
+  doi: 10.48550/arXiv.2509.10771
+  url: "https://arxiv.org/abs/2509.10771"
