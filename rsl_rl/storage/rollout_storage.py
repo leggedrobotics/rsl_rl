@@ -591,7 +591,7 @@ class RolloutStorage:
         returns = make_chunks(self.returns)
 
         # prev_actions for RL^2 input
-        prev_actions = torch.zeros_like(self.actions)
+        prev_actions = torch.zeros_like(self.actions, device=self.actions.device)
         prev_actions[1:, :, :] = self.actions[:-1, :, :]
         prev_actions = make_chunks(prev_actions)
 
@@ -611,7 +611,7 @@ class RolloutStorage:
 
         # 为了对齐后面RNN的输入，直接生成一个全true的mask
         # 必须mask有值才会用输入的hid，mask=None默认用memory自己存的hid
-        masks_batch = torch.ones(observations[:, 0].shape[:2], dtype=torch.bool, device=observations.device)
+        masks_batch = torch.ones((chunk_size, mini_batch_size), dtype=torch.bool, device=observations.device)
 
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
@@ -648,10 +648,10 @@ class RolloutStorage:
                     rnd_state_batch = None
 
                 # yield the mini-batch
-                yield obs_batch, privileged_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (
-                    None,
-                    None,
-                ), None, rnd_state_batch
+                yield obs_batch, prev_actions, privileged_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (
+                    hid_a_batch,
+                    hid_c_batch,
+                ), masks_batch, rnd_state_batch
 
 
     # 旧的chunk生成器 已经弃用
