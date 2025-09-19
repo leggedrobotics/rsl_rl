@@ -46,6 +46,7 @@ class RL2PPO:
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        chunk_size=1,
     ):
         # device-related parameters
         self.device = device
@@ -113,6 +114,7 @@ class RL2PPO:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.chunk_size = chunk_size
 
     def init_storage(
         self, training_type, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, actions_shape
@@ -139,7 +141,7 @@ class RL2PPO:
             self.transition.hidden_states = self.policy.get_hidden_states()
         # compute the actions and values
         self.transition.actions = self.policy.act(obs, prev_action).detach()
-        self.transition.values = self.policy.evaluate(critic_obs).detach()
+        self.transition.values = self.policy.evaluate(critic_obs, prev_action).detach()
         self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.policy.action_mean.detach()
         self.transition.action_sigma = self.policy.action_std.detach()
@@ -177,9 +179,9 @@ class RL2PPO:
         self.transition.clear()
         self.policy.reset(dones)
 
-    def compute_returns(self, last_critic_obs):
+    def compute_returns(self, last_critic_obs, prev_action):
         # compute value for the last step
-        last_values = self.policy.evaluate(last_critic_obs).detach()
+        last_values = self.policy.evaluate(last_critic_obs, prev_action).detach()
         self.storage.compute_returns(
             last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
         )
@@ -204,7 +206,7 @@ class RL2PPO:
         # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         if self.policy.is_recurrent:
             # generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-            generator = self.storage.recurrent_mini_batch_generator_with_prev_action(self.num_mini_batches, self.num_learning_epochs)
+            generator = self.storage.debug_chunk_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs, self.chunk_size)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
