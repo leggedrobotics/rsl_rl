@@ -82,8 +82,7 @@ class StudentTeacherRecurrent(nn.Module):
             self.memory_t = Memory(
                 num_teacher_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=rnn_hidden_dim
             )
-            num_teacher_obs = rnn_hidden_dim
-        self.teacher = MLP(num_teacher_obs, num_actions, teacher_hidden_dims, activation)
+        self.teacher = MLP(rnn_hidden_dim, num_actions, teacher_hidden_dims, activation)
 
         # teacher observation normalization
         self.teacher_obs_normalization = teacher_obs_normalization
