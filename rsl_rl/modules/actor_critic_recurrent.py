@@ -15,6 +15,7 @@ from rsl_rl.networks import MLP, EmpiricalNormalization, Memory
 
 class ActorCriticRecurrent(nn.Module):
     is_recurrent = True
+    is_conv2d = False
 
     def __init__(
         self,
