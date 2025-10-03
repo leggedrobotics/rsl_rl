@@ -167,7 +167,10 @@ class ActorCriticRecurrent(nn.Module):
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
         out_mem = self.memory_a(obs).squeeze(0)
-        return self.actor(out_mem)
+        if self.state_dependent_std:
+            return self.actor(out_mem).select(dim=-2, index=0)
+        else:
+            return self.actor(out_mem)
 
     def evaluate(self, obs, masks=None, hidden_states=None):
         obs = self.get_critic_obs(obs)
