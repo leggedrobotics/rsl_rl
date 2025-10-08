@@ -197,10 +197,21 @@ class RolloutStorage:
                 old_sigma_batch = old_sigma[batch_idx]
 
                 # yield the mini-batch
-                yield obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (
+                yield (
+                    obs_batch,
+                    actions_batch,
+                    target_values_batch,
+                    advantages_batch,
+                    returns_batch,
+                    old_actions_log_prob_batch,
+                    old_mu_batch,
+                    old_sigma_batch,
+                    (
+                        None,
+                        None,
+                    ),
                     None,
-                    None,
-                ), None
+                )
 
     # for reinfrocement learning with recurrent networks
     def recurrent_mini_batch_generator(self, num_mini_batches, num_epochs=8):
@@ -252,9 +263,20 @@ class RolloutStorage:
                 hid_a_batch = hid_a_batch[0] if len(hid_a_batch) == 1 else hid_a_batch
                 hid_c_batch = hid_c_batch[0] if len(hid_c_batch) == 1 else hid_c_batch
 
-                yield obs_batch, actions_batch, values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (
-                    hid_a_batch,
-                    hid_c_batch,
-                ), masks_batch
+                yield (
+                    obs_batch,
+                    actions_batch,
+                    values_batch,
+                    advantages_batch,
+                    returns_batch,
+                    old_actions_log_prob_batch,
+                    old_mu_batch,
+                    old_sigma_batch,
+                    (
+                        hid_a_batch,
+                        hid_c_batch,
+                    ),
+                    masks_batch,
+                )
 
                 first_traj = last_traj
