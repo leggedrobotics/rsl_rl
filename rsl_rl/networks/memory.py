@@ -17,11 +17,11 @@ class Memory(nn.Module):
     Currently only supports GRU and LSTM.
     """
 
-    def __init__(self, input_size, type="lstm", num_layers=1, hidden_size=256):
+    def __init__(self, input_size, hidden_dim=256, num_layers=1, type="lstm"):
         super().__init__()
         # RNN
         rnn_cls = nn.GRU if type.lower() == "gru" else nn.LSTM
-        self.rnn = rnn_cls(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
+        self.rnn = rnn_cls(input_size=input_size, hidden_dim=hidden_dim, num_layers=num_layers)
         self.hidden_states = None
 
     def forward(self, input, masks=None, hidden_states=None):

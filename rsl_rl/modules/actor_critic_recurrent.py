@@ -61,7 +61,7 @@ class ActorCriticRecurrent(nn.Module):
 
         self.state_dependent_std = state_dependent_std
         # actor
-        self.memory_a = Memory(num_actor_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=rnn_hidden_dim)
+        self.memory_a = Memory(num_actor_obs, rnn_hidden_dim, rnn_num_layers, rnn_type)
         if self.state_dependent_std:
             self.actor = MLP(rnn_hidden_dim, [2, num_actions], actor_hidden_dims, activation)
         else:
@@ -77,7 +77,7 @@ class ActorCriticRecurrent(nn.Module):
         print(f"Actor MLP: {self.actor}")
 
         # critic
-        self.memory_c = Memory(num_critic_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=rnn_hidden_dim)
+        self.memory_c = Memory(num_critic_obs, rnn_hidden_dim, rnn_num_layers, rnn_type)
         self.critic = MLP(rnn_hidden_dim, 1, critic_hidden_dims, activation)
         # critic observation normalization
         self.critic_obs_normalization = critic_obs_normalization
@@ -132,7 +132,7 @@ class ActorCriticRecurrent(nn.Module):
     def forward(self):
         raise NotImplementedError
 
-    def update_distribution(self, obs):
+    def _update_distribution(self, obs):
         if self.state_dependent_std:
             # compute mean and standard deviation
             mean_and_std = self.actor(obs)
@@ -160,7 +160,7 @@ class ActorCriticRecurrent(nn.Module):
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
         out_mem = self.memory_a(obs, masks, hidden_states).squeeze(0)
-        self.update_distribution(out_mem)
+        self._update_distribution(out_mem)
         return self.distribution.sample()
 
     def act_inference(self, obs):

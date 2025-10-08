@@ -64,7 +64,7 @@ class StudentTeacherRecurrent(nn.Module):
             num_teacher_obs += obs[obs_group].shape[-1]
 
         # student
-        self.memory_s = Memory(num_student_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=rnn_hidden_dim)
+        self.memory_s = Memory(num_student_obs, rnn_hidden_dim, rnn_num_layers, rnn_type)
         self.student = MLP(rnn_hidden_dim, num_actions, student_hidden_dims, activation)
 
         # student observation normalization
@@ -79,9 +79,7 @@ class StudentTeacherRecurrent(nn.Module):
 
         # teacher
         if self.teacher_recurrent:
-            self.memory_t = Memory(
-                num_teacher_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=rnn_hidden_dim
-            )
+            self.memory_t = Memory(num_teacher_obs, rnn_hidden_dim, rnn_num_layers, rnn_type)
         self.teacher = MLP(rnn_hidden_dim, num_actions, teacher_hidden_dims, activation)
 
         # teacher observation normalization
@@ -131,7 +129,7 @@ class StudentTeacherRecurrent(nn.Module):
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
-    def update_distribution(self, obs):
+    def _update_distribution(self, obs):
         # compute mean
         mean = self.student(obs)
         # compute standard deviation
@@ -148,7 +146,7 @@ class StudentTeacherRecurrent(nn.Module):
         obs = self.get_student_obs(obs)
         obs = self.student_obs_normalizer(obs)
         out_mem = self.memory_s(obs).squeeze(0)
-        self.update_distribution(out_mem)
+        self._update_distribution(out_mem)
         return self.distribution.sample()
 
     def act_inference(self, obs):

@@ -106,7 +106,7 @@ class StudentTeacher(nn.Module):
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
-    def update_distribution(self, obs):
+    def _update_distribution(self, obs):
         # compute mean
         mean = self.student(obs)
         # compute standard deviation
@@ -122,7 +122,7 @@ class StudentTeacher(nn.Module):
     def act(self, obs):
         obs = self.get_student_obs(obs)
         obs = self.student_obs_normalizer(obs)
-        self.update_distribution(obs)
+        self._update_distribution(obs)
         return self.distribution.sample()
 
     def act_inference(self, obs):

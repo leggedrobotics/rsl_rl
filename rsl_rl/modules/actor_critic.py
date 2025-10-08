@@ -115,7 +115,7 @@ class ActorCritic(nn.Module):
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
-    def update_distribution(self, obs):
+    def _update_distribution(self, obs):
         if self.state_dependent_std:
             # compute mean and standard deviation
             mean_and_std = self.actor(obs)
@@ -142,7 +142,7 @@ class ActorCritic(nn.Module):
     def act(self, obs, **kwargs):
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
-        self.update_distribution(obs)
+        self._update_distribution(obs)
         return self.distribution.sample()
 
     def act_inference(self, obs):
