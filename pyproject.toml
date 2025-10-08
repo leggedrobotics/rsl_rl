@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rsl-rl-lib"
 version = "3.1.0"
-keywords = ["reinforcement-learning", "isaac", "leggedrobotics", "rl-pytorch"]
+keywords = ["reinforcement-learning", "robotics"]
 maintainers = [
   { name="Clemens Schwarke", email="cschwarke@ethz.ch" },
   { name="Mayank Mittal", email="mittalma@ethz.ch" },
@@ -19,7 +19,6 @@ authors = [
 description = "Fast and simple RL algorithms implemented in PyTorch"
 readme = { file = "README.md", content-type = "text/markdown"}
 license = { text = "BSD-3-Clause" }
-
 requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -45,51 +44,16 @@ include = ["rsl_rl*"]
 [tool.setuptools.package-data]
 "rsl_rl" = ["config/*", "licenses/*"]
 
-[tool.isort]
-
-py_version = 38
-line_length = 120
-group_by_package = true
-
-# Files to skip
-skip_glob = [".vscode/*"]
-
-# Order of imports
-sections = [
-    "FUTURE",
-    "STDLIB",
-    "THIRDPARTY",
-    "FIRSTPARTY",
-    "LOCALFOLDER",
-]
-
-# Extra standard libraries considered as part of python (permissive licenses)
-extra_standard_library = [
-    "numpy",
-    "torch",
-    "tensordict",
-    "warp",
-    "typing_extensions",
-    "git",
-]
-# Imports from this repository
-known_first_party = "rsl_rl"
-
 [tool.pyright]
-
 include = ["rsl_rl"]
-
 typeCheckingMode = "basic"
 pythonVersion = "3.8"
 pythonPlatform = "Linux"
 enableTypeIgnoreComments = true
-
 # This is required as the CI pre-commit does not download the module (i.e. numpy, torch, prettytable)
-# Therefore, we have to ignore missing imports
 reportMissingImports = "none"
-# This is required to ignore for type checks of modules with stubs missing.
-reportMissingModuleSource = "none" # -> most common: prettytable in mdp managers
-
-reportGeneralTypeIssues = "none"       # -> raises 218 errors (usage of literal MISSING in dataclasses)
-reportOptionalMemberAccess = "warning" # -> raises 8 errors
+# This is required to ignore type checks of modules with stubs missing.
+reportMissingModuleSource = "none"  # -> most common: prettytable in mdp managers
+reportGeneralTypeIssues = "none"  # -> usage of literal MISSING in dataclasses
+reportOptionalMemberAccess = "warning"
 reportPrivateUsage = "warning"

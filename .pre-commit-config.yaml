@@ -1,40 +1,21 @@
 repos:
-  - repo: https://github.com/python/black
-    rev: 23.10.1
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
     hooks:
-      - id: black
-        args: ["--line-length", "120", "--preview"]
-  - repo: https://github.com/pycqa/flake8
-    rev: 6.1.0
-    hooks:
-      - id: flake8
-        additional_dependencies: [flake8-simplify, flake8-return]
+      - id: ruff-check
+      - id: ruff-format
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.5.0
     hooks:
-      - id: trailing-whitespace
       - id: check-symlinks
       - id: destroyed-symlinks
       - id: check-yaml
+      - id: check-toml
       - id: check-merge-conflict
       - id: check-case-conflict
       - id: check-executables-have-shebangs
-      - id: check-toml
-      - id: end-of-file-fixer
       - id: check-shebang-scripts-are-executable
       - id: detect-private-key
-      - id: debug-statements
-  - repo: https://github.com/pycqa/isort
-    rev: 5.12.0
-    hooks:
-      - id: isort
-        name: isort (python)
-        args: ["--profile", "black", "--filter-files"]
-  - repo: https://github.com/asottile/pyupgrade
-    rev: v3.15.0
-    hooks:
-      - id: pyupgrade
-        args: ["--py37-plus"]
   - repo: https://github.com/codespell-project/codespell
     rev: v2.2.6
     hooks:

@@ -1,0 +1,41 @@
+line-length = 120
+target-version = "py38"
+
+[lint]
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+]
+
+per-file-ignores = {"*/__init__.py" = ["F401"]}
+
+[lint.isort]
+# Order of imports
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "local-folder",
+]
+# Extra standard libraries considered as part of python (permissive licenses)
+extra-standard-library = [
+    "numpy",
+    "torch",
+    "tensordict",
+    "warp",
+    "typing_extensions",
+    "git",
+]
+# Imports from this repository
+known-first-party = ["rsl_rl"]
