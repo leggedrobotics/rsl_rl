@@ -148,7 +148,10 @@ class ActorCritic(nn.Module):
     def act_inference(self, obs):
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
-        return self.actor(obs)
+        if self.state_dependent_std:
+            return self.actor(obs)[..., 0, :]
+        else:
+            return self.actor(obs)
 
     def evaluate(self, obs, **kwargs):
         obs = self.get_critic_obs(obs)
