@@ -193,6 +193,5 @@ class ActorCritic(nn.Module):
             bool: Whether this training resumes a previous training. This flag is used by the `load()` function of
                   `OnPolicyRunner` to determine how to load further parameters (relevant for, e.g., distillation).
         """
-
         super().load_state_dict(state_dict, strict=strict)
         return True  # training resumes

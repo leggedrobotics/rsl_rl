@@ -112,7 +112,6 @@ class Distillation:
             self.policy.reset(hidden_states=self.last_hidden_states)
             self.policy.detach_hidden_states()
             for obs, _, privileged_actions, dones in self.storage.generator():
-
                 # inference the student for gradient computation
                 actions = self.policy.act_inference(obs)
 

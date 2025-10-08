@@ -16,7 +16,6 @@ def resolve_symmetry_config(alg_cfg, env):
     Returns:
         The resolved algorithm configuration dictionary.
     """
-
     # if using symmetry then pass the environment config object
     if "symmetry_cfg" in alg_cfg and alg_cfg["symmetry_cfg"] is not None:
         # this is used by the symmetry function for handling different observation terms

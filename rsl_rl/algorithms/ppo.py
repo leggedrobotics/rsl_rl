@@ -209,7 +209,6 @@ class PPO:
             hid_states_batch,
             masks_batch,
         ) in generator:
-
             # number of augmentations per sample
             # we start with 1 and increase it if we use symmetry augmentation
             num_aug = 1

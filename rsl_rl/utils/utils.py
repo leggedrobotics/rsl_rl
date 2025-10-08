@@ -78,8 +78,10 @@ def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
 def split_and_pad_trajectories(
     tensor: torch.Tensor | TensorDict, dones: torch.Tensor
 ) -> tuple[torch.Tensor | TensorDict, torch.Tensor]:
-    """Splits trajectories at done indices. Then concatenates them and pads with zeros up to the length of the longest
-    trajectory. Returns masks corresponding to valid parts of the trajectories.
+    """Splits trajectories at done indices.
+
+    Splits trajectories, concatenates them and pads with zeros up to the length of the longest trajectory. Returns masks
+    corresponding to valid parts of the trajectories.
 
     Example:
         Input: [[a1, a2, a3, a4 | a5, a6],
@@ -93,7 +95,6 @@ def split_and_pad_trajectories(
 
     Assumes that the input has the following order of dimensions: [time, number of envs, additional dimensions]
     """
-
     dones = dones.clone()
     dones[-1] = 1
     # Permute the buffers to have order (num_envs, num_transitions_per_env, ...), for correct reshaping
@@ -132,7 +133,7 @@ def split_and_pad_trajectories(
 
 
 def unpad_trajectories(trajectories, masks):
-    """Does the inverse operation of  split_and_pad_trajectories()"""
+    """Does the inverse operation of `split_and_pad_trajectories()`."""
     # Need to transpose before and after the masking to have proper reshaping
     return (
         trajectories.transpose(1, 0)[masks.transpose(1, 0)]

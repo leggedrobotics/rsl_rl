@@ -43,13 +43,11 @@ class EmpiricalNormalization(nn.Module):
 
     def forward(self, x):
         """Normalize mean and variance of values based on empirical values."""
-
         return (x - self._mean) / (self._std + self.eps)
 
     @torch.jit.unused
     def update(self, x):
-        """Learn input values without computing the output values of them"""
-
+        """Learn input values without computing the output values of them."""
         if not self.training:
             return
         if self.until is not None and self.count >= self.until:
@@ -68,7 +66,6 @@ class EmpiricalNormalization(nn.Module):
     @torch.jit.unused
     def inverse(self, y):
         """De-normalize values based on empirical values."""
-
         return y * (self._std + self.eps) + self._mean
 
 

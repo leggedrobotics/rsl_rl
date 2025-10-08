@@ -12,7 +12,7 @@ from rsl_rl.networks import MLP, EmpiricalDiscountedVariationNormalization, Empi
 
 
 class RandomNetworkDistillation(nn.Module):
-    """Implementation of Random Network Distillation (RND) [1]
+    """Implementation of Random Network Distillation (RND) [1].
 
     References:
         .. [1] Burda, Yuri, et al. "Exploration by random network distillation." arXiv preprint arXiv:1810.12894 (2018).
@@ -44,6 +44,7 @@ class RandomNetworkDistillation(nn.Module):
 
         Args:
             num_states: Number of states/inputs to the predictor and target networks.
+            obs_groups: Dictionary of observation groups.
             num_outputs: Number of outputs (embedding size) of the predictor and target networks.
             predictor_hidden_dims: List of hidden dimensions of the predictor network.
             target_hidden_dims: List of hidden dimensions of the target network.

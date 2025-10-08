@@ -177,7 +177,6 @@ class StudentTeacher(nn.Module):
             bool: Whether this training resumes a previous training. This flag is used by the `load()` function of
                   `OnPolicyRunner` to determine how to load further parameters.
         """
-
         # check if state_dict contains teacher and student or just teacher parameters
         if any("actor" in key for key in state_dict.keys()):  # loading parameters from rl training
             # rename keys to match teacher and remove critic parameters
