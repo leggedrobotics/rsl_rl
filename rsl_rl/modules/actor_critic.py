@@ -32,8 +32,7 @@ class ActorCritic(nn.Module):
     ):
         if kwargs:
             print(
-                "ActorCritic.__init__ got unexpected arguments, which will be ignored: "
-                + str([key for key in kwargs.keys()])
+                "ActorCritic.__init__ got unexpected arguments, which will be ignored: " + str([key for key in kwargs])
             )
         super().__init__()
 

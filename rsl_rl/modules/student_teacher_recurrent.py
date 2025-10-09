@@ -211,7 +211,7 @@ class StudentTeacherRecurrent(nn.Module):
                   `OnPolicyRunner` to determine how to load further parameters.
         """
         # check if state_dict contains teacher and student or just teacher parameters
-        if any("actor" in key for key in state_dict.keys()):  # loading parameters from rl training
+        if any("actor" in key for key in state_dict):  # loading parameters from rl training
             # rename keys to match teacher and remove critic parameters
             teacher_state_dict = {}
             teacher_obs_normalizer_state_dict = {}
@@ -234,7 +234,7 @@ class StudentTeacherRecurrent(nn.Module):
             self.teacher.eval()
             self.teacher_obs_normalizer.eval()
             return False  # training does not resume
-        elif any("student" in key for key in state_dict.keys()):  # loading parameters from distillation training
+        elif any("student" in key for key in state_dict):  # loading parameters from distillation training
             super().load_state_dict(state_dict, strict=strict)
             # set flag for successfully loading the parameters
             self.loaded_teacher = True

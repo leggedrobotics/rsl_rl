@@ -17,6 +17,8 @@ select = [
     "I",
 ]
 
+ignore = ["B006", "B007", "B028"]
+
 per-file-ignores = {"*/__init__.py" = ["F401"]}
 
 [lint.isort]

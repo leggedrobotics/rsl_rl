@@ -180,15 +180,9 @@ class PPO:
         mean_surrogate_loss = 0
         mean_entropy = 0
         # -- RND loss
-        if self.rnd:
-            mean_rnd_loss = 0
-        else:
-            mean_rnd_loss = None
+        mean_rnd_loss = 0 if self.rnd else None
         # -- Symmetry loss
-        if self.symmetry:
-            mean_symmetry_loss = 0
-        else:
-            mean_symmetry_loss = None
+        mean_symmetry_loss = 0 if self.symmetry else None
 
         # generator for mini batches
         if self.policy.is_recurrent:

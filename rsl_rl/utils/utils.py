@@ -192,12 +192,12 @@ def string_to_callable(name: str) -> Callable:
             return callable_object
         else:
             raise ValueError(f"The imported object is not callable: '{name}'")
-    except AttributeError as e:
+    except AttributeError as err:
         msg = (
             "We could not interpret the entry as a callable object. The format of input should be"
-            f" 'module:attribute_name'\nWhile processing input '{name}', received the error:\n {e}."
+            f" 'module:attribute_name'\nWhile processing input '{name}'."
         )
-        raise ValueError(msg)
+        raise ValueError(msg) from err
 
 
 def resolve_obs_groups(
@@ -239,7 +239,7 @@ def resolve_obs_groups(
         ValueError: If any observation set contains an observation term that is not present in the observations.
     """
     # check if policy observation set exists
-    if "policy" not in obs_groups.keys():
+    if "policy" not in obs_groups:
         if "policy" in obs:
             obs_groups["policy"] = ["policy"]
             warnings.warn(
@@ -277,7 +277,7 @@ def resolve_obs_groups(
 
     # fill missing observation sets
     for default_set_name in default_sets:
-        if default_set_name not in obs_groups.keys():
+        if default_set_name not in obs_groups:
             if default_set_name in obs:
                 obs_groups[default_set_name] = [default_set_name]
                 warnings.warn(

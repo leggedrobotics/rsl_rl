@@ -12,7 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 try:
     import neptune
 except ModuleNotFoundError:
-    raise ModuleNotFoundError("neptune-client is required to log to Neptune.")
+    raise ModuleNotFoundError("neptune-client is required to log to Neptune.") from None
 
 
 class NeptuneLogger:
@@ -35,21 +35,21 @@ class NeptuneSummaryWriter(SummaryWriter):
         try:
             project = cfg["neptune_project"]
         except KeyError:
-            raise KeyError("Please specify neptune_project in the runner config, e.g. legged_gym.")
+            raise KeyError("Please specify neptune_project in the runner config, e.g. legged_gym.") from None
 
         try:
             token = os.environ["NEPTUNE_API_TOKEN"]
         except KeyError:
             raise KeyError(
                 "Neptune api token not found. Please run or add to ~/.bashrc: export NEPTUNE_API_TOKEN=YOUR_API_TOKEN"
-            )
+            ) from None
 
         try:
             entity = os.environ["NEPTUNE_USERNAME"]
         except KeyError:
             raise KeyError(
                 "Neptune username not found. Please run or add to ~/.bashrc: export NEPTUNE_USERNAME=YOUR_USERNAME"
-            )
+            ) from None
 
         neptune_project = entity + "/" + project
 

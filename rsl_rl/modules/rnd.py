@@ -34,13 +34,14 @@ class RandomNetworkDistillation(nn.Module):
     ):
         """Initialize the RND module.
 
-        - If :attr:`state_normalization` is True, then the input state is normalized using an Empirical Normalization layer.
+        - If :attr:`state_normalization` is True, then the input state is normalized using an Empirical Normalization
+          layer.
         - If :attr:`reward_normalization` is True, then the intrinsic reward is normalized using an Empirical Discounted
           Variation Normalization layer.
 
         .. note::
-            If the hidden dimensions are -1 in the predictor and target networks configuration, then the number of states
-            is used as the hidden dimension.
+            If the hidden dimensions are -1 in the predictor and target networks configuration, then the number of
+            states is used as the hidden dimension.
 
         Args:
             num_states: Number of states/inputs to the predictor and target networks.
