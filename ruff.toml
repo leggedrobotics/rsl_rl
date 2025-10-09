@@ -1,5 +1,6 @@
 line-length = 120
 target-version = "py38"
+preview = true
 
 [lint]
 select = [
@@ -23,8 +24,8 @@ select = [
     "SIM",
     # flake8-tidy-imports
     "TID",
-    # flake8-annotations for later
-    # "ANN",
+    # flake8-annotations
+    "ANN",
     # isort
     "I",
     # perflint
@@ -32,9 +33,7 @@ select = [
     # ruff
     "RUF",
 ]
-
 ignore = ["B006", "B007", "B028"]
-
 per-file-ignores = {"*/__init__.py" = ["F401"]}
 
 [lint.isort]
