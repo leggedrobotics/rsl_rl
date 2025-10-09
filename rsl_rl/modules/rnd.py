@@ -152,9 +152,7 @@ class RandomNetworkDistillation(nn.Module):
         return self.train(False)
 
     def get_rnd_state(self, obs):
-        obs_list = []
-        for obs_group in self.obs_groups["rnd_state"]:
-            obs_list.append(obs[obs_group])
+        obs_list = [obs[obs_group] for obs_group in self.obs_groups["rnd_state"]]
         return torch.cat(obs_list, dim=-1)
 
     def update_normalization(self, obs):

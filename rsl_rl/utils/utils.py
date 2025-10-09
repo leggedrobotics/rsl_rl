@@ -110,7 +110,7 @@ def split_and_pad_trajectories(
             # split the tensor into trajectories
             trajectories = torch.split(v.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
             # add at least one full length trajectory
-            trajectories = trajectories + (torch.zeros(v.shape[0], *v.shape[2:], device=v.device),)
+            trajectories = (*trajectories, torch.zeros(v.shape[0], *v.shape[2:], device=v.device))
             # pad the trajectories to the length of the longest trajectory
             padded_trajectories[k] = torch.nn.utils.rnn.pad_sequence(trajectories)
             # remove the added tensor
@@ -122,7 +122,7 @@ def split_and_pad_trajectories(
         # split the tensor into trajectories
         trajectories = torch.split(tensor.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
         # add at least one full length trajectory
-        trajectories = trajectories + (torch.zeros(tensor.shape[0], *tensor.shape[2:], device=tensor.device),)
+        trajectories = (*trajectories, torch.zeros(tensor.shape[0], *tensor.shape[2:], device=tensor.device))
         # pad the trajectories to the length of the longest trajectory
         padded_trajectories = torch.nn.utils.rnn.pad_sequence(trajectories)
         # remove the added tensor

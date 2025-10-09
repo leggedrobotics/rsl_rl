@@ -165,15 +165,11 @@ class StudentTeacherRecurrent(nn.Module):
             return self.teacher(obs)
 
     def get_student_obs(self, obs):
-        obs_list = []
-        for obs_group in self.obs_groups["policy"]:
-            obs_list.append(obs[obs_group])
+        obs_list = [obs[obs_group] for obs_group in self.obs_groups["policy"]]
         return torch.cat(obs_list, dim=-1)
 
     def get_teacher_obs(self, obs):
-        obs_list = []
-        for obs_group in self.obs_groups["teacher"]:
-            obs_list.append(obs[obs_group])
+        obs_list = [obs[obs_group] for obs_group in self.obs_groups["teacher"]]
         return torch.cat(obs_list, dim=-1)
 
     def get_hidden_states(self):

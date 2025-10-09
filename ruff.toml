@@ -4,17 +4,33 @@ target-version = "py38"
 [lint]
 select = [
     # pycodestyle
-    "E",
-    # Pyflakes
+    "E", "W",
+    # pydocstyle
+    # "D",
+    # pydoclint
+    # "DOC",
+    # pylint for later
+    # "PL",
+    # pyflakes
     "F",
     # pyupgrade
     "UP",
+    # pep8-naming
+    "N",
     # flake8-bugbear
     "B",
     # flake8-simplify
     "SIM",
+    # flake8-tidy-imports
+    "TID",
+    # flake8-annotations for later
+    # "ANN",
     # isort
     "I",
+    # perflint
+    "PERF",
+    # ruff
+    "RUF",
 ]
 
 ignore = ["B006", "B007", "B028"]

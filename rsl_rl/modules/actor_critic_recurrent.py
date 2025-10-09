@@ -179,15 +179,11 @@ class ActorCriticRecurrent(nn.Module):
         return self.critic(out_mem)
 
     def get_actor_obs(self, obs):
-        obs_list = []
-        for obs_group in self.obs_groups["policy"]:
-            obs_list.append(obs[obs_group])
+        obs_list = [obs[obs_group] for obs_group in self.obs_groups["policy"]]
         return torch.cat(obs_list, dim=-1)
 
     def get_critic_obs(self, obs):
-        obs_list = []
-        for obs_group in self.obs_groups["critic"]:
-            obs_list.append(obs[obs_group])
+        obs_list = [obs[obs_group] for obs_group in self.obs_groups["critic"]]
         return torch.cat(obs_list, dim=-1)
 
     def get_actions_log_prob(self, actions):
