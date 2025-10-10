@@ -10,6 +10,7 @@ import torch.nn as nn
 import warnings
 from tensordict import TensorDict
 from torch.distributions import Normal
+from typing import NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization, Memory
 
@@ -34,7 +35,7 @@ class ActorCriticRecurrent(nn.Module):
         rnn_hidden_dim: int = 256,
         rnn_num_layers: int = 1,
         **kwargs,
-    ):
+    ) -> None:
         if "rnn_hidden_size" in kwargs:
             warnings.warn(
                 "The argument `rnn_hidden_size` is deprecated and will be removed in a future version. "
@@ -126,14 +127,14 @@ class ActorCriticRecurrent(nn.Module):
     def entropy(self) -> torch.Tensor:
         return self.distribution.entropy().sum(dim=-1)
 
-    def reset(self, dones: torch.Tensor | None = None):
+    def reset(self, dones: torch.Tensor | None = None) -> None:
         self.memory_a.reset(dones)
         self.memory_c.reset(dones)
 
-    def forward(self):
+    def forward(self) -> NoReturn:
         raise NotImplementedError
 
-    def _update_distribution(self, obs: TensorDict):
+    def _update_distribution(self, obs: TensorDict) -> None:
         if self.state_dependent_std:
             # compute mean and standard deviation
             mean_and_std = self.actor(obs)
@@ -205,7 +206,7 @@ class ActorCriticRecurrent(nn.Module):
     ) -> tuple[torch.Tensor | tuple[torch.Tensor] | None, torch.Tensor | tuple[torch.Tensor] | None]:
         return self.memory_a.hidden_states, self.memory_c.hidden_states
 
-    def update_normalization(self, obs: TensorDict):
+    def update_normalization(self, obs: TensorDict) -> None:
         if self.actor_obs_normalization:
             actor_obs = self.get_actor_obs(obs)
             self.actor_obs_normalizer.update(actor_obs)

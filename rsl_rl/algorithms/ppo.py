@@ -46,7 +46,7 @@ class PPO:
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
-    ):
+    ) -> None:
         # device-related parameters
         self.device = device
         self.is_multi_gpu = multi_gpu_cfg is not None
@@ -123,7 +123,7 @@ class PPO:
         num_transitions_per_env: int,
         obs: TensorDict,
         actions_shape: tuple[int] | list[int],
-    ):
+    ) -> None:
         # create rollout storage
         self.storage = RolloutStorage(
             training_type,
@@ -149,7 +149,7 @@ class PPO:
 
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
-    ):
+    ) -> None:
         # update the normalizers
         self.policy.update_normalization(obs)
         if self.rnd:
@@ -178,7 +178,7 @@ class PPO:
         self.transition.clear()
         self.policy.reset(dones)
 
-    def compute_returns(self, obs: TensorDict):
+    def compute_returns(self, obs: TensorDict) -> None:
         # compute value for the last step
         last_values = self.policy.evaluate(obs).detach()
         self.storage.compute_returns(
@@ -428,7 +428,7 @@ class PPO:
     Helper functions
     """
 
-    def broadcast_parameters(self):
+    def broadcast_parameters(self) -> None:
         """Broadcast model parameters to all GPUs."""
         # obtain the model parameters on current GPU
         model_params = [self.policy.state_dict()]
@@ -441,7 +441,7 @@ class PPO:
         if self.rnd:
             self.rnd.predictor.load_state_dict(model_params[1])
 
-    def reduce_parameters(self):
+    def reduce_parameters(self) -> None:
         """Collect gradients from all GPUs and average them.
 
         This function is called after the backward pass to synchronize the gradients across all GPUs.

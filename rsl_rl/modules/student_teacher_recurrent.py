@@ -10,6 +10,7 @@ import torch.nn as nn
 import warnings
 from tensordict import TensorDict
 from torch.distributions import Normal
+from typing import NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization, Memory
 
@@ -34,7 +35,7 @@ class StudentTeacherRecurrent(nn.Module):
         rnn_num_layers: int = 1,
         teacher_recurrent: bool = False,
         **kwargs,
-    ):
+    ) -> None:
         if "rnn_hidden_size" in kwargs:
             warnings.warn(
                 "The argument `rnn_hidden_size` is deprecated and will be removed in a future version. "
@@ -112,12 +113,12 @@ class StudentTeacherRecurrent(nn.Module):
         self,
         dones: torch.Tensor | None = None,
         hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None] = (None, None),
-    ):
+    ) -> None:
         self.memory_s.reset(dones, hidden_states[0])
         if self.teacher_recurrent:
             self.memory_t.reset(dones, hidden_states[1])
 
-    def forward(self):
+    def forward(self) -> NoReturn:
         raise NotImplementedError
 
     @property
@@ -132,7 +133,7 @@ class StudentTeacherRecurrent(nn.Module):
     def entropy(self) -> torch.Tensor:
         return self.distribution.entropy().sum(dim=-1)
 
-    def _update_distribution(self, obs: TensorDict):
+    def _update_distribution(self, obs: TensorDict) -> None:
         # compute mean
         mean = self.student(obs)
         # compute standard deviation
@@ -181,18 +182,18 @@ class StudentTeacherRecurrent(nn.Module):
         else:
             return self.memory_s.hidden_states, None
 
-    def detach_hidden_states(self, dones: torch.Tensor | None = None):
+    def detach_hidden_states(self, dones: torch.Tensor | None = None) -> None:
         self.memory_s.detach_hidden_states(dones)
         if self.teacher_recurrent:
             self.memory_t.detach_hidden_states(dones)
 
-    def train(self, mode: bool = True):
+    def train(self, mode: bool = True) -> None:
         super().train(mode)
         # make sure teacher is in eval mode
         self.teacher.eval()
         self.teacher_obs_normalizer.eval()
 
-    def update_normalization(self, obs: TensorDict):
+    def update_normalization(self, obs: TensorDict) -> None:
         if self.student_obs_normalization:
             student_obs = self.get_student_obs(obs)
             self.student_obs_normalizer.update(student_obs)

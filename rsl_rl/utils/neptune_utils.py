@@ -16,10 +16,10 @@ except ModuleNotFoundError:
 
 
 class NeptuneLogger:
-    def __init__(self, project: str, token: str):
+    def __init__(self, project: str, token: str) -> None:
         self.run = neptune.init_run(project=project, api_token=token)
 
-    def store_config(self, env_cfg, runner_cfg, alg_cfg, policy_cfg):
+    def store_config(self, env_cfg, runner_cfg, alg_cfg, policy_cfg) -> None:
         self.run["runner_cfg"] = runner_cfg
         self.run["policy_cfg"] = policy_cfg
         self.run["alg_cfg"] = alg_cfg
@@ -29,7 +29,7 @@ class NeptuneLogger:
 class NeptuneSummaryWriter(SummaryWriter):
     """Summary writer for Neptune."""
 
-    def __init__(self, log_dir: str, flush_secs: int, cfg: dict):
+    def __init__(self, log_dir: str, flush_secs: int, cfg: dict) -> None:
         super().__init__(log_dir, flush_secs)
 
         try:
@@ -71,7 +71,7 @@ class NeptuneSummaryWriter(SummaryWriter):
         global_step: int | None = None,
         walltime: float | None = None,
         new_style: bool = False,
-    ):
+    ) -> None:
         super().add_scalar(
             tag,
             scalar_value,
@@ -81,16 +81,16 @@ class NeptuneSummaryWriter(SummaryWriter):
         )
         self.neptune_logger.run[self._map_path(tag)].log(scalar_value, step=global_step)
 
-    def stop(self):
+    def stop(self) -> None:
         self.neptune_logger.run.stop()
 
-    def log_config(self, env_cfg: dict, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict):
+    def log_config(self, env_cfg: dict, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
         self.neptune_logger.store_config(env_cfg, runner_cfg, alg_cfg, policy_cfg)
 
-    def save_model(self, model_path: str, iter: int):
+    def save_model(self, model_path: str, iter: int) -> None:
         self.neptune_logger.run["model/saved_model_" + str(iter)].upload(model_path)
 
-    def save_file(self, path: str):
+    def save_file(self, path: str) -> None:
         name = path.rsplit("/", 1)[-1].split(".")[0]
         self.neptune_logger.run["git_diff/" + name].upload(path)
 

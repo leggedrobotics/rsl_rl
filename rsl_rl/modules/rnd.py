@@ -8,6 +8,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
+from typing import NoReturn
 
 from rsl_rl.env import VecEnv
 from rsl_rl.networks import MLP, EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
@@ -33,7 +34,7 @@ class RandomNetworkDistillation(nn.Module):
         reward_normalization: bool = False,
         device: str = "cpu",
         weight_schedule: dict | None = None,
-    ):
+    ) -> None:
         """Initialize the RND module.
 
         - If :attr:`state_normalization` is True, then the input state is normalized using an Empirical Normalization
@@ -138,7 +139,7 @@ class RandomNetworkDistillation(nn.Module):
 
         return intrinsic_reward
 
-    def forward(self, *args, **kwargs):
+    def forward(self, *args, **kwargs) -> NoReturn:
         raise RuntimeError("Forward method is not implemented. Use get_intrinsic_reward instead.")
 
     def train(self, mode: bool = True) -> RandomNetworkDistillation:
@@ -157,7 +158,7 @@ class RandomNetworkDistillation(nn.Module):
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["rnd_state"]]
         return torch.cat(obs_list, dim=-1)
 
-    def update_normalization(self, obs: TensorDict):
+    def update_normalization(self, obs: TensorDict) -> None:
         # Normalize the state
         if self.state_normalization:
             rnd_state = self.get_rnd_state(obs)

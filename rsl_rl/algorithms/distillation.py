@@ -30,7 +30,7 @@ class Distillation:
         device: str = "cpu",
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
-    ):
+    ) -> None:
         # device-related parameters
         self.device = device
         self.is_multi_gpu = multi_gpu_cfg is not None
@@ -79,7 +79,7 @@ class Distillation:
         num_transitions_per_env: int,
         obs: TensorDict,
         actions_shape: tuple[int],
-    ):
+    ) -> None:
         # create rollout storage
         self.storage = RolloutStorage(
             training_type,
@@ -100,7 +100,7 @@ class Distillation:
 
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
-    ):
+    ) -> None:
         # update the normalizers
         self.policy.update_normalization(obs)
 
@@ -163,7 +163,7 @@ class Distillation:
     Helper functions
     """
 
-    def broadcast_parameters(self):
+    def broadcast_parameters(self) -> None:
         """Broadcast model parameters to all GPUs."""
         # obtain the model parameters on current GPU
         model_params = [self.policy.state_dict()]
@@ -172,7 +172,7 @@ class Distillation:
         # load the model parameters on all GPUs from source GPU
         self.policy.load_state_dict(model_params[0])
 
-    def reduce_parameters(self):
+    def reduce_parameters(self) -> None:
         """Collect gradients from all GPUs and average them.
 
         This function is called after the backward pass to synchronize the gradients across all GPUs.

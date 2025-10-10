@@ -6,15 +6,15 @@
 from __future__ import annotations
 
 import torch
+from collections.abc import Generator
 from tensordict import TensorDict
-from typing import Generator
 
 from rsl_rl.utils import split_and_pad_trajectories
 
 
 class RolloutStorage:
     class Transition:
-        def __init__(self):
+        def __init__(self) -> None:
             self.observations: TensorDict = None  # type: ignore
             self.actions: torch.Tensor = None  # type: ignore
             self.privileged_actions: torch.Tensor = None  # type: ignore
@@ -26,7 +26,7 @@ class RolloutStorage:
             self.action_sigma: torch.Tensor = None  # type: ignore
             self.hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None] = (None, None)  # type: ignore
 
-        def clear(self):
+        def clear(self) -> None:
             self.__init__()
 
     def __init__(
@@ -37,7 +37,7 @@ class RolloutStorage:
         obs: TensorDict,
         actions_shape: tuple[int] | list[int],
         device: str = "cpu",
-    ):
+    ) -> None:
         # store inputs
         self.training_type = training_type
         self.device = device
@@ -75,7 +75,7 @@ class RolloutStorage:
         # counter for the number of transitions stored
         self.step = 0
 
-    def add_transitions(self, transition: Transition):
+    def add_transitions(self, transition: Transition) -> None:
         # check if the transition is valid
         if self.step >= self.num_transitions_per_env:
             raise OverflowError("Rollout buffer overflow! You should call clear() before adding new transitions.")
@@ -103,7 +103,7 @@ class RolloutStorage:
         # increment the counter
         self.step += 1
 
-    def _save_hidden_states(self, hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None]):
+    def _save_hidden_states(self, hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None]) -> None:
         if hidden_states == (None, None):
             return
         # make a tuple out of GRU hidden state sto match the LSTM format
@@ -122,10 +122,12 @@ class RolloutStorage:
             self.saved_hidden_states_a[i][self.step].copy_(hid_a[i])
             self.saved_hidden_states_c[i][self.step].copy_(hid_c[i])
 
-    def clear(self):
+    def clear(self) -> None:
         self.step = 0
 
-    def compute_returns(self, last_values: torch.Tensor, gamma: float, lam: float, normalize_advantage: bool = True):
+    def compute_returns(
+        self, last_values: torch.Tensor, gamma: float, lam: float, normalize_advantage: bool = True
+    ) -> None:
         advantage = 0
         for step in reversed(range(self.num_transitions_per_env)):
             # if we are at the last step, bootstrap the return value

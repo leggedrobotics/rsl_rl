@@ -18,7 +18,7 @@ class Memory(nn.Module):
     Currently only supports GRU and LSTM.
     """
 
-    def __init__(self, input_size: int, hidden_dim: int = 256, num_layers: int = 1, type: str = "lstm"):
+    def __init__(self, input_size: int, hidden_dim: int = 256, num_layers: int = 1, type: str = "lstm") -> None:
         super().__init__()
         # RNN
         rnn_cls = nn.GRU if type.lower() == "gru" else nn.LSTM
@@ -43,7 +43,9 @@ class Memory(nn.Module):
             out, self.hidden_states = self.rnn(input.unsqueeze(0), self.hidden_states)
         return out
 
-    def reset(self, dones: torch.Tensor | None = None, hidden_states: torch.Tensor | tuple[torch.Tensor] | None = None):
+    def reset(
+        self, dones: torch.Tensor | None = None, hidden_states: torch.Tensor | tuple[torch.Tensor] | None = None
+    ) -> None:
         if dones is None:  # reset hidden states
             if hidden_states is None:
                 self.hidden_states = None
@@ -61,7 +63,7 @@ class Memory(nn.Module):
                     "Resetting hidden states of done environments with custom hidden states is not implemented"
                 )
 
-    def detach_hidden_states(self, dones: torch.Tensor | None = None):
+    def detach_hidden_states(self, dones: torch.Tensor | None = None) -> None:
         if self.hidden_states is not None:
             if dones is None:  # detach all hidden states
                 if isinstance(self.hidden_states, tuple):  # tuple in case of LSTM

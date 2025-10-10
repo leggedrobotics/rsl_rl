@@ -14,7 +14,7 @@ from torch import nn
 class EmpiricalNormalization(nn.Module):
     """Normalize mean and variance of values based on empirical values."""
 
-    def __init__(self, shape: int | tuple[int] | list[int], eps: float = 1e-2, until: int | None = None):
+    def __init__(self, shape: int | tuple[int] | list[int], eps: float = 1e-2, until: int | None = None) -> None:
         """Initialize EmpiricalNormalization module.
 
         Args:
@@ -46,7 +46,7 @@ class EmpiricalNormalization(nn.Module):
         return (x - self._mean) / (self._std + self.eps)
 
     @torch.jit.unused
-    def update(self, x: torch.Tensor):
+    def update(self, x: torch.Tensor) -> None:
         """Learn input values without computing the output values of them"""
         if not self.training:
             return
@@ -79,7 +79,7 @@ class EmpiricalDiscountedVariationNormalization(nn.Module):
 
     def __init__(
         self, shape: int | tuple[int] | list[int], eps: float = 1e-2, gamma: float = 0.99, until: int | None = None
-    ):
+    ) -> None:
         super().__init__()
 
         self.emp_norm = EmpiricalNormalization(shape, eps, until)
@@ -117,7 +117,7 @@ class _DiscountedAverage:
         gamma (float): Discount factor.
     """
 
-    def __init__(self, gamma: float):
+    def __init__(self, gamma: float) -> None:
         self.avg = None
         self.gamma = gamma
 

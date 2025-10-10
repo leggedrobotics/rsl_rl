@@ -23,7 +23,7 @@ from rsl_rl.utils import resolve_obs_groups, store_code_state
 class OnPolicyRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
 
-    def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu"):
+    def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
         self.cfg = train_cfg
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
@@ -59,7 +59,7 @@ class OnPolicyRunner:
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
 
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
+    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         # initialize writer
         self._prepare_logging_writer()
 
@@ -175,7 +175,7 @@ class OnPolicyRunner:
         if self.log_dir is not None and not self.disable_logs:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
 
-    def log(self, locs: dict, width: int = 80, pad: int = 35):
+    def log(self, locs: dict, width: int = 80, pad: int = 35) -> None:
         # Compute the collection size
         collection_size = self.num_steps_per_env * self.env.num_envs * self.gpu_world_size
         # Update total time-steps and time
@@ -290,7 +290,7 @@ class OnPolicyRunner:
         )
         print(log_string)
 
-    def save(self, path: str, infos: dict = None):
+    def save(self, path: str, infos: dict | None = None) -> None:
         # -- Save model
         saved_dict = {
             "model_state_dict": self.alg.policy.state_dict(),
@@ -333,28 +333,28 @@ class OnPolicyRunner:
             self.alg.policy.to(device)
         return self.alg.policy.act_inference
 
-    def train_mode(self):
+    def train_mode(self) -> None:
         # -- PPO
         self.alg.policy.train()
         # -- RND
         if hasattr(self.alg, "rnd") and self.alg.rnd:
             self.alg.rnd.train()
 
-    def eval_mode(self):
+    def eval_mode(self) -> None:
         # -- PPO
         self.alg.policy.eval()
         # -- RND
         if hasattr(self.alg, "rnd") and self.alg.rnd:
             self.alg.rnd.eval()
 
-    def add_git_repo_to_log(self, repo_file_path: str):
+    def add_git_repo_to_log(self, repo_file_path: str) -> None:
         self.git_status_repos.append(repo_file_path)
 
     """
     Helper functions.
     """
 
-    def _configure_multi_gpu(self):
+    def _configure_multi_gpu(self) -> None:
         """Configure multi-gpu training."""
         # check if distributed training is enabled
         self.gpu_world_size = int(os.getenv("WORLD_SIZE", "1"))
@@ -439,7 +439,7 @@ class OnPolicyRunner:
 
         return alg
 
-    def _prepare_logging_writer(self):
+    def _prepare_logging_writer(self) -> None:
         """Prepares the logging writers."""
         if self.log_dir is not None and self.writer is None and not self.disable_logs:
             # Launch either Tensorboard or Neptune & Tensorboard summary writer(s), default: Tensorboard.

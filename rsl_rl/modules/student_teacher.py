@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 from torch.distributions import Normal
+from typing import NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
 
@@ -29,7 +30,7 @@ class StudentTeacher(nn.Module):
         init_noise_std: float = 0.1,
         noise_std_type: str = "scalar",
         **kwargs,
-    ):
+    ) -> None:
         if kwargs:
             print(
                 "StudentTeacher.__init__ got unexpected arguments, which will be ignored: "
@@ -93,10 +94,10 @@ class StudentTeacher(nn.Module):
         self,
         dones: torch.Tensor | None = None,
         hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None] = (None, None),
-    ):
+    ) -> None:
         pass
 
-    def forward(self):
+    def forward(self) -> NoReturn:
         raise NotImplementedError
 
     @property
@@ -111,7 +112,7 @@ class StudentTeacher(nn.Module):
     def entropy(self) -> torch.Tensor:
         return self.distribution.entropy().sum(dim=-1)
 
-    def _update_distribution(self, obs: TensorDict):
+    def _update_distribution(self, obs: TensorDict) -> None:
         # compute mean
         mean = self.student(obs)
         # compute standard deviation
@@ -152,16 +153,16 @@ class StudentTeacher(nn.Module):
     def get_hidden_states(self) -> tuple[torch.Tensor | tuple[torch.Tensor] | None]:
         return None, None
 
-    def detach_hidden_states(self, dones: torch.Tensor | None = None):
+    def detach_hidden_states(self, dones: torch.Tensor | None = None) -> None:
         pass
 
-    def train(self, mode: bool = True):
+    def train(self, mode: bool = True) -> None:
         super().train(mode)
         # make sure teacher is in eval mode
         self.teacher.eval()
         self.teacher_obs_normalizer.eval()
 
-    def update_normalization(self, obs: TensorDict):
+    def update_normalization(self, obs: TensorDict) -> None:
         if self.student_obs_normalization:
             student_obs = self.get_student_obs(obs)
             self.student_obs_normalizer.update(student_obs)

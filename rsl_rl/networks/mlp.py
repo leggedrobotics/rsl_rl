@@ -35,7 +35,7 @@ class MLP(nn.Sequential):
         hidden_dims: tuple[int] | list[int],
         activation: str = "elu",
         last_activation: str | None = None,
-    ):
+    ) -> None:
         """Initialize the MLP.
 
         Args:
@@ -82,7 +82,7 @@ class MLP(nn.Sequential):
         for idx, layer in enumerate(layers):
             self.add_module(f"{idx}", layer)
 
-    def init_weights(self, scales: float | tuple[float]):
+    def init_weights(self, scales: float | tuple[float]) -> None:
         """Initialize the weights of the MLP.
 
         Args:

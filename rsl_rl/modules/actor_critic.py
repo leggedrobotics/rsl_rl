@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 from torch.distributions import Normal
+from typing import NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
 
@@ -30,7 +31,7 @@ class ActorCritic(nn.Module):
         noise_std_type: str = "scalar",
         state_dependent_std=False,
         **kwargs,
-    ):
+    ) -> None:
         if kwargs:
             print(
                 "ActorCritic.__init__ got unexpected arguments, which will be ignored: " + str([key for key in kwargs])
@@ -101,10 +102,10 @@ class ActorCritic(nn.Module):
         self,
         dones: torch.Tensor | None = None,
         hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None] = (None, None),
-    ):
+    ) -> None:
         pass
 
-    def forward(self):
+    def forward(self) -> NoReturn:
         raise NotImplementedError
 
     @property
@@ -119,7 +120,7 @@ class ActorCritic(nn.Module):
     def entropy(self) -> torch.Tensor:
         return self.distribution.entropy().sum(dim=-1)
 
-    def _update_distribution(self, obs: TensorDict):
+    def _update_distribution(self, obs: TensorDict) -> None:
         if self.state_dependent_std:
             # compute mean and standard deviation
             mean_and_std = self.actor(obs)
@@ -173,7 +174,7 @@ class ActorCritic(nn.Module):
     def get_actions_log_prob(self, actions: torch.Tensor) -> torch.Tensor:
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def update_normalization(self, obs: TensorDict):
+    def update_normalization(self, obs: TensorDict) -> None:
         if self.actor_obs_normalization:
             actor_obs = self.get_actor_obs(obs)
             self.actor_obs_normalizer.update(actor_obs)
