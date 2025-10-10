@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rsl-rl-lib"
-version = "3.1.0"
+version = "3.1.1"
 keywords = ["reinforcement-learning", "isaac", "leggedrobotics", "rl-pytorch"]
 maintainers = [
   { name="Clemens Schwarke", email="cschwarke@ethz.ch" },

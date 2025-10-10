@@ -3,7 +3,7 @@ title: "RSL-RL: A Learning Library for Robotics Research"
 message: "If you use this work, please cite the following paper."
 repository-code: "https://github.com/leggedrobotics/rsl_rl"
 license: BSD-3-Clause
-version: 3.1.0
+version: 3.1.1
 type: software
 authors:
   - family-names: Schwarke
