@@ -9,6 +9,7 @@ import os
 import time
 import torch
 from collections import deque
+from tensordict import TensorDict
 
 import rsl_rl
 from rsl_rl.algorithms import Distillation
@@ -21,7 +22,7 @@ from rsl_rl.utils import resolve_obs_groups, store_code_state
 class DistillationRunner(OnPolicyRunner):
     """On-policy runner for training and evaluation of teacher-student training."""
 
-    def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device="cpu"):
+    def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
         self.cfg = train_cfg
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
@@ -54,7 +55,7 @@ class DistillationRunner(OnPolicyRunner):
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
 
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
+    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         # initialize writer
         self._prepare_logging_writer()
         # check if teacher is loaded
@@ -153,7 +154,7 @@ class DistillationRunner(OnPolicyRunner):
     Helper methods.
     """
 
-    def _construct_algorithm(self, obs) -> Distillation:
+    def _construct_algorithm(self, obs: TensorDict) -> Distillation:
         """Construct the distillation algorithm."""
         # initialize the actor-critic
         student_teacher_class = eval(self.policy_cfg.pop("class_name"))

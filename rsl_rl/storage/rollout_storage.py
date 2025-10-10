@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import torch
+from collections.abc import Generator
 from tensordict import TensorDict
 
 from rsl_rl.utils import split_and_pad_trajectories
@@ -13,30 +14,30 @@ from rsl_rl.utils import split_and_pad_trajectories
 
 class RolloutStorage:
     class Transition:
-        def __init__(self):
-            self.observations = None
-            self.actions = None
-            self.privileged_actions = None
-            self.rewards = None
-            self.dones = None
-            self.values = None
-            self.actions_log_prob = None
-            self.action_mean = None
-            self.action_sigma = None
-            self.hidden_states = None
+        def __init__(self) -> None:
+            self.observations: TensorDict = None  # type: ignore
+            self.actions: torch.Tensor = None  # type: ignore
+            self.privileged_actions: torch.Tensor = None  # type: ignore
+            self.rewards: torch.Tensor = None  # type: ignore
+            self.dones: torch.Tensor = None  # type: ignore
+            self.values: torch.Tensor = None  # type: ignore
+            self.actions_log_prob: torch.Tensor = None  # type: ignore
+            self.action_mean: torch.Tensor = None  # type: ignore
+            self.action_sigma: torch.Tensor = None  # type: ignore
+            self.hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None] = (None, None)  # type: ignore
 
-        def clear(self):
+        def clear(self) -> None:
             self.__init__()
 
     def __init__(
         self,
-        training_type,
-        num_envs,
-        num_transitions_per_env,
-        obs,
-        actions_shape,
-        device="cpu",
-    ):
+        training_type: str,
+        num_envs: int,
+        num_transitions_per_env: int,
+        obs: TensorDict,
+        actions_shape: tuple[int] | list[int],
+        device: str = "cpu",
+    ) -> None:
         # store inputs
         self.training_type = training_type
         self.device = device
@@ -74,7 +75,7 @@ class RolloutStorage:
         # counter for the number of transitions stored
         self.step = 0
 
-    def add_transitions(self, transition: Transition):
+    def add_transitions(self, transition: Transition) -> None:
         # check if the transition is valid
         if self.step >= self.num_transitions_per_env:
             raise OverflowError("Rollout buffer overflow! You should call clear() before adding new transitions.")
@@ -102,8 +103,8 @@ class RolloutStorage:
         # increment the counter
         self.step += 1
 
-    def _save_hidden_states(self, hidden_states):
-        if hidden_states is None or hidden_states == (None, None):
+    def _save_hidden_states(self, hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None]) -> None:
+        if hidden_states == (None, None):
             return
         # make a tuple out of GRU hidden state sto match the LSTM format
         hid_a = hidden_states[0] if isinstance(hidden_states[0], tuple) else (hidden_states[0],)
@@ -121,17 +122,16 @@ class RolloutStorage:
             self.saved_hidden_states_a[i][self.step].copy_(hid_a[i])
             self.saved_hidden_states_c[i][self.step].copy_(hid_c[i])
 
-    def clear(self):
+    def clear(self) -> None:
         self.step = 0
 
-    def compute_returns(self, last_values, gamma, lam, normalize_advantage: bool = True):
+    def compute_returns(
+        self, last_values: torch.Tensor, gamma: float, lam: float, normalize_advantage: bool = True
+    ) -> None:
         advantage = 0
         for step in reversed(range(self.num_transitions_per_env)):
             # if we are at the last step, bootstrap the return value
-            if step == self.num_transitions_per_env - 1:
-                next_values = last_values
-            else:
-                next_values = self.values[step + 1]
+            next_values = last_values if step == self.num_transitions_per_env - 1 else self.values[step + 1]
             # 1 if we are not in a terminal state, 0 otherwise
             next_is_not_terminal = 1.0 - self.dones[step].float()
             # TD error: r_t + gamma * V(s_{t+1}) - V(s_t)
@@ -149,7 +149,7 @@ class RolloutStorage:
             self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
 
     # for distillation
-    def generator(self):
+    def generator(self) -> Generator:
         if self.training_type != "distillation":
             raise ValueError("This function is only available for distillation training.")
 
@@ -157,7 +157,7 @@ class RolloutStorage:
             yield self.observations[i], self.actions[i], self.privileged_actions[i], self.dones[i]
 
     # for reinforcement learning with feedforward networks
-    def mini_batch_generator(self, num_mini_batches, num_epochs=8):
+    def mini_batch_generator(self, num_mini_batches: int, num_epochs: int = 8) -> Generator:
         if self.training_type != "rl":
             raise ValueError("This function is only available for reinforcement learning training.")
         batch_size = self.num_envs * self.num_transitions_per_env
@@ -197,13 +197,24 @@ class RolloutStorage:
                 old_sigma_batch = old_sigma[batch_idx]
 
                 # yield the mini-batch
-                yield obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (
+                yield (
+                    obs_batch,
+                    actions_batch,
+                    target_values_batch,
+                    advantages_batch,
+                    returns_batch,
+                    old_actions_log_prob_batch,
+                    old_mu_batch,
+                    old_sigma_batch,
+                    (
+                        None,
+                        None,
+                    ),
                     None,
-                    None,
-                ), None
+                )
 
-    # for reinfrocement learning with recurrent networks
-    def recurrent_mini_batch_generator(self, num_mini_batches, num_epochs=8):
+    # for reinforcement learning with recurrent networks
+    def recurrent_mini_batch_generator(self, num_mini_batches: int, num_epochs: int = 8) -> Generator:
         if self.training_type != "rl":
             raise ValueError("This function is only available for reinforcement learning training.")
         padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.observations, self.dones)
@@ -232,7 +243,8 @@ class RolloutStorage:
                 values_batch = self.values[:, start:stop]
                 old_actions_log_prob_batch = self.actions_log_prob[:, start:stop]
 
-                # reshape to [num_envs, time, num layers, hidden dim] (original shape: [time, num_layers, num_envs, hidden_dim])
+                # reshape to [num_envs, time, num layers, hidden dim]
+                # (original shape: [time, num_layers, num_envs, hidden_dim])
                 # then take only time steps after dones (flattens num envs and time dimensions),
                 # take a batch of trajectories and finally reshape back to [num_layers, batch, hidden_dim]
                 last_was_done = last_was_done.permute(1, 0)
@@ -252,9 +264,20 @@ class RolloutStorage:
                 hid_a_batch = hid_a_batch[0] if len(hid_a_batch) == 1 else hid_a_batch
                 hid_c_batch = hid_c_batch[0] if len(hid_c_batch) == 1 else hid_c_batch
 
-                yield obs_batch, actions_batch, values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (
-                    hid_a_batch,
-                    hid_c_batch,
-                ), masks_batch
+                yield (
+                    obs_batch,
+                    actions_batch,
+                    values_batch,
+                    advantages_batch,
+                    returns_batch,
+                    old_actions_log_prob_batch,
+                    old_mu_batch,
+                    old_sigma_batch,
+                    (
+                        hid_a_batch,
+                        hid_c_batch,
+                    ),
+                    masks_batch,
+                )
 
                 first_traj = last_traj

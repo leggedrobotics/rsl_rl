@@ -35,7 +35,7 @@ class MLP(nn.Sequential):
         hidden_dims: tuple[int] | list[int],
         activation: str = "elu",
         last_activation: str | None = None,
-    ):
+    ) -> None:
         """Initialize the MLP.
 
         Args:
@@ -82,14 +82,14 @@ class MLP(nn.Sequential):
         for idx, layer in enumerate(layers):
             self.add_module(f"{idx}", layer)
 
-    def init_weights(self, scales: float | tuple[float]):
+    def init_weights(self, scales: float | tuple[float]) -> None:
         """Initialize the weights of the MLP.
 
         Args:
             scales: Scale factor for the weights.
         """
 
-        def get_scale(idx) -> float:
+        def get_scale(idx: int) -> float:
             """Get the scale factor for the weights of the MLP.
 
             Args:
@@ -112,9 +112,3 @@ class MLP(nn.Sequential):
         for layer in self:
             x = layer(x)
         return x
-
-    def reset(self, dones=None, hidden_states=None):
-        pass
-
-    def detach_hidden_states(self, dones=None):
-        pass

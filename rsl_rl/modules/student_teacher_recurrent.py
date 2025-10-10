@@ -8,32 +8,34 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import warnings
+from tensordict import TensorDict
 from torch.distributions import Normal
+from typing import Any, NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization, Memory
 
 
 class StudentTeacherRecurrent(nn.Module):
-    is_recurrent = True
+    is_recurrent: bool = True
 
     def __init__(
         self,
-        obs,
-        obs_groups,
-        num_actions,
-        student_obs_normalization=False,
-        teacher_obs_normalization=False,
-        student_hidden_dims=[256, 256, 256],
-        teacher_hidden_dims=[256, 256, 256],
-        activation="elu",
-        init_noise_std=0.1,
+        obs: TensorDict,
+        obs_groups: dict[str, list[str]],
+        num_actions: int,
+        student_obs_normalization: bool = False,
+        teacher_obs_normalization: bool = False,
+        student_hidden_dims: tuple[int] | list[int] = [256, 256, 256],
+        teacher_hidden_dims: tuple[int] | list[int] = [256, 256, 256],
+        activation: str = "elu",
+        init_noise_std: float = 0.1,
         noise_std_type: str = "scalar",
-        rnn_type="lstm",
-        rnn_hidden_dim=256,
-        rnn_num_layers=1,
-        teacher_recurrent=False,
-        **kwargs,
-    ):
+        rnn_type: str = "lstm",
+        rnn_hidden_dim: int = 256,
+        rnn_num_layers: int = 1,
+        teacher_recurrent: bool = False,
+        **kwargs: dict[str, Any],
+    ) -> None:
         if "rnn_hidden_size" in kwargs:
             warnings.warn(
                 "The argument `rnn_hidden_size` is deprecated and will be removed in a future version. "
@@ -64,7 +66,7 @@ class StudentTeacherRecurrent(nn.Module):
             num_teacher_obs += obs[obs_group].shape[-1]
 
         # student
-        self.memory_s = Memory(num_student_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=rnn_hidden_dim)
+        self.memory_s = Memory(num_student_obs, rnn_hidden_dim, rnn_num_layers, rnn_type)
         self.student = MLP(rnn_hidden_dim, num_actions, student_hidden_dims, activation)
 
         # student observation normalization
@@ -79,9 +81,7 @@ class StudentTeacherRecurrent(nn.Module):
 
         # teacher
         if self.teacher_recurrent:
-            self.memory_t = Memory(
-                num_teacher_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=rnn_hidden_dim
-            )
+            self.memory_t = Memory(num_teacher_obs, rnn_hidden_dim, rnn_num_layers, rnn_type)
         self.teacher = MLP(rnn_hidden_dim, num_actions, teacher_hidden_dims, activation)
 
         # teacher observation normalization
@@ -109,29 +109,31 @@ class StudentTeacherRecurrent(nn.Module):
         # disable args validation for speedup
         Normal.set_default_validate_args(False)
 
-    def reset(self, dones=None, hidden_states=None):
-        if hidden_states is None:
-            hidden_states = (None, None)
+    def reset(
+        self,
+        dones: torch.Tensor | None = None,
+        hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None] = (None, None),
+    ) -> None:
         self.memory_s.reset(dones, hidden_states[0])
         if self.teacher_recurrent:
             self.memory_t.reset(dones, hidden_states[1])
 
-    def forward(self):
+    def forward(self) -> NoReturn:
         raise NotImplementedError
 
     @property
-    def action_mean(self):
+    def action_mean(self) -> torch.Tensor:
         return self.distribution.mean
 
     @property
-    def action_std(self):
+    def action_std(self) -> torch.Tensor:
         return self.distribution.stddev
 
     @property
-    def entropy(self):
+    def entropy(self) -> torch.Tensor:
         return self.distribution.entropy().sum(dim=-1)
 
-    def update_distribution(self, obs):
+    def _update_distribution(self, obs: TensorDict) -> None:
         # compute mean
         mean = self.student(obs)
         # compute standard deviation
@@ -144,20 +146,20 @@ class StudentTeacherRecurrent(nn.Module):
         # create distribution
         self.distribution = Normal(mean, std)
 
-    def act(self, obs):
+    def act(self, obs: TensorDict) -> torch.Tensor:
         obs = self.get_student_obs(obs)
         obs = self.student_obs_normalizer(obs)
         out_mem = self.memory_s(obs).squeeze(0)
-        self.update_distribution(out_mem)
+        self._update_distribution(out_mem)
         return self.distribution.sample()
 
-    def act_inference(self, obs):
+    def act_inference(self, obs: TensorDict) -> torch.Tensor:
         obs = self.get_student_obs(obs)
         obs = self.student_obs_normalizer(obs)
         out_mem = self.memory_s(obs).squeeze(0)
         return self.student(out_mem)
 
-    def evaluate(self, obs):
+    def evaluate(self, obs: TensorDict) -> torch.Tensor:
         obs = self.get_teacher_obs(obs)
         obs = self.teacher_obs_normalizer(obs)
         with torch.no_grad():
@@ -166,55 +168,50 @@ class StudentTeacherRecurrent(nn.Module):
                 obs = self.memory_t(obs).squeeze(0)
             return self.teacher(obs)
 
-    def get_student_obs(self, obs):
-        obs_list = []
-        for obs_group in self.obs_groups["policy"]:
-            obs_list.append(obs[obs_group])
+    def get_student_obs(self, obs: TensorDict) -> torch.Tensor:
+        obs_list = [obs[obs_group] for obs_group in self.obs_groups["policy"]]
         return torch.cat(obs_list, dim=-1)
 
-    def get_teacher_obs(self, obs):
-        obs_list = []
-        for obs_group in self.obs_groups["teacher"]:
-            obs_list.append(obs[obs_group])
+    def get_teacher_obs(self, obs: TensorDict) -> torch.Tensor:
+        obs_list = [obs[obs_group] for obs_group in self.obs_groups["teacher"]]
         return torch.cat(obs_list, dim=-1)
 
-    def get_hidden_states(self):
+    def get_hidden_states(self) -> tuple[torch.Tensor | tuple[torch.Tensor] | None]:
         if self.teacher_recurrent:
             return self.memory_s.hidden_states, self.memory_t.hidden_states
         else:
             return self.memory_s.hidden_states, None
 
-    def detach_hidden_states(self, dones=None):
+    def detach_hidden_states(self, dones: torch.Tensor | None = None) -> None:
         self.memory_s.detach_hidden_states(dones)
         if self.teacher_recurrent:
             self.memory_t.detach_hidden_states(dones)
 
-    def train(self, mode=True):
+    def train(self, mode: bool = True) -> None:
         super().train(mode)
         # make sure teacher is in eval mode
         self.teacher.eval()
         self.teacher_obs_normalizer.eval()
 
-    def update_normalization(self, obs):
+    def update_normalization(self, obs: TensorDict) -> None:
         if self.student_obs_normalization:
             student_obs = self.get_student_obs(obs)
             self.student_obs_normalizer.update(student_obs)
 
-    def load_state_dict(self, state_dict, strict=True):
+    def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
         """Load the parameters of the student and teacher networks.
 
         Args:
-            state_dict (dict): State dictionary of the model.
-            strict (bool): Whether to strictly enforce that the keys in state_dict match the keys returned by this
+            state_dict: State dictionary of the model.
+            strict: Whether to strictly enforce that the keys in state_dict match the keys returned by this
                            module's state_dict() function.
 
         Returns:
             bool: Whether this training resumes a previous training. This flag is used by the `load()` function of
                   `OnPolicyRunner` to determine how to load further parameters.
         """
-
         # check if state_dict contains teacher and student or just teacher parameters
-        if any("actor" in key for key in state_dict.keys()):  # loading parameters from rl training
+        if any("actor" in key for key in state_dict):  # loading parameters from rl training
             # rename keys to match teacher and remove critic parameters
             teacher_state_dict = {}
             teacher_obs_normalizer_state_dict = {}
@@ -237,7 +234,7 @@ class StudentTeacherRecurrent(nn.Module):
             self.teacher.eval()
             self.teacher_obs_normalizer.eval()
             return False  # training does not resume
-        elif any("student" in key for key in state_dict.keys()):  # loading parameters from distillation training
+        elif any("student" in key for key in state_dict):  # loading parameters from distillation training
             super().load_state_dict(state_dict, strict=strict)
             # set flag for successfully loading the parameters
             self.loaded_teacher = True

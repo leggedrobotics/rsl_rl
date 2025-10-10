@@ -16,7 +16,7 @@ from typing import Callable
 
 
 def resolve_nn_activation(act_name: str) -> torch.nn.Module:
-    """Resolves the activation function from the name.
+    """Resolve the activation function from the name.
 
     Args:
         act_name: The name of the activation function.
@@ -50,7 +50,7 @@ def resolve_nn_activation(act_name: str) -> torch.nn.Module:
 
 
 def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
-    """Resolves the optimizer from the name.
+    """Resolve the optimizer from the name.
 
     Args:
         optimizer_name: The name of the optimizer.
@@ -78,8 +78,10 @@ def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
 def split_and_pad_trajectories(
     tensor: torch.Tensor | TensorDict, dones: torch.Tensor
 ) -> tuple[torch.Tensor | TensorDict, torch.Tensor]:
-    """Splits trajectories at done indices. Then concatenates them and pads with zeros up to the length of the longest
-    trajectory. Returns masks corresponding to valid parts of the trajectories.
+    """Split trajectories at done indices.
+
+    Split trajectories, concatenate them and pad with zeros up to the length of the longest trajectory. Return masks
+    corresponding to valid parts of the trajectories.
 
     Example:
         Input: [[a1, a2, a3, a4 | a5, a6],
@@ -93,7 +95,6 @@ def split_and_pad_trajectories(
 
     Assumes that the input has the following order of dimensions: [time, number of envs, additional dimensions]
     """
-
     dones = dones.clone()
     dones[-1] = 1
     # Permute the buffers to have order (num_envs, num_transitions_per_env, ...), for correct reshaping
@@ -109,7 +110,7 @@ def split_and_pad_trajectories(
             # split the tensor into trajectories
             trajectories = torch.split(v.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
             # add at least one full length trajectory
-            trajectories = trajectories + (torch.zeros(v.shape[0], *v.shape[2:], device=v.device),)
+            trajectories = (*trajectories, torch.zeros(v.shape[0], *v.shape[2:], device=v.device))
             # pad the trajectories to the length of the longest trajectory
             padded_trajectories[k] = torch.nn.utils.rnn.pad_sequence(trajectories)
             # remove the added tensor
@@ -121,7 +122,7 @@ def split_and_pad_trajectories(
         # split the tensor into trajectories
         trajectories = torch.split(tensor.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
         # add at least one full length trajectory
-        trajectories = trajectories + (torch.zeros(tensor.shape[0], *tensor.shape[2:], device=tensor.device),)
+        trajectories = (*trajectories, torch.zeros(tensor.shape[0], *tensor.shape[2:], device=tensor.device))
         # pad the trajectories to the length of the longest trajectory
         padded_trajectories = torch.nn.utils.rnn.pad_sequence(trajectories)
         # remove the added tensor
@@ -131,8 +132,8 @@ def split_and_pad_trajectories(
     return padded_trajectories, trajectory_masks
 
 
-def unpad_trajectories(trajectories, masks):
-    """Does the inverse operation of  split_and_pad_trajectories()"""
+def unpad_trajectories(trajectories: torch.Tensor | TensorDict, masks: torch.Tensor) -> torch.Tensor | TensorDict:
+    """Do the inverse operation of `split_and_pad_trajectories()`."""
     # Need to transpose before and after the masking to have proper reshaping
     return (
         trajectories.transpose(1, 0)[masks.transpose(1, 0)]
@@ -141,7 +142,7 @@ def unpad_trajectories(trajectories, masks):
     )
 
 
-def store_code_state(logdir, repositories) -> list:
+def store_code_state(logdir: str, repositories: list[str]) -> list[str]:
     git_log_dir = os.path.join(logdir, "git")
     os.makedirs(git_log_dir, exist_ok=True)
     file_paths = []
@@ -170,7 +171,7 @@ def store_code_state(logdir, repositories) -> list:
 
 
 def string_to_callable(name: str) -> Callable:
-    """Resolves the module and function names to return the function.
+    """Resolve the module and function names to return the function.
 
     Args:
         name: The function name. The format should be 'module:attribute_name'.
@@ -191,18 +192,18 @@ def string_to_callable(name: str) -> Callable:
             return callable_object
         else:
             raise ValueError(f"The imported object is not callable: '{name}'")
-    except AttributeError as e:
+    except AttributeError as err:
         msg = (
             "We could not interpret the entry as a callable object. The format of input should be"
-            f" 'module:attribute_name'\nWhile processing input '{name}', received the error:\n {e}."
+            f" 'module:attribute_name'\nWhile processing input '{name}'."
         )
-        raise ValueError(msg)
+        raise ValueError(msg) from err
 
 
 def resolve_obs_groups(
     obs: TensorDict, obs_groups: dict[str, list[str]], default_sets: list[str]
 ) -> dict[str, list[str]]:
-    """Validates the observation configuration and defaults missing observation sets.
+    """Validate the observation configuration and defaults missing observation sets.
 
     The input is an observation dictionary `obs` containing observation groups and a configuration dictionary
     `obs_groups` where the keys are the observation sets and the values are lists of observation groups.
@@ -238,7 +239,7 @@ def resolve_obs_groups(
         ValueError: If any observation set contains an observation term that is not present in the observations.
     """
     # check if policy observation set exists
-    if "policy" not in obs_groups.keys():
+    if "policy" not in obs_groups:
         if "policy" in obs:
             obs_groups["policy"] = ["policy"]
             warnings.warn(
@@ -276,7 +277,7 @@ def resolve_obs_groups(
 
     # fill missing observation sets
     for default_set_name in default_sets:
-        if default_set_name not in obs_groups.keys():
+        if default_set_name not in obs_groups:
             if default_set_name in obs:
                 obs_groups[default_set_name] = [default_set_name]
                 warnings.warn(

@@ -9,8 +9,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from itertools import chain
+from tensordict import TensorDict
 
-from rsl_rl.modules import ActorCritic
+from rsl_rl.modules import ActorCritic, ActorCriticRecurrent
 from rsl_rl.modules.rnd import RandomNetworkDistillation
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import string_to_callable
@@ -19,33 +20,33 @@ from rsl_rl.utils import string_to_callable
 class PPO:
     """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
 
-    policy: ActorCritic
+    policy: ActorCritic | ActorCriticRecurrent
     """The actor critic module."""
 
     def __init__(
         self,
-        policy,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        clip_param=0.2,
-        gamma=0.99,
-        lam=0.95,
-        value_loss_coef=1.0,
-        entropy_coef=0.01,
-        learning_rate=0.001,
-        max_grad_norm=1.0,
-        use_clipped_value_loss=True,
-        schedule="adaptive",
-        desired_kl=0.01,
-        device="cpu",
-        normalize_advantage_per_mini_batch=False,
+        policy: ActorCritic | ActorCriticRecurrent,
+        num_learning_epochs: int = 5,
+        num_mini_batches: int = 4,
+        clip_param: float = 0.2,
+        gamma: float = 0.99,
+        lam: float = 0.95,
+        value_loss_coef: float = 1.0,
+        entropy_coef: float = 0.01,
+        learning_rate: float = 0.001,
+        max_grad_norm: float = 1.0,
+        use_clipped_value_loss: bool = True,
+        schedule: str = "adaptive",
+        desired_kl: float = 0.01,
+        device: str = "cpu",
+        normalize_advantage_per_mini_batch: bool = False,
         # RND parameters
         rnd_cfg: dict | None = None,
         # Symmetry parameters
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
-    ):
+    ) -> None:
         # device-related parameters
         self.device = device
         self.is_multi_gpu = multi_gpu_cfg is not None
@@ -115,7 +116,14 @@ class PPO:
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
 
-    def init_storage(self, training_type, num_envs, num_transitions_per_env, obs, actions_shape):
+    def init_storage(
+        self,
+        training_type: str,
+        num_envs: int,
+        num_transitions_per_env: int,
+        obs: TensorDict,
+        actions_shape: tuple[int] | list[int],
+    ) -> None:
         # create rollout storage
         self.storage = RolloutStorage(
             training_type,
@@ -126,7 +134,7 @@ class PPO:
             self.device,
         )
 
-    def act(self, obs):
+    def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:
             self.transition.hidden_states = self.policy.get_hidden_states()
         # compute the actions and values
@@ -139,7 +147,9 @@ class PPO:
         self.transition.observations = obs
         return self.transition.actions
 
-    def process_env_step(self, obs, rewards, dones, extras):
+    def process_env_step(
+        self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
+    ) -> None:
         # update the normalizers
         self.policy.update_normalization(obs)
         if self.rnd:
@@ -168,27 +178,21 @@ class PPO:
         self.transition.clear()
         self.policy.reset(dones)
 
-    def compute_returns(self, obs):
+    def compute_returns(self, obs: TensorDict) -> None:
         # compute value for the last step
         last_values = self.policy.evaluate(obs).detach()
         self.storage.compute_returns(
             last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
         )
 
-    def update(self):  # noqa: C901
+    def update(self) -> dict[str, float]:
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
         # -- RND loss
-        if self.rnd:
-            mean_rnd_loss = 0
-        else:
-            mean_rnd_loss = None
+        mean_rnd_loss = 0 if self.rnd else None
         # -- Symmetry loss
-        if self.symmetry:
-            mean_symmetry_loss = 0
-        else:
-            mean_symmetry_loss = None
+        mean_symmetry_loss = 0 if self.symmetry else None
 
         # generator for mini batches
         if self.policy.is_recurrent:
@@ -209,7 +213,6 @@ class PPO:
             hid_states_batch,
             masks_batch,
         ) in generator:
-
             # number of augmentations per sample
             # we start with 1 and increase it if we use symmetry augmentation
             num_aug = 1
@@ -425,7 +428,7 @@ class PPO:
     Helper functions
     """
 
-    def broadcast_parameters(self):
+    def broadcast_parameters(self) -> None:
         """Broadcast model parameters to all GPUs."""
         # obtain the model parameters on current GPU
         model_params = [self.policy.state_dict()]
@@ -438,7 +441,7 @@ class PPO:
         if self.rnd:
             self.rnd.predictor.load_state_dict(model_params[1])
 
-    def reduce_parameters(self):
+    def reduce_parameters(self) -> None:
         """Collect gradients from all GPUs and average them.
 
         This function is called after the backward pass to synchronize the gradients across all GPUs.

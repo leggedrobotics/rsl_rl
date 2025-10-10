@@ -5,7 +5,7 @@ runner:
   max_iterations: 1500  # number of policy updates
   seed: 1
   # -- observations
-  obs_groups: {"policy": ["policy"], "critic": ["policy", "privileged"]} # maps observation groups to types. See `vec_env.py` for more information
+  obs_groups: {"policy": ["policy"], "critic": ["policy", "privileged"]} # maps observation groups to sets. See `vec_env.py` for more information
   # -- logging parameters
   save_interval: 50  # check for potential saves every `save_interval` iterations
   experiment_name: walking_experiment
@@ -25,6 +25,7 @@ runner:
     critic_hidden_dims: [256, 256, 256]
     init_noise_std: 1.0
     noise_std_type: "scalar"  # 'scalar' or 'log'
+    state_dependent_std: false
 
   # -- algorithm
   algorithm:
@@ -64,7 +65,7 @@ runner:
       use_data_augmentation: true  # this adds symmetric trajectories to the batch
       use_mirror_loss: false  # this adds symmetry loss term to the loss function
       data_augmentation_func: null # string containing the module and function name to import
-      # Example: "legged_gym.envs.locomotion.anymal_c.symmetry:get_symmetric_states"
+      # example: "legged_gym.envs.locomotion.anymal_c.symmetry:get_symmetric_states"
       #
       # .. code-block:: python
       #
@@ -73,4 +74,4 @@ runner:
       #        obs: Optional[torch.Tensor] = None, actions: Optional[torch.Tensor] = None, cfg: "BaseEnvCfg" = None, obs_type: str = "policy"
       #     ) -> Tuple[torch.Tensor, torch.Tensor]:
       #
-      mirror_loss_coeff: 0.0 #coefficient for symmetry loss term. If 0, no symmetry loss is used
+      mirror_loss_coeff: 0.0 # coefficient for symmetry loss term. If 0, no symmetry loss is used

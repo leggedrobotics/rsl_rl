@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+from tensordict import TensorDict
+from typing import Any, NoReturn
 
+from rsl_rl.env import VecEnv
 from rsl_rl.networks import MLP, EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
 
 
 class RandomNetworkDistillation(nn.Module):
-    """Implementation of Random Network Distillation (RND) [1]
+    """Implementation of Random Network Distillation (RND) [1].
 
     References:
         .. [1] Burda, Yuri, et al. "Exploration by random network distillation." arXiv preprint arXiv:1810.12894 (2018).
@@ -23,27 +26,29 @@ class RandomNetworkDistillation(nn.Module):
         num_states: int,
         obs_groups: dict,
         num_outputs: int,
-        predictor_hidden_dims: list[int],
-        target_hidden_dims: list[int],
+        predictor_hidden_dims: tuple[int] | list[int],
+        target_hidden_dims: tuple[int] | list[int],
         activation: str = "elu",
         weight: float = 0.0,
         state_normalization: bool = False,
         reward_normalization: bool = False,
         device: str = "cpu",
         weight_schedule: dict | None = None,
-    ):
+    ) -> None:
         """Initialize the RND module.
 
-        - If :attr:`state_normalization` is True, then the input state is normalized using an Empirical Normalization layer.
+        - If :attr:`state_normalization` is True, then the input state is normalized using an Empirical Normalization
+          layer.
         - If :attr:`reward_normalization` is True, then the intrinsic reward is normalized using an Empirical Discounted
           Variation Normalization layer.
 
         .. note::
-            If the hidden dimensions are -1 in the predictor and target networks configuration, then the number of states
-            is used as the hidden dimension.
+            If the hidden dimensions are -1 in the predictor and target networks configuration, then the number of
+            states is used as the hidden dimension.
 
         Args:
             num_states: Number of states/inputs to the predictor and target networks.
+            obs_groups: Dictionary of observation groups.
             num_outputs: Number of outputs (embedding size) of the predictor and target networks.
             predictor_hidden_dims: List of hidden dimensions of the predictor network.
             target_hidden_dims: List of hidden dimensions of the target network.
@@ -110,7 +115,7 @@ class RandomNetworkDistillation(nn.Module):
         # make target network not trainable
         self.target.eval()
 
-    def get_intrinsic_reward(self, obs) -> torch.Tensor:
+    def get_intrinsic_reward(self, obs: TensorDict) -> torch.Tensor:
         # Note: the counter is updated number of env steps per learning iteration
         self.update_counter += 1
         # Extract the rnd state from the observation
@@ -134,10 +139,10 @@ class RandomNetworkDistillation(nn.Module):
 
         return intrinsic_reward
 
-    def forward(self, *args, **kwargs):
+    def forward(self, *args: Any, **kwargs: dict[str, Any]) -> NoReturn:
         raise RuntimeError("Forward method is not implemented. Use get_intrinsic_reward instead.")
 
-    def train(self, mode: bool = True):
+    def train(self, mode: bool = True) -> RandomNetworkDistillation:
         # sets module into training mode
         self.predictor.train(mode)
         if self.state_normalization:
@@ -146,16 +151,14 @@ class RandomNetworkDistillation(nn.Module):
             self.reward_normalizer.train(mode)
         return self
 
-    def eval(self):
+    def eval(self) -> RandomNetworkDistillation:
         return self.train(False)
 
-    def get_rnd_state(self, obs):
-        obs_list = []
-        for obs_group in self.obs_groups["rnd_state"]:
-            obs_list.append(obs[obs_group])
+    def get_rnd_state(self, obs: TensorDict) -> torch.Tensor:
+        obs_list = [obs[obs_group] for obs_group in self.obs_groups["rnd_state"]]
         return torch.cat(obs_list, dim=-1)
 
-    def update_normalization(self, obs):
+    def update_normalization(self, obs: TensorDict) -> None:
         # Normalize the state
         if self.state_normalization:
             rnd_state = self.get_rnd_state(obs)
@@ -165,13 +168,15 @@ class RandomNetworkDistillation(nn.Module):
     Different weight schedules.
     """
 
-    def _constant_weight_schedule(self, step: int, **kwargs):
+    def _constant_weight_schedule(self, step: int, **kwargs: dict[str, Any]) -> float:
         return self.initial_weight
 
-    def _step_weight_schedule(self, step: int, final_step: int, final_value: float, **kwargs):
+    def _step_weight_schedule(self, step: int, final_step: int, final_value: float, **kwargs: dict[str, Any]) -> float:
         return self.initial_weight if step < final_step else final_value
 
-    def _linear_weight_schedule(self, step: int, initial_step: int, final_step: int, final_value: float, **kwargs):
+    def _linear_weight_schedule(
+        self, step: int, initial_step: int, final_step: int, final_value: float, **kwargs: dict[str, Any]
+    ) -> float:
         if step < initial_step:
             return self.initial_weight
         elif step > final_step:
@@ -182,7 +187,7 @@ class RandomNetworkDistillation(nn.Module):
             )
 
 
-def resolve_rnd_config(alg_cfg, obs, obs_groups, env):
+def resolve_rnd_config(alg_cfg: dict, obs: TensorDict, obs_groups: dict[str, list[str]], env: VecEnv) -> dict:
     """Resolve the RND configuration.
 
     Args:

@@ -11,6 +11,7 @@ import time
 import torch
 import warnings
 from collections import deque
+from tensordict import TensorDict
 
 import rsl_rl
 from rsl_rl.algorithms import PPO
@@ -22,7 +23,7 @@ from rsl_rl.utils import resolve_obs_groups, store_code_state
 class OnPolicyRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
 
-    def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device="cpu"):
+    def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
         self.cfg = train_cfg
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
@@ -58,7 +59,7 @@ class OnPolicyRunner:
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
 
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
+    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         # initialize writer
         self._prepare_logging_writer()
 
@@ -174,7 +175,7 @@ class OnPolicyRunner:
         if self.log_dir is not None and not self.disable_logs:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
 
-    def log(self, locs: dict, width: int = 80, pad: int = 35):
+    def log(self, locs: dict, width: int = 80, pad: int = 35) -> None:
         # Compute the collection size
         collection_size = self.num_steps_per_env * self.env.num_envs * self.gpu_world_size
         # Update total time-steps and time
@@ -200,10 +201,10 @@ class OnPolicyRunner:
                 # log to logger and terminal
                 if "/" in key:
                     self.writer.add_scalar(key, value, locs["it"])
-                    ep_string += f"""{f'{key}:':>{pad}} {value:.4f}\n"""
+                    ep_string += f"""{f"{key}:":>{pad}} {value:.4f}\n"""
                 else:
                     self.writer.add_scalar("Episode/" + key, value, locs["it"])
-                    ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
+                    ep_string += f"""{f"Mean episode {key}:":>{pad}} {value:.4f}\n"""
 
         mean_std = self.alg.policy.action_std.mean()
         fps = int(collection_size / (locs["collection_time"] + locs["learn_time"]))
@@ -241,52 +242,55 @@ class OnPolicyRunner:
 
         if len(locs["rewbuffer"]) > 0:
             log_string = (
-                f"""{'#' * width}\n"""
-                f"""{str.center(width, ' ')}\n\n"""
-                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                    'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
-                f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
+                f"""{"#" * width}\n"""
+                f"""{str.center(width, " ")}\n\n"""
+                f"""{"Computation:":>{pad}} {fps:.0f} steps/s (collection: {locs["collection_time"]:.3f}s, learning {
+                    locs["learn_time"]:.3f}s)\n"""
+                f"""{"Mean action noise std:":>{pad}} {mean_std.item():.2f}\n"""
             )
             # -- Losses
             for key, value in locs["loss_dict"].items():
-                log_string += f"""{f'Mean {key} loss:':>{pad}} {value:.4f}\n"""
+                log_string += f"""{f"Mean {key} loss:":>{pad}} {value:.4f}\n"""
             # -- Rewards
             if hasattr(self.alg, "rnd") and self.alg.rnd:
                 log_string += (
-                    f"""{'Mean extrinsic reward:':>{pad}} {statistics.mean(locs['erewbuffer']):.2f}\n"""
-                    f"""{'Mean intrinsic reward:':>{pad}} {statistics.mean(locs['irewbuffer']):.2f}\n"""
+                    f"""{"Mean extrinsic reward:":>{pad}} {statistics.mean(locs["erewbuffer"]):.2f}\n"""
+                    f"""{"Mean intrinsic reward:":>{pad}} {statistics.mean(locs["irewbuffer"]):.2f}\n"""
                 )
-            log_string += f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
+            log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(locs["rewbuffer"]):.2f}\n"""
             # -- episode info
-            log_string += f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
+            log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(locs["lenbuffer"]):.2f}\n"""
         else:
             log_string = (
-                f"""{'#' * width}\n"""
-                f"""{str.center(width, ' ')}\n\n"""
-                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                    'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
-                f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
+                f"""{"#" * width}\n"""
+                f"""{str.center(width, " ")}\n\n"""
+                f"""{"Computation:":>{pad}} {fps:.0f} steps/s (collection: {locs["collection_time"]:.3f}s, learning {
+                    locs["learn_time"]:.3f}s)\n"""
+                f"""{"Mean action noise std:":>{pad}} {mean_std.item():.2f}\n"""
             )
             for key, value in locs["loss_dict"].items():
-                log_string += f"""{f'{key}:':>{pad}} {value:.4f}\n"""
+                log_string += f"""{f"{key}:":>{pad}} {value:.4f}\n"""
 
         log_string += ep_string
         log_string += (
-            f"""{'-' * width}\n"""
-            f"""{'Total timesteps:':>{pad}} {self.tot_timesteps}\n"""
-            f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n"""
-            f"""{'Time elapsed:':>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
-            f"""{'ETA:':>{pad}} {time.strftime(
-                "%H:%M:%S",
-                time.gmtime(
-                    self.tot_time / (locs['it'] - locs['start_iter'] + 1)
-                    * (locs['start_iter'] + locs['num_learning_iterations'] - locs['it'])
+            f"""{"-" * width}\n"""
+            f"""{"Total timesteps:":>{pad}} {self.tot_timesteps}\n"""
+            f"""{"Iteration time:":>{pad}} {iteration_time:.2f}s\n"""
+            f"""{"Time elapsed:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
+            f"""{"ETA:":>{pad}} {
+                time.strftime(
+                    "%H:%M:%S",
+                    time.gmtime(
+                        self.tot_time
+                        / (locs["it"] - locs["start_iter"] + 1)
+                        * (locs["start_iter"] + locs["num_learning_iterations"] - locs["it"])
+                    ),
                 )
-            )}\n"""
+            }\n"""
         )
         print(log_string)
 
-    def save(self, path: str, infos=None):
+    def save(self, path: str, infos: dict | None = None) -> None:
         # -- Save model
         saved_dict = {
             "model_state_dict": self.alg.policy.state_dict(),
@@ -304,7 +308,7 @@ class OnPolicyRunner:
         if self.logger_type in ["neptune", "wandb"] and not self.disable_logs:
             self.writer.save_model(path, self.current_learning_iteration)
 
-    def load(self, path: str, load_optimizer: bool = True, map_location: str | None = None):
+    def load(self, path: str, load_optimizer: bool = True, map_location: str | None = None) -> dict:
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
         # -- Load model
         resumed_training = self.alg.policy.load_state_dict(loaded_dict["model_state_dict"])
@@ -323,34 +327,34 @@ class OnPolicyRunner:
             self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
 
-    def get_inference_policy(self, device=None):
+    def get_inference_policy(self, device: str | None = None) -> callable:
         self.eval_mode()  # switch to evaluation mode (dropout for example)
         if device is not None:
             self.alg.policy.to(device)
         return self.alg.policy.act_inference
 
-    def train_mode(self):
+    def train_mode(self) -> None:
         # -- PPO
         self.alg.policy.train()
         # -- RND
         if hasattr(self.alg, "rnd") and self.alg.rnd:
             self.alg.rnd.train()
 
-    def eval_mode(self):
+    def eval_mode(self) -> None:
         # -- PPO
         self.alg.policy.eval()
         # -- RND
         if hasattr(self.alg, "rnd") and self.alg.rnd:
             self.alg.rnd.eval()
 
-    def add_git_repo_to_log(self, repo_file_path):
+    def add_git_repo_to_log(self, repo_file_path: str) -> None:
         self.git_status_repos.append(repo_file_path)
 
     """
     Helper functions.
     """
 
-    def _configure_multi_gpu(self):
+    def _configure_multi_gpu(self) -> None:
         """Configure multi-gpu training."""
         # check if distributed training is enabled
         self.gpu_world_size = int(os.getenv("WORLD_SIZE", "1"))
@@ -394,7 +398,7 @@ class OnPolicyRunner:
         # set device to the local rank
         torch.cuda.set_device(self.gpu_local_rank)
 
-    def _construct_algorithm(self, obs) -> PPO:
+    def _construct_algorithm(self, obs: TensorDict) -> PPO:
         """Construct the actor-critic algorithm."""
         # resolve RND config
         self.alg_cfg = resolve_rnd_config(self.alg_cfg, obs, self.cfg["obs_groups"], self.env)
@@ -435,8 +439,8 @@ class OnPolicyRunner:
 
         return alg
 
-    def _prepare_logging_writer(self):
-        """Prepares the logging writers."""
+    def _prepare_logging_writer(self) -> None:
+        """Prepare the logging writers."""
         if self.log_dir is not None and self.writer is None and not self.disable_logs:
             # Launch either Tensorboard or Neptune & Tensorboard summary writer(s), default: Tensorboard.
             self.logger_type = self.cfg.get("logger", "tensorboard")
