@@ -19,7 +19,7 @@ authors = [
 description = "Fast and simple RL algorithms implemented in PyTorch"
 readme = { file = "README.md", content-type = "text/markdown"}
 license = { text = "BSD-3-Clause" }
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
@@ -47,7 +47,7 @@ include = ["rsl_rl*"]
 [tool.pyright]
 include = ["rsl_rl"]
 typeCheckingMode = "basic"
-pythonVersion = "3.8"
+pythonVersion = "3.9"
 pythonPlatform = "Linux"
 enableTypeIgnoreComments = true
 # This is required as the CI pre-commit does not download the module (i.e. numpy, torch, prettytable)
