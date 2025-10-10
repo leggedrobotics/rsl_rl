@@ -15,6 +15,9 @@ from .symmetry import resolve_symmetry_config
 __all__ = [
     "ActorCritic",
     "ActorCriticRecurrent",
+    "RandomNetworkDistillation",
     "StudentTeacher",
     "StudentTeacherRecurrent",
+    "resolve_rnd_config",
+    "resolve_symmetry_config",
 ]

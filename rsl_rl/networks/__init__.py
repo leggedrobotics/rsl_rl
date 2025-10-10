@@ -8,3 +8,10 @@
 from .memory import Memory
 from .mlp import MLP
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
+
+__all__ = [
+    "MLP",
+    "EmpiricalDiscountedVariationNormalization",
+    "EmpiricalNormalization",
+    "Memory",
+]
