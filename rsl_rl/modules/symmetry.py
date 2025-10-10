@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+from rsl_rl.env import VecEnv
 
-def resolve_symmetry_config(alg_cfg, env):
+
+def resolve_symmetry_config(alg_cfg: dict, env: VecEnv) -> dict:
     """Resolve the symmetry configuration.
 
     Args:

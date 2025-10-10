@@ -5,6 +5,7 @@
 
 import torch
 import torch.nn as nn
+from tensordict import TensorDict
 
 from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent
 from rsl_rl.storage import RolloutStorage
@@ -19,14 +20,14 @@ class Distillation:
 
     def __init__(
         self,
-        policy,
-        num_learning_epochs=1,
-        gradient_length=15,
-        learning_rate=1e-3,
-        max_grad_norm=None,
-        loss_type="mse",
-        optimizer="adam",
-        device="cpu",
+        policy: StudentTeacher | StudentTeacherRecurrent,
+        num_learning_epochs: int = 1,
+        gradient_length: int = 15,
+        learning_rate: float = 1e-3,
+        max_grad_norm: float | None = None,
+        loss_type: str = "mse",
+        optimizer: str = "adam",
+        device: str = "cpu",
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
     ):
@@ -71,7 +72,14 @@ class Distillation:
 
         self.num_updates = 0
 
-    def init_storage(self, training_type, num_envs, num_transitions_per_env, obs, actions_shape):
+    def init_storage(
+        self,
+        training_type: str,
+        num_envs: int,
+        num_transitions_per_env: int,
+        obs: TensorDict,
+        actions_shape: tuple[int],
+    ):
         # create rollout storage
         self.storage = RolloutStorage(
             training_type,
@@ -82,7 +90,7 @@ class Distillation:
             self.device,
         )
 
-    def act(self, obs):
+    def act(self, obs: TensorDict) -> torch.Tensor:
         # compute the actions
         self.transition.actions = self.policy.act(obs).detach()
         self.transition.privileged_actions = self.policy.evaluate(obs).detach()
@@ -90,7 +98,9 @@ class Distillation:
         self.transition.observations = obs
         return self.transition.actions
 
-    def process_env_step(self, obs, rewards, dones, extras):
+    def process_env_step(
+        self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
+    ):
         # update the normalizers
         self.policy.update_normalization(obs)
 
@@ -102,7 +112,7 @@ class Distillation:
         self.transition.clear()
         self.policy.reset(dones)
 
-    def update(self):
+    def update(self) -> dict[str, float]:
         self.num_updates += 1
         mean_behavior_loss = 0
         loss = 0

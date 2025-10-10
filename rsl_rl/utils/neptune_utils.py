@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 
 
 class NeptuneLogger:
-    def __init__(self, project, token):
+    def __init__(self, project: str, token: str):
         self.run = neptune.init_run(project=project, api_token=token)
 
     def store_config(self, env_cfg, runner_cfg, alg_cfg, policy_cfg):
@@ -29,7 +29,7 @@ class NeptuneLogger:
 class NeptuneSummaryWriter(SummaryWriter):
     """Summary writer for Neptune."""
 
-    def __init__(self, log_dir: str, flush_secs: int, cfg):
+    def __init__(self, log_dir: str, flush_secs: int, cfg: dict):
         super().__init__(log_dir, flush_secs)
 
         try:
@@ -64,13 +64,14 @@ class NeptuneSummaryWriter(SummaryWriter):
 
         self.neptune_logger.run["log_dir"].log(run_name)
 
-    def _map_path(self, path):
-        if path in self.name_map:
-            return self.name_map[path]
-        else:
-            return path
-
-    def add_scalar(self, tag, scalar_value, global_step=None, walltime=None, new_style=False):
+    def add_scalar(
+        self,
+        tag: str,
+        scalar_value: float,
+        global_step: int | None = None,
+        walltime: float | None = None,
+        new_style: bool = False,
+    ):
         super().add_scalar(
             tag,
             scalar_value,
@@ -83,12 +84,22 @@ class NeptuneSummaryWriter(SummaryWriter):
     def stop(self):
         self.neptune_logger.run.stop()
 
-    def log_config(self, env_cfg, runner_cfg, alg_cfg, policy_cfg):
+    def log_config(self, env_cfg: dict, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict):
         self.neptune_logger.store_config(env_cfg, runner_cfg, alg_cfg, policy_cfg)
 
-    def save_model(self, model_path, iter):
+    def save_model(self, model_path: str, iter: int):
         self.neptune_logger.run["model/saved_model_" + str(iter)].upload(model_path)
 
-    def save_file(self, path, iter=None):
+    def save_file(self, path: str):
         name = path.rsplit("/", 1)[-1].split(".")[0]
         self.neptune_logger.run["git_diff/" + name].upload(path)
+
+    """
+    Private methods.
+    """
+
+    def _map_path(self, path: str) -> str:
+        if path in self.name_map:
+            return self.name_map[path]
+        else:
+            return path

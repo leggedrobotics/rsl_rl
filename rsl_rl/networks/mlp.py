@@ -112,9 +112,3 @@ class MLP(nn.Sequential):
         for layer in self:
             x = layer(x)
         return x
-
-    def reset(self, dones=None, hidden_states=None):
-        pass
-
-    def detach_hidden_states(self, dones=None):
-        pass

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import torch
 import torch.nn as nn
 
 from rsl_rl.utils import unpad_trajectories
@@ -17,14 +18,19 @@ class Memory(nn.Module):
     Currently only supports GRU and LSTM.
     """
 
-    def __init__(self, input_size, hidden_dim=256, num_layers=1, type="lstm"):
+    def __init__(self, input_size: int, hidden_dim: int = 256, num_layers: int = 1, type: str = "lstm"):
         super().__init__()
         # RNN
         rnn_cls = nn.GRU if type.lower() == "gru" else nn.LSTM
         self.rnn = rnn_cls(input_size=input_size, hidden_dim=hidden_dim, num_layers=num_layers)
         self.hidden_states = None
 
-    def forward(self, input, masks=None, hidden_states=None):
+    def forward(
+        self,
+        input: torch.Tensor,
+        masks: torch.Tensor | None = None,
+        hidden_states: torch.Tensor | tuple[torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         batch_mode = masks is not None
         if batch_mode:
             # batch mode: needs saved hidden states
@@ -37,8 +43,8 @@ class Memory(nn.Module):
             out, self.hidden_states = self.rnn(input.unsqueeze(0), self.hidden_states)
         return out
 
-    def reset(self, dones=None, hidden_states=None):
-        if dones is None:  # reset all hidden states
+    def reset(self, dones: torch.Tensor | None = None, hidden_states: torch.Tensor | tuple[torch.Tensor] | None = None):
+        if dones is None:  # reset hidden states
             if hidden_states is None:
                 self.hidden_states = None
             else:
@@ -55,7 +61,7 @@ class Memory(nn.Module):
                     "Resetting hidden states of done environments with custom hidden states is not implemented"
                 )
 
-    def detach_hidden_states(self, dones=None):
+    def detach_hidden_states(self, dones: torch.Tensor | None = None):
         if self.hidden_states is not None:
             if dones is None:  # detach all hidden states
                 if isinstance(self.hidden_states, tuple):  # tuple in case of LSTM

@@ -8,30 +8,31 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import warnings
+from tensordict import TensorDict
 from torch.distributions import Normal
 
 from rsl_rl.networks import MLP, EmpiricalNormalization, Memory
 
 
 class StudentTeacherRecurrent(nn.Module):
-    is_recurrent = True
+    is_recurrent: bool = True
 
     def __init__(
         self,
-        obs,
-        obs_groups,
-        num_actions,
-        student_obs_normalization=False,
-        teacher_obs_normalization=False,
-        student_hidden_dims=[256, 256, 256],
-        teacher_hidden_dims=[256, 256, 256],
-        activation="elu",
-        init_noise_std=0.1,
+        obs: TensorDict,
+        obs_groups: dict[str, list[str]],
+        num_actions: int,
+        student_obs_normalization: bool = False,
+        teacher_obs_normalization: bool = False,
+        student_hidden_dims: tuple[int] | list[int] = [256, 256, 256],
+        teacher_hidden_dims: tuple[int] | list[int] = [256, 256, 256],
+        activation: str = "elu",
+        init_noise_std: float = 0.1,
         noise_std_type: str = "scalar",
-        rnn_type="lstm",
-        rnn_hidden_dim=256,
-        rnn_num_layers=1,
-        teacher_recurrent=False,
+        rnn_type: str = "lstm",
+        rnn_hidden_dim: int = 256,
+        rnn_num_layers: int = 1,
+        teacher_recurrent: bool = False,
         **kwargs,
     ):
         if "rnn_hidden_size" in kwargs:
@@ -107,9 +108,11 @@ class StudentTeacherRecurrent(nn.Module):
         # disable args validation for speedup
         Normal.set_default_validate_args(False)
 
-    def reset(self, dones=None, hidden_states=None):
-        if hidden_states is None:
-            hidden_states = (None, None)
+    def reset(
+        self,
+        dones: torch.Tensor | None = None,
+        hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None] = (None, None),
+    ):
         self.memory_s.reset(dones, hidden_states[0])
         if self.teacher_recurrent:
             self.memory_t.reset(dones, hidden_states[1])
@@ -118,18 +121,18 @@ class StudentTeacherRecurrent(nn.Module):
         raise NotImplementedError
 
     @property
-    def action_mean(self):
+    def action_mean(self) -> torch.Tensor:
         return self.distribution.mean
 
     @property
-    def action_std(self):
+    def action_std(self) -> torch.Tensor:
         return self.distribution.stddev
 
     @property
-    def entropy(self):
+    def entropy(self) -> torch.Tensor:
         return self.distribution.entropy().sum(dim=-1)
 
-    def _update_distribution(self, obs):
+    def _update_distribution(self, obs: TensorDict):
         # compute mean
         mean = self.student(obs)
         # compute standard deviation
@@ -142,20 +145,20 @@ class StudentTeacherRecurrent(nn.Module):
         # create distribution
         self.distribution = Normal(mean, std)
 
-    def act(self, obs):
+    def act(self, obs: TensorDict) -> torch.Tensor:
         obs = self.get_student_obs(obs)
         obs = self.student_obs_normalizer(obs)
         out_mem = self.memory_s(obs).squeeze(0)
         self._update_distribution(out_mem)
         return self.distribution.sample()
 
-    def act_inference(self, obs):
+    def act_inference(self, obs: TensorDict) -> torch.Tensor:
         obs = self.get_student_obs(obs)
         obs = self.student_obs_normalizer(obs)
         out_mem = self.memory_s(obs).squeeze(0)
         return self.student(out_mem)
 
-    def evaluate(self, obs):
+    def evaluate(self, obs: TensorDict) -> torch.Tensor:
         obs = self.get_teacher_obs(obs)
         obs = self.teacher_obs_normalizer(obs)
         with torch.no_grad():
@@ -164,42 +167,42 @@ class StudentTeacherRecurrent(nn.Module):
                 obs = self.memory_t(obs).squeeze(0)
             return self.teacher(obs)
 
-    def get_student_obs(self, obs):
+    def get_student_obs(self, obs: TensorDict) -> torch.Tensor:
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["policy"]]
         return torch.cat(obs_list, dim=-1)
 
-    def get_teacher_obs(self, obs):
+    def get_teacher_obs(self, obs: TensorDict) -> torch.Tensor:
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["teacher"]]
         return torch.cat(obs_list, dim=-1)
 
-    def get_hidden_states(self):
+    def get_hidden_states(self) -> tuple[torch.Tensor | tuple[torch.Tensor] | None]:
         if self.teacher_recurrent:
             return self.memory_s.hidden_states, self.memory_t.hidden_states
         else:
             return self.memory_s.hidden_states, None
 
-    def detach_hidden_states(self, dones=None):
+    def detach_hidden_states(self, dones: torch.Tensor | None = None):
         self.memory_s.detach_hidden_states(dones)
         if self.teacher_recurrent:
             self.memory_t.detach_hidden_states(dones)
 
-    def train(self, mode=True):
+    def train(self, mode: bool = True):
         super().train(mode)
         # make sure teacher is in eval mode
         self.teacher.eval()
         self.teacher_obs_normalizer.eval()
 
-    def update_normalization(self, obs):
+    def update_normalization(self, obs: TensorDict):
         if self.student_obs_normalization:
             student_obs = self.get_student_obs(obs)
             self.student_obs_normalizer.update(student_obs)
 
-    def load_state_dict(self, state_dict, strict=True):
+    def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
         """Load the parameters of the student and teacher networks.
 
         Args:
-            state_dict (dict): State dictionary of the model.
-            strict (bool): Whether to strictly enforce that the keys in state_dict match the keys returned by this
+            state_dict: State dictionary of the model.
+            strict: Whether to strictly enforce that the keys in state_dict match the keys returned by this
                            module's state_dict() function.
 
         Returns:

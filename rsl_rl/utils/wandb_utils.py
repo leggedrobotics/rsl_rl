@@ -18,7 +18,7 @@ except ModuleNotFoundError:
 class WandbSummaryWriter(SummaryWriter):
     """Summary writer for Weights and Biases."""
 
-    def __init__(self, log_dir: str, flush_secs: int, cfg):
+    def __init__(self, log_dir: str, flush_secs: int, cfg: dict):
         super().__init__(log_dir, flush_secs)
 
         # Get the run name
@@ -45,7 +45,7 @@ class WandbSummaryWriter(SummaryWriter):
             "Train/mean_episode_length/time": "Train/mean_episode_length_time",
         }
 
-    def store_config(self, env_cfg, runner_cfg, alg_cfg, policy_cfg):
+    def store_config(self, env_cfg, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict):
         wandb.config.update({"runner_cfg": runner_cfg})
         wandb.config.update({"policy_cfg": policy_cfg})
         wandb.config.update({"alg_cfg": alg_cfg})
@@ -54,7 +54,14 @@ class WandbSummaryWriter(SummaryWriter):
         except Exception:
             wandb.config.update({"env_cfg": asdict(env_cfg)})
 
-    def add_scalar(self, tag, scalar_value, global_step=None, walltime=None, new_style=False):
+    def add_scalar(
+        self,
+        tag: str,
+        scalar_value: float,
+        global_step: int | None = None,
+        walltime: float | None = None,
+        new_style: bool = False,
+    ):
         super().add_scalar(
             tag,
             scalar_value,
@@ -67,20 +74,20 @@ class WandbSummaryWriter(SummaryWriter):
     def stop(self):
         wandb.finish()
 
-    def log_config(self, env_cfg, runner_cfg, alg_cfg, policy_cfg):
+    def log_config(self, env_cfg, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict):
         self.store_config(env_cfg, runner_cfg, alg_cfg, policy_cfg)
 
-    def save_model(self, model_path, iter):
+    def save_model(self, model_path: str, iter: int):
         wandb.save(model_path, base_path=os.path.dirname(model_path))
 
-    def save_file(self, path, iter=None):
+    def save_file(self, path: str):
         wandb.save(path, base_path=os.path.dirname(path))
 
     """
     Private methods.
     """
 
-    def _map_path(self, path):
+    def _map_path(self, path: str) -> str:
         if path in self.name_map:
             return self.name_map[path]
         else:

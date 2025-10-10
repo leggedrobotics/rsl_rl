@@ -11,6 +11,7 @@ import time
 import torch
 import warnings
 from collections import deque
+from tensordict import TensorDict
 
 import rsl_rl
 from rsl_rl.algorithms import PPO
@@ -22,7 +23,7 @@ from rsl_rl.utils import resolve_obs_groups, store_code_state
 class OnPolicyRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
 
-    def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device="cpu"):
+    def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu"):
         self.cfg = train_cfg
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
@@ -289,7 +290,7 @@ class OnPolicyRunner:
         )
         print(log_string)
 
-    def save(self, path: str, infos=None):
+    def save(self, path: str, infos: dict = None):
         # -- Save model
         saved_dict = {
             "model_state_dict": self.alg.policy.state_dict(),
@@ -326,7 +327,7 @@ class OnPolicyRunner:
             self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
 
-    def get_inference_policy(self, device=None):
+    def get_inference_policy(self, device: str | None = None):
         self.eval_mode()  # switch to evaluation mode (dropout for example)
         if device is not None:
             self.alg.policy.to(device)
@@ -346,7 +347,7 @@ class OnPolicyRunner:
         if hasattr(self.alg, "rnd") and self.alg.rnd:
             self.alg.rnd.eval()
 
-    def add_git_repo_to_log(self, repo_file_path):
+    def add_git_repo_to_log(self, repo_file_path: str):
         self.git_status_repos.append(repo_file_path)
 
     """
@@ -397,7 +398,7 @@ class OnPolicyRunner:
         # set device to the local rank
         torch.cuda.set_device(self.gpu_local_rank)
 
-    def _construct_algorithm(self, obs) -> PPO:
+    def _construct_algorithm(self, obs: TensorDict) -> PPO:
         """Construct the actor-critic algorithm."""
         # resolve RND config
         self.alg_cfg = resolve_rnd_config(self.alg_cfg, obs, self.cfg["obs_groups"], self.env)

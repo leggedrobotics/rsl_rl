@@ -132,7 +132,7 @@ def split_and_pad_trajectories(
     return padded_trajectories, trajectory_masks
 
 
-def unpad_trajectories(trajectories, masks):
+def unpad_trajectories(trajectories: torch.Tensor | TensorDict, masks: torch.Tensor) -> torch.Tensor | TensorDict:
     """Does the inverse operation of `split_and_pad_trajectories()`."""
     # Need to transpose before and after the masking to have proper reshaping
     return (
@@ -142,7 +142,7 @@ def unpad_trajectories(trajectories, masks):
     )
 
 
-def store_code_state(logdir, repositories) -> list:
+def store_code_state(logdir: str, repositories: list[str]) -> list[str]:
     git_log_dir = os.path.join(logdir, "git")
     os.makedirs(git_log_dir, exist_ok=True)
     file_paths = []

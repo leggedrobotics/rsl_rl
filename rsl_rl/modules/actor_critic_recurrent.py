@@ -8,30 +8,31 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import warnings
+from tensordict import TensorDict
 from torch.distributions import Normal
 
 from rsl_rl.networks import MLP, EmpiricalNormalization, Memory
 
 
 class ActorCriticRecurrent(nn.Module):
-    is_recurrent = True
+    is_recurrent: bool = True
 
     def __init__(
         self,
-        obs,
-        obs_groups,
-        num_actions,
-        actor_obs_normalization=False,
-        critic_obs_normalization=False,
-        actor_hidden_dims=[256, 256, 256],
-        critic_hidden_dims=[256, 256, 256],
-        activation="elu",
-        init_noise_std=1.0,
+        obs: TensorDict,
+        obs_groups: dict[str, list[str]],
+        num_actions: int,
+        actor_obs_normalization: bool = False,
+        critic_obs_normalization: bool = False,
+        actor_hidden_dims: tuple[int] | list[int] = [256, 256, 256],
+        critic_hidden_dims: tuple[int] | list[int] = [256, 256, 256],
+        activation: str = "elu",
+        init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
-        state_dependent_std=False,
-        rnn_type="lstm",
-        rnn_hidden_dim=256,
-        rnn_num_layers=1,
+        state_dependent_std: bool = False,
+        rnn_type: str = "lstm",
+        rnn_hidden_dim: int = 256,
+        rnn_num_layers: int = 1,
         **kwargs,
     ):
         if "rnn_hidden_size" in kwargs:
@@ -114,25 +115,25 @@ class ActorCriticRecurrent(nn.Module):
         Normal.set_default_validate_args(False)
 
     @property
-    def action_mean(self):
+    def action_mean(self) -> torch.Tensor:
         return self.distribution.mean
 
     @property
-    def action_std(self):
+    def action_std(self) -> torch.Tensor:
         return self.distribution.stddev
 
     @property
-    def entropy(self):
+    def entropy(self) -> torch.Tensor:
         return self.distribution.entropy().sum(dim=-1)
 
-    def reset(self, dones=None):
+    def reset(self, dones: torch.Tensor | None = None):
         self.memory_a.reset(dones)
         self.memory_c.reset(dones)
 
     def forward(self):
         raise NotImplementedError
 
-    def _update_distribution(self, obs):
+    def _update_distribution(self, obs: TensorDict):
         if self.state_dependent_std:
             # compute mean and standard deviation
             mean_and_std = self.actor(obs)
@@ -156,14 +157,19 @@ class ActorCriticRecurrent(nn.Module):
         # create distribution
         self.distribution = Normal(mean, std)
 
-    def act(self, obs, masks=None, hidden_states=None):
+    def act(
+        self,
+        obs: TensorDict,
+        masks: torch.Tensor | None = None,
+        hidden_states: torch.Tensor | tuple[torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
         out_mem = self.memory_a(obs, masks, hidden_states).squeeze(0)
         self._update_distribution(out_mem)
         return self.distribution.sample()
 
-    def act_inference(self, obs):
+    def act_inference(self, obs: TensorDict) -> torch.Tensor:
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
         out_mem = self.memory_a(obs).squeeze(0)
@@ -172,27 +178,34 @@ class ActorCriticRecurrent(nn.Module):
         else:
             return self.actor(out_mem)
 
-    def evaluate(self, obs, masks=None, hidden_states=None):
+    def evaluate(
+        self,
+        obs: TensorDict,
+        masks: torch.Tensor | None = None,
+        hidden_states: torch.Tensor | tuple[torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         obs = self.get_critic_obs(obs)
         obs = self.critic_obs_normalizer(obs)
         out_mem = self.memory_c(obs, masks, hidden_states).squeeze(0)
         return self.critic(out_mem)
 
-    def get_actor_obs(self, obs):
+    def get_actor_obs(self, obs: TensorDict) -> torch.Tensor:
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["policy"]]
         return torch.cat(obs_list, dim=-1)
 
-    def get_critic_obs(self, obs):
+    def get_critic_obs(self, obs: TensorDict) -> torch.Tensor:
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["critic"]]
         return torch.cat(obs_list, dim=-1)
 
-    def get_actions_log_prob(self, actions):
+    def get_actions_log_prob(self, actions: torch.Tensor) -> torch.Tensor:
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def get_hidden_states(self):
+    def get_hidden_states(
+        self,
+    ) -> tuple[torch.Tensor | tuple[torch.Tensor] | None, torch.Tensor | tuple[torch.Tensor] | None]:
         return self.memory_a.hidden_states, self.memory_c.hidden_states
 
-    def update_normalization(self, obs):
+    def update_normalization(self, obs: TensorDict):
         if self.actor_obs_normalization:
             actor_obs = self.get_actor_obs(obs)
             self.actor_obs_normalizer.update(actor_obs)
@@ -200,12 +213,12 @@ class ActorCriticRecurrent(nn.Module):
             critic_obs = self.get_critic_obs(obs)
             self.critic_obs_normalizer.update(critic_obs)
 
-    def load_state_dict(self, state_dict, strict=True):
+    def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
         """Load the parameters of the actor-critic model.
 
         Args:
-            state_dict (dict): State dictionary of the model.
-            strict (bool): Whether to strictly enforce that the keys in state_dict match the keys returned by this
+            state_dict: State dictionary of the model.
+            strict: Whether to strictly enforce that the keys in state_dict match the keys returned by this
                            module's state_dict() function.
 
         Returns:

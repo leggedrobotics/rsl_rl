@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import torch
 from tensordict import TensorDict
+from typing import Generator
 
 from rsl_rl.utils import split_and_pad_trajectories
 
@@ -14,28 +15,28 @@ from rsl_rl.utils import split_and_pad_trajectories
 class RolloutStorage:
     class Transition:
         def __init__(self):
-            self.observations = None
-            self.actions = None
-            self.privileged_actions = None
-            self.rewards = None
-            self.dones = None
-            self.values = None
-            self.actions_log_prob = None
-            self.action_mean = None
-            self.action_sigma = None
-            self.hidden_states = None
+            self.observations: TensorDict = None  # type: ignore
+            self.actions: torch.Tensor = None  # type: ignore
+            self.privileged_actions: torch.Tensor = None  # type: ignore
+            self.rewards: torch.Tensor = None  # type: ignore
+            self.dones: torch.Tensor = None  # type: ignore
+            self.values: torch.Tensor = None  # type: ignore
+            self.actions_log_prob: torch.Tensor = None  # type: ignore
+            self.action_mean: torch.Tensor = None  # type: ignore
+            self.action_sigma: torch.Tensor = None  # type: ignore
+            self.hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None] = (None, None)  # type: ignore
 
         def clear(self):
             self.__init__()
 
     def __init__(
         self,
-        training_type,
-        num_envs,
-        num_transitions_per_env,
-        obs,
-        actions_shape,
-        device="cpu",
+        training_type: str,
+        num_envs: int,
+        num_transitions_per_env: int,
+        obs: TensorDict,
+        actions_shape: tuple[int] | list[int],
+        device: str = "cpu",
     ):
         # store inputs
         self.training_type = training_type
@@ -102,8 +103,8 @@ class RolloutStorage:
         # increment the counter
         self.step += 1
 
-    def _save_hidden_states(self, hidden_states):
-        if hidden_states is None or hidden_states == (None, None):
+    def _save_hidden_states(self, hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None]):
+        if hidden_states == (None, None):
             return
         # make a tuple out of GRU hidden state sto match the LSTM format
         hid_a = hidden_states[0] if isinstance(hidden_states[0], tuple) else (hidden_states[0],)
@@ -124,7 +125,7 @@ class RolloutStorage:
     def clear(self):
         self.step = 0
 
-    def compute_returns(self, last_values, gamma, lam, normalize_advantage: bool = True):
+    def compute_returns(self, last_values: torch.Tensor, gamma: float, lam: float, normalize_advantage: bool = True):
         advantage = 0
         for step in reversed(range(self.num_transitions_per_env)):
             # if we are at the last step, bootstrap the return value
@@ -146,7 +147,7 @@ class RolloutStorage:
             self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
 
     # for distillation
-    def generator(self):
+    def generator(self) -> Generator:
         if self.training_type != "distillation":
             raise ValueError("This function is only available for distillation training.")
 
@@ -154,7 +155,7 @@ class RolloutStorage:
             yield self.observations[i], self.actions[i], self.privileged_actions[i], self.dones[i]
 
     # for reinforcement learning with feedforward networks
-    def mini_batch_generator(self, num_mini_batches, num_epochs=8):
+    def mini_batch_generator(self, num_mini_batches: int, num_epochs: int = 8) -> Generator:
         if self.training_type != "rl":
             raise ValueError("This function is only available for reinforcement learning training.")
         batch_size = self.num_envs * self.num_transitions_per_env
@@ -211,7 +212,7 @@ class RolloutStorage:
                 )
 
     # for reinforcement learning with recurrent networks
-    def recurrent_mini_batch_generator(self, num_mini_batches, num_epochs=8):
+    def recurrent_mini_batch_generator(self, num_mini_batches: int, num_epochs: int = 8) -> Generator:
         if self.training_type != "rl":
             raise ValueError("This function is only available for reinforcement learning training.")
         padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.observations, self.dones)

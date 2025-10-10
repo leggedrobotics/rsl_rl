@@ -50,7 +50,7 @@ class VecEnv(ABC):
         """Return the current observations.
 
         Returns:
-            observations (TensorDict): Observations from the environment.
+            observations: Observations from the environment.
         """
         raise NotImplementedError
 
@@ -59,13 +59,13 @@ class VecEnv(ABC):
         """Apply input action to the environment.
 
         Args:
-            actions (torch.Tensor): Input actions to apply. Shape: (num_envs, num_actions)
+            actions: Input actions to apply. Shape: (num_envs, num_actions)
 
         Returns:
-                observations (TensorDict): Observations from the environment.
-                rewards (torch.Tensor): Rewards from the environment. Shape: (num_envs,)
-                dones (torch.Tensor): Done flags from the environment. Shape: (num_envs,)
-                extras (dict): Extra information from the environment.
+                observations: Observations from the environment.
+                rewards: Rewards from the environment. Shape: (num_envs,)
+                dones: Done flags from the environment. Shape: (num_envs,)
+                extras: Extra information from the environment.
 
         Observations:
 

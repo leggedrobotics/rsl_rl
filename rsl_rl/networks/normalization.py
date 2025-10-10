@@ -14,13 +14,13 @@ from torch import nn
 class EmpiricalNormalization(nn.Module):
     """Normalize mean and variance of values based on empirical values."""
 
-    def __init__(self, shape, eps=1e-2, until=None):
+    def __init__(self, shape: int | tuple[int] | list[int], eps: float = 1e-2, until: int | None = None):
         """Initialize EmpiricalNormalization module.
 
         Args:
-            shape (int or tuple of int): Shape of input values except batch axis.
-            eps (float): Small value for stability.
-            until (int or None): If this arg is specified, the module learns input values until the sum of batch sizes
+            shape: Shape of input values except batch axis.
+            eps: Small value for stability.
+            until: If this arg is specified, the module learns input values until the sum of batch sizes
             exceeds it.
 
         Note: The normalization parameters are computed over the whole batch, not for each environment separately.
@@ -34,20 +34,20 @@ class EmpiricalNormalization(nn.Module):
         self.register_buffer("count", torch.tensor(0, dtype=torch.long))
 
     @property
-    def mean(self):
+    def mean(self) -> torch.Tensor:
         return self._mean.squeeze(0).clone()
 
     @property
-    def std(self):
+    def std(self) -> torch.Tensor:
         return self._std.squeeze(0).clone()
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize mean and variance of values based on empirical values."""
         return (x - self._mean) / (self._std + self.eps)
 
     @torch.jit.unused
-    def update(self, x):
-        """Learn input values without computing the output values of them."""
+    def update(self, x: torch.Tensor):
+        """Learn input values without computing the output values of them"""
         if not self.training:
             return
         if self.until is not None and self.count >= self.until:
@@ -64,7 +64,7 @@ class EmpiricalNormalization(nn.Module):
         self._std = torch.sqrt(self._var)
 
     @torch.jit.unused
-    def inverse(self, y):
+    def inverse(self, y: torch.Tensor) -> torch.Tensor:
         """De-normalize values based on empirical values."""
         return y * (self._std + self.eps) + self._mean
 
@@ -77,13 +77,15 @@ class EmpiricalDiscountedVariationNormalization(nn.Module):
     the rewards by a running estimate of the standard deviation of the sum of discounted rewards.
     """
 
-    def __init__(self, shape, eps=1e-2, gamma=0.99, until=None):
+    def __init__(
+        self, shape: int | tuple[int] | list[int], eps: float = 1e-2, gamma: float = 0.99, until: int | None = None
+    ):
         super().__init__()
 
         self.emp_norm = EmpiricalNormalization(shape, eps, until)
         self.disc_avg = _DiscountedAverage(gamma)
 
-    def forward(self, rew):
+    def forward(self, rew: torch.Tensor) -> torch.Tensor:
         if self.training:
             # update discounted rewards
             avg = self.disc_avg.update(rew)
@@ -115,7 +117,7 @@ class _DiscountedAverage:
         gamma (float): Discount factor.
     """
 
-    def __init__(self, gamma):
+    def __init__(self, gamma: float):
         self.avg = None
         self.gamma = gamma
 
