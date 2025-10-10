@@ -308,7 +308,7 @@ class OnPolicyRunner:
         if self.logger_type in ["neptune", "wandb"] and not self.disable_logs:
             self.writer.save_model(path, self.current_learning_iteration)
 
-    def load(self, path: str, load_optimizer: bool = True, map_location: str | None = None):
+    def load(self, path: str, load_optimizer: bool = True, map_location: str | None = None) -> dict:
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
         # -- Load model
         resumed_training = self.alg.policy.load_state_dict(loaded_dict["model_state_dict"])
@@ -327,7 +327,7 @@ class OnPolicyRunner:
             self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
 
-    def get_inference_policy(self, device: str | None = None):
+    def get_inference_policy(self, device: str | None = None) -> callable:
         self.eval_mode()  # switch to evaluation mode (dropout for example)
         if device is not None:
             self.alg.policy.to(device)

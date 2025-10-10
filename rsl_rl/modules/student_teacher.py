@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 from torch.distributions import Normal
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
 
@@ -29,7 +29,7 @@ class StudentTeacher(nn.Module):
         activation: str = "elu",
         init_noise_std: float = 0.1,
         noise_std_type: str = "scalar",
-        **kwargs,
+        **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:
             print(

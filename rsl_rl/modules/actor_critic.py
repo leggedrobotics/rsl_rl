@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 from torch.distributions import Normal
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
 
@@ -29,8 +29,8 @@ class ActorCritic(nn.Module):
         activation: str = "elu",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
-        state_dependent_std=False,
-        **kwargs,
+        state_dependent_std: bool = False,
+        **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:
             print(
@@ -144,7 +144,7 @@ class ActorCritic(nn.Module):
         # create distribution
         self.distribution = Normal(mean, std)
 
-    def act(self, obs: TensorDict, **kwargs) -> torch.Tensor:
+    def act(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
         self._update_distribution(obs)
@@ -158,7 +158,7 @@ class ActorCritic(nn.Module):
         else:
             return self.actor(obs)
 
-    def evaluate(self, obs: TensorDict, **kwargs) -> torch.Tensor:
+    def evaluate(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
         obs = self.get_critic_obs(obs)
         obs = self.critic_obs_normalizer(obs)
         return self.critic(obs)

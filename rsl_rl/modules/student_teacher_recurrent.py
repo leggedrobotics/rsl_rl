@@ -10,7 +10,7 @@ import torch.nn as nn
 import warnings
 from tensordict import TensorDict
 from torch.distributions import Normal
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization, Memory
 
@@ -34,7 +34,7 @@ class StudentTeacherRecurrent(nn.Module):
         rnn_hidden_dim: int = 256,
         rnn_num_layers: int = 1,
         teacher_recurrent: bool = False,
-        **kwargs,
+        **kwargs: dict[str, Any],
     ) -> None:
         if "rnn_hidden_size" in kwargs:
             warnings.warn(

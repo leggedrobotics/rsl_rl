@@ -89,7 +89,7 @@ class MLP(nn.Sequential):
             scales: Scale factor for the weights.
         """
 
-        def get_scale(idx) -> float:
+        def get_scale(idx: int) -> float:
             """Get the scale factor for the weights of the MLP.
 
             Args:

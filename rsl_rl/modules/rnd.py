@@ -8,7 +8,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from rsl_rl.env import VecEnv
 from rsl_rl.networks import MLP, EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
@@ -139,7 +139,7 @@ class RandomNetworkDistillation(nn.Module):
 
         return intrinsic_reward
 
-    def forward(self, *args, **kwargs) -> NoReturn:
+    def forward(self, *args: Any, **kwargs: dict[str, Any]) -> NoReturn:
         raise RuntimeError("Forward method is not implemented. Use get_intrinsic_reward instead.")
 
     def train(self, mode: bool = True) -> RandomNetworkDistillation:
@@ -168,14 +168,14 @@ class RandomNetworkDistillation(nn.Module):
     Different weight schedules.
     """
 
-    def _constant_weight_schedule(self, step: int, **kwargs) -> float:
+    def _constant_weight_schedule(self, step: int, **kwargs: dict[str, Any]) -> float:
         return self.initial_weight
 
-    def _step_weight_schedule(self, step: int, final_step: int, final_value: float, **kwargs) -> float:
+    def _step_weight_schedule(self, step: int, final_step: int, final_value: float, **kwargs: dict[str, Any]) -> float:
         return self.initial_weight if step < final_step else final_value
 
     def _linear_weight_schedule(
-        self, step: int, initial_step: int, final_step: int, final_value: float, **kwargs
+        self, step: int, initial_step: int, final_step: int, final_value: float, **kwargs: dict[str, Any]
     ) -> float:
         if step < initial_step:
             return self.initial_weight

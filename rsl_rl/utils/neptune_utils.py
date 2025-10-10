@@ -19,7 +19,7 @@ class NeptuneLogger:
     def __init__(self, project: str, token: str) -> None:
         self.run = neptune.init_run(project=project, api_token=token)
 
-    def store_config(self, env_cfg, runner_cfg, alg_cfg, policy_cfg) -> None:
+    def store_config(self, env_cfg: dict | object, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
         self.run["runner_cfg"] = runner_cfg
         self.run["policy_cfg"] = policy_cfg
         self.run["alg_cfg"] = alg_cfg
@@ -84,7 +84,7 @@ class NeptuneSummaryWriter(SummaryWriter):
     def stop(self) -> None:
         self.neptune_logger.run.stop()
 
-    def log_config(self, env_cfg: dict, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
+    def log_config(self, env_cfg: dict | object, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
         self.neptune_logger.store_config(env_cfg, runner_cfg, alg_cfg, policy_cfg)
 
     def save_model(self, model_path: str, iter: int) -> None:

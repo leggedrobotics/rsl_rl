@@ -45,7 +45,7 @@ class WandbSummaryWriter(SummaryWriter):
             "Train/mean_episode_length/time": "Train/mean_episode_length_time",
         }
 
-    def store_config(self, env_cfg, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
+    def store_config(self, env_cfg: dict | object, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
         wandb.config.update({"runner_cfg": runner_cfg})
         wandb.config.update({"policy_cfg": policy_cfg})
         wandb.config.update({"alg_cfg": alg_cfg})
@@ -74,7 +74,7 @@ class WandbSummaryWriter(SummaryWriter):
     def stop(self) -> None:
         wandb.finish()
 
-    def log_config(self, env_cfg, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
+    def log_config(self, env_cfg: dict | object, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
         self.store_config(env_cfg, runner_cfg, alg_cfg, policy_cfg)
 
     def save_model(self, model_path: str, iter: int) -> None:
