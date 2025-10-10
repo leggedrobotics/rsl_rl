@@ -7,9 +7,7 @@ select = [
     # pycodestyle
     "E", "W",
     # pydocstyle
-    # "D",
-    # pydoclint
-    # "DOC",
+    "D",
     # pylint for later
     # "PL",
     # pyflakes
@@ -33,7 +31,22 @@ select = [
     # ruff
     "RUF",
 ]
-ignore = ["B006", "B007", "B028", "ANN401"]
+ignore = ["B006",
+          "B007", 
+          "B028", 
+          "ANN401", 
+          "D100", 
+          "D101", 
+          "D102", 
+          "D103", 
+          "D104", 
+          "D105", 
+          "D106", 
+          "D107",
+          "D203",
+          "D213",
+          "D413",
+]
 per-file-ignores = {"*/__init__.py" = ["F401"]}
 
 [lint.isort]

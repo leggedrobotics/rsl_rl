@@ -16,7 +16,7 @@ from typing import Callable
 
 
 def resolve_nn_activation(act_name: str) -> torch.nn.Module:
-    """Resolves the activation function from the name.
+    """Resolve the activation function from the name.
 
     Args:
         act_name: The name of the activation function.
@@ -50,7 +50,7 @@ def resolve_nn_activation(act_name: str) -> torch.nn.Module:
 
 
 def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
-    """Resolves the optimizer from the name.
+    """Resolve the optimizer from the name.
 
     Args:
         optimizer_name: The name of the optimizer.
@@ -78,9 +78,9 @@ def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
 def split_and_pad_trajectories(
     tensor: torch.Tensor | TensorDict, dones: torch.Tensor
 ) -> tuple[torch.Tensor | TensorDict, torch.Tensor]:
-    """Splits trajectories at done indices.
+    """Split trajectories at done indices.
 
-    Splits trajectories, concatenates them and pads with zeros up to the length of the longest trajectory. Returns masks
+    Split trajectories, concatenate them and pad with zeros up to the length of the longest trajectory. Return masks
     corresponding to valid parts of the trajectories.
 
     Example:
@@ -133,7 +133,7 @@ def split_and_pad_trajectories(
 
 
 def unpad_trajectories(trajectories: torch.Tensor | TensorDict, masks: torch.Tensor) -> torch.Tensor | TensorDict:
-    """Does the inverse operation of `split_and_pad_trajectories()`."""
+    """Do the inverse operation of `split_and_pad_trajectories()`."""
     # Need to transpose before and after the masking to have proper reshaping
     return (
         trajectories.transpose(1, 0)[masks.transpose(1, 0)]
@@ -171,7 +171,7 @@ def store_code_state(logdir: str, repositories: list[str]) -> list[str]:
 
 
 def string_to_callable(name: str) -> Callable:
-    """Resolves the module and function names to return the function.
+    """Resolve the module and function names to return the function.
 
     Args:
         name: The function name. The format should be 'module:attribute_name'.
@@ -203,7 +203,7 @@ def string_to_callable(name: str) -> Callable:
 def resolve_obs_groups(
     obs: TensorDict, obs_groups: dict[str, list[str]], default_sets: list[str]
 ) -> dict[str, list[str]]:
-    """Validates the observation configuration and defaults missing observation sets.
+    """Validate the observation configuration and defaults missing observation sets.
 
     The input is an observation dictionary `obs` containing observation groups and a configuration dictionary
     `obs_groups` where the keys are the observation sets and the values are lists of observation groups.

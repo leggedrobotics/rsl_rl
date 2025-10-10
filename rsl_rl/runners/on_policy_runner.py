@@ -440,7 +440,7 @@ class OnPolicyRunner:
         return alg
 
     def _prepare_logging_writer(self) -> None:
-        """Prepares the logging writers."""
+        """Prepare the logging writers."""
         if self.log_dir is not None and self.writer is None and not self.disable_logs:
             # Launch either Tensorboard or Neptune & Tensorboard summary writer(s), default: Tensorboard.
             self.logger_type = self.cfg.get("logger", "tensorboard")

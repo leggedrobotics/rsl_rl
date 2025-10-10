@@ -47,7 +47,7 @@ class EmpiricalNormalization(nn.Module):
 
     @torch.jit.unused
     def update(self, x: torch.Tensor) -> None:
-        """Learn input values without computing the output values of them"""
+        """Learn input values without computing the output values of them."""
         if not self.training:
             return
         if self.until is not None and self.count >= self.until:
