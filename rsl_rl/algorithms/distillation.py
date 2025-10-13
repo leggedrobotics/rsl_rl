@@ -53,7 +53,7 @@ class Distillation:
 
         # Initialize the transition
         self.transition = RolloutStorage.Transition()
-        self.last_hidden_states = None
+        self.last_hidden_states = (None, None)
 
         # Distillation parameters
         self.num_learning_epochs = num_learning_epochs

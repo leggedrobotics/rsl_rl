@@ -20,7 +20,7 @@ class Memory(nn.Module):
     def __init__(self, input_size: int, hidden_dim: int = 256, num_layers: int = 1, type: str = "lstm") -> None:
         super().__init__()
         rnn_cls = nn.GRU if type.lower() == "gru" else nn.LSTM
-        self.rnn = rnn_cls(input_size=input_size, hidden_dim=hidden_dim, num_layers=num_layers)
+        self.rnn = rnn_cls(input_size=input_size, hidden_size=hidden_dim, num_layers=num_layers)
         self.hidden_states = None
 
     def forward(
