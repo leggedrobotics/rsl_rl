@@ -83,7 +83,7 @@ def split_and_pad_trajectories(
     Split trajectories, concatenate them and pad with zeros up to the length of the longest trajectory. Return masks
     corresponding to valid parts of the trajectories.
 
-    Example:
+    Example (transposed for readability):
         Input: [[a1, a2, a3, a4 | a5, a6],
                  [b1, b2 | b3, b4, b5 | b6]]
 
