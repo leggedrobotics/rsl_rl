@@ -49,13 +49,13 @@ class MLP(nn.Sequential):
         """
         super().__init__()
 
-        # resolve activation functions
+        # Resolve activation functions
         activation_mod = resolve_nn_activation(activation)
         last_activation_mod = resolve_nn_activation(last_activation) if last_activation is not None else None
-        # resolve number of hidden dims if they are -1
+        # Resolve number of hidden dims if they are -1
         hidden_dims_processed = [input_dim if dim == -1 else dim for dim in hidden_dims]
 
-        # create layers sequentially
+        # Create layers sequentially
         layers = []
         layers.append(nn.Linear(input_dim, hidden_dims_processed[0]))
         layers.append(activation_mod)
@@ -64,21 +64,21 @@ class MLP(nn.Sequential):
             layers.append(nn.Linear(hidden_dims_processed[layer_index], hidden_dims_processed[layer_index + 1]))
             layers.append(activation_mod)
 
-        # add last layer
+        # Add last layer
         if isinstance(output_dim, int):
             layers.append(nn.Linear(hidden_dims_processed[-1], output_dim))
         else:
-            # compute the total output dimension
+            # Compute the total output dimension
             total_out_dim = reduce(lambda x, y: x * y, output_dim)
-            # add a layer to reshape the output to the desired shape
+            # Add a layer to reshape the output to the desired shape
             layers.append(nn.Linear(hidden_dims_processed[-1], total_out_dim))
             layers.append(nn.Unflatten(dim=-1, unflattened_size=output_dim))
 
-        # add last activation function if specified
+        # Add last activation function if specified
         if last_activation_mod is not None:
             layers.append(last_activation_mod)
 
-        # register the layers
+        # Register the layers
         for idx, layer in enumerate(layers):
             self.add_module(f"{idx}", layer)
 
@@ -97,7 +97,7 @@ class MLP(nn.Sequential):
             """
             return scales[idx] if isinstance(scales, (list, tuple)) else scales
 
-        # initialize the weights
+        # Initialize the weights
         for idx, module in enumerate(self):
             if isinstance(module, nn.Linear):
                 nn.init.orthogonal_(module.weight, gain=get_scale(idx))

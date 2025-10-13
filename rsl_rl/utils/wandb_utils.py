@@ -83,10 +83,6 @@ class WandbSummaryWriter(SummaryWriter):
     def save_file(self, path: str) -> None:
         wandb.save(path, base_path=os.path.dirname(path))
 
-    """
-    Private methods.
-    """
-
     def _map_path(self, path: str) -> str:
         if path in self.name_map:
             return self.name_map[path]

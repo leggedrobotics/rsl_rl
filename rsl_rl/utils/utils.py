@@ -97,7 +97,7 @@ def split_and_pad_trajectories(
     """
     dones = dones.clone()
     dones[-1] = 1
-    # Permute the buffers to have order (num_envs, num_transitions_per_env, ...), for correct reshaping
+    # Permute the buffers to have the order (num_envs, num_transitions_per_env, ...) for correct reshaping
     flat_dones = dones.transpose(1, 0).reshape(-1, 1)
     # Get length of trajectory by counting the number of successive not done elements
     done_indices = torch.cat((flat_dones.new_tensor([-1], dtype=torch.int64), flat_dones.nonzero()[:, 0]))
@@ -107,27 +107,27 @@ def split_and_pad_trajectories(
     if isinstance(tensor, TensorDict):
         padded_trajectories = {}
         for k, v in tensor.items():
-            # split the tensor into trajectories
+            # Split the tensor into trajectories
             trajectories = torch.split(v.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
-            # add at least one full length trajectory
+            # Add at least one full length trajectory
             trajectories = (*trajectories, torch.zeros(v.shape[0], *v.shape[2:], device=v.device))
-            # pad the trajectories to the length of the longest trajectory
+            # Pad the trajectories to the length of the longest trajectory
             padded_trajectories[k] = torch.nn.utils.rnn.pad_sequence(trajectories)
-            # remove the added tensor
+            # Remove the added trajectory
             padded_trajectories[k] = padded_trajectories[k][:, :-1]
         padded_trajectories = TensorDict(
             padded_trajectories, batch_size=[tensor.batch_size[0], len(trajectory_lengths_list)]
         )
     else:
-        # split the tensor into trajectories
+        # Split the tensor into trajectories
         trajectories = torch.split(tensor.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
-        # add at least one full length trajectory
+        # Add at least one full length trajectory
         trajectories = (*trajectories, torch.zeros(tensor.shape[0], *tensor.shape[2:], device=tensor.device))
-        # pad the trajectories to the length of the longest trajectory
+        # Pad the trajectories to the length of the longest trajectory
         padded_trajectories = torch.nn.utils.rnn.pad_sequence(trajectories)
-        # remove the added tensor
+        # Remove the added trajectory
         padded_trajectories = padded_trajectories[:, :-1]
-    # create masks for the valid parts of the trajectories
+    # Create masks for the valid parts of the trajectories
     trajectory_masks = trajectory_lengths > torch.arange(0, tensor.shape[0], device=tensor.device).unsqueeze(1)
     return padded_trajectories, trajectory_masks
 
@@ -152,20 +152,20 @@ def store_code_state(logdir: str, repositories: list[str]) -> list[str]:
             t = repo.head.commit.tree
         except Exception:
             print(f"Could not find git repository in {repository_file_path}. Skipping.")
-            # skip if not a git repository
+            # Skip if not a git repository
             continue
-        # get the name of the repository
+        # Get the name of the repository
         repo_name = pathlib.Path(repo.working_dir).name
         diff_file_name = os.path.join(git_log_dir, f"{repo_name}.diff")
-        # check if the diff file already exists
+        # Check if the diff file already exists
         if os.path.isfile(diff_file_name):
             continue
-        # write the diff file
+        # Write the diff file
         print(f"Storing git diff for '{repo_name}' in: {diff_file_name}")
         with open(diff_file_name, "x", encoding="utf-8") as f:
             content = f"--- git status ---\n{repo.git.status()} \n\n\n--- git diff ---\n{repo.git.diff(t)}"
             f.write(content)
-        # add the file path to the list of files to be uploaded
+        # Add the file path to the list of files to be uploaded
         file_paths.append(diff_file_name)
     return file_paths
 
@@ -187,7 +187,7 @@ def string_to_callable(name: str) -> Callable:
         mod_name, attr_name = name.split(":")
         mod = importlib.import_module(mod_name)
         callable_object = getattr(mod, attr_name)
-        # check if attribute is callable
+        # Check if attribute is callable
         if callable(callable_object):
             return callable_object
         else:
@@ -238,7 +238,7 @@ def resolve_obs_groups(
         ValueError: If any observation set is an empty list.
         ValueError: If any observation set contains an observation term that is not present in the observations.
     """
-    # check if policy observation set exists
+    # Check if policy observation set exists
     if "policy" not in obs_groups:
         if "policy" in obs:
             obs_groups["policy"] = ["policy"]
@@ -254,9 +254,9 @@ def resolve_obs_groups(
                 f" Found keys: {list(obs_groups.keys())}"
             )
 
-    # check all observation sets for valid observation groups
+    # Check all observation sets for valid observation groups
     for set_name, groups in obs_groups.items():
-        # check if the list is empty
+        # Check if the list is empty
         if len(groups) == 0:
             msg = f"The '{set_name}' key in the 'obs_groups' dictionary can not be an empty list."
             if set_name in default_sets:
@@ -267,7 +267,7 @@ def resolve_obs_groups(
                         f" Consider removing the key to default to the observation '{set_name}' from the environment."
                     )
             raise ValueError(msg)
-        # check groups exist inside the observations from the environment
+        # Check groups exist inside the observations from the environment
         for group in groups:
             if group not in obs:
                 raise ValueError(
@@ -275,7 +275,7 @@ def resolve_obs_groups(
                     f" environment. Available observations from the environment: {list(obs.keys())}"
                 )
 
-    # fill missing observation sets
+    # Fill missing observation sets
     for default_set_name in default_sets:
         if default_set_name not in obs_groups:
             if default_set_name in obs:
@@ -295,7 +295,7 @@ def resolve_obs_groups(
                     " clarity. This behavior will be removed in a future version."
                 )
 
-    # print the final parsed observation sets
+    # Print the final parsed observation sets
     print("-" * 80)
     print("Resolved observation sets: ")
     for set_name, groups in obs_groups.items():

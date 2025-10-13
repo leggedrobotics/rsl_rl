@@ -87,12 +87,12 @@ class EmpiricalDiscountedVariationNormalization(nn.Module):
 
     def forward(self, rew: torch.Tensor) -> torch.Tensor:
         if self.training:
-            # update discounted rewards
+            # Update discounted rewards
             avg = self.disc_avg.update(rew)
-            # update moments from discounted rewards
+            # Update moments from discounted rewards
             self.emp_norm.update(avg)
 
-        # normalize rewards with the empirical std
+        # Normalize rewards with the empirical std
         if self.emp_norm._std > 0:
             return rew / self.emp_norm._std
         else:

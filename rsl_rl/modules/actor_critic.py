@@ -38,7 +38,7 @@ class ActorCritic(nn.Module):
             )
         super().__init__()
 
-        # get the observation dimensions
+        # Get the observation dimensions
         self.obs_groups = obs_groups
         num_actor_obs = 0
         for obs_group in obs_groups["policy"]:
@@ -50,28 +50,31 @@ class ActorCritic(nn.Module):
             num_critic_obs += obs[obs_group].shape[-1]
 
         self.state_dependent_std = state_dependent_std
-        # actor
+
+        # Actor
         if self.state_dependent_std:
             self.actor = MLP(num_actor_obs, [2, num_actions], actor_hidden_dims, activation)
         else:
             self.actor = MLP(num_actor_obs, num_actions, actor_hidden_dims, activation)
-        # actor observation normalization
+        print(f"Actor MLP: {self.actor}")
+
+        # Actor observation normalization
         self.actor_obs_normalization = actor_obs_normalization
         if actor_obs_normalization:
             self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs)
         else:
             self.actor_obs_normalizer = torch.nn.Identity()
-        print(f"Actor MLP: {self.actor}")
 
-        # critic
+        # Critic
         self.critic = MLP(num_critic_obs, 1, critic_hidden_dims, activation)
-        # critic observation normalization
+        print(f"Critic MLP: {self.critic}")
+
+        # Critic observation normalization
         self.critic_obs_normalization = critic_obs_normalization
         if critic_obs_normalization:
             self.critic_obs_normalizer = EmpiricalNormalization(num_critic_obs)
         else:
             self.critic_obs_normalizer = torch.nn.Identity()
-        print(f"Critic MLP: {self.critic}")
 
         # Action noise
         self.noise_std_type = noise_std_type
@@ -93,9 +96,11 @@ class ActorCritic(nn.Module):
             else:
                 raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
 
-        # Action distribution (populated in update_distribution)
+        # Action distribution
+        # Note: Populated in update_distribution
         self.distribution = None
-        # disable args validation for speedup
+
+        # Disable args validation for speedup
         Normal.set_default_validate_args(False)
 
     def reset(
@@ -122,7 +127,7 @@ class ActorCritic(nn.Module):
 
     def _update_distribution(self, obs: TensorDict) -> None:
         if self.state_dependent_std:
-            # compute mean and standard deviation
+            # Compute mean and standard deviation
             mean_and_std = self.actor(obs)
             if self.noise_std_type == "scalar":
                 mean, std = torch.unbind(mean_and_std, dim=-2)
@@ -132,16 +137,16 @@ class ActorCritic(nn.Module):
             else:
                 raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         else:
-            # compute mean
+            # Compute mean
             mean = self.actor(obs)
-            # compute standard deviation
+            # Compute standard deviation
             if self.noise_std_type == "scalar":
                 std = self.std.expand_as(mean)
             elif self.noise_std_type == "log":
                 std = torch.exp(self.log_std).expand_as(mean)
             else:
                 raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
-        # create distribution
+        # Create distribution
         self.distribution = Normal(mean, std)
 
     def act(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
@@ -195,4 +200,4 @@ class ActorCritic(nn.Module):
                   `OnPolicyRunner` to determine how to load further parameters (relevant for, e.g., distillation).
         """
         super().load_state_dict(state_dict, strict=strict)
-        return True  # training resumes
+        return True

@@ -18,7 +18,7 @@ class RandomNetworkDistillation(nn.Module):
     """Implementation of Random Network Distillation (RND) [1].
 
     References:
-        .. [1] Burda, Yuri, et al. "Exploration by random network distillation." arXiv preprint arXiv:1810.12894 (2018).
+        .. [1] Burda, Yuri, et al. "Exploration by Random Network Distillation." arXiv preprint arXiv:1810.12894 (2018).
     """
 
     def __init__(
@@ -76,7 +76,7 @@ class RandomNetworkDistillation(nn.Module):
                 - "final_step": The step at which the weight parameter is set to the final value.
                 - "final_value": The final value of the weight parameter.
         """
-        # initialize parent class
+        # Initialize parent class
         super().__init__()
 
         # Store parameters
@@ -93,30 +93,32 @@ class RandomNetworkDistillation(nn.Module):
             self.state_normalizer = EmpiricalNormalization(shape=[self.num_states], until=1.0e8).to(self.device)
         else:
             self.state_normalizer = torch.nn.Identity()
+
         # Normalization of intrinsic reward
         if reward_normalization:
             self.reward_normalizer = EmpiricalDiscountedVariationNormalization(shape=[], until=1.0e8).to(self.device)
         else:
             self.reward_normalizer = torch.nn.Identity()
 
-        # counter for the number of updates
+        # Counter for the number of updates
         self.update_counter = 0
 
-        # resolve weight schedule
+        # Resolve weight schedule
         if weight_schedule is not None:
             self.weight_scheduler_params = weight_schedule
             self.weight_scheduler = getattr(self, f"_{weight_schedule['mode']}_weight_schedule")
         else:
             self.weight_scheduler = None
+
         # Create network architecture
         self.predictor = MLP(num_states, num_outputs, predictor_hidden_dims, activation).to(self.device)
         self.target = MLP(num_states, num_outputs, target_hidden_dims, activation).to(self.device)
 
-        # make target network not trainable
+        # Make target network not trainable
         self.target.eval()
 
     def get_intrinsic_reward(self, obs: TensorDict) -> torch.Tensor:
-        # Note: the counter is updated number of env steps per learning iteration
+        # Note: The counter is updated number of env steps per learning iteration
         self.update_counter += 1
         # Extract the rnd state from the observation
         rnd_state = self.get_rnd_state(obs)
@@ -128,7 +130,6 @@ class RandomNetworkDistillation(nn.Module):
         intrinsic_reward = torch.linalg.norm(target_embedding - predictor_embedding, dim=1)
         # Normalize intrinsic reward
         intrinsic_reward = self.reward_normalizer(intrinsic_reward)
-
         # Check the weight schedule
         if self.weight_scheduler is not None:
             self.weight = self.weight_scheduler(step=self.update_counter, **self.weight_scheduler_params)
@@ -143,7 +144,7 @@ class RandomNetworkDistillation(nn.Module):
         raise RuntimeError("Forward method is not implemented. Use get_intrinsic_reward instead.")
 
     def train(self, mode: bool = True) -> RandomNetworkDistillation:
-        # sets module into training mode
+        # Set module into training mode
         self.predictor.train(mode)
         if self.state_normalization:
             self.state_normalizer.train(mode)
@@ -199,16 +200,16 @@ def resolve_rnd_config(alg_cfg: dict, obs: TensorDict, obs_groups: dict[str, lis
     Returns:
         The resolved algorithm configuration dictionary.
     """
-    # resolve dimension of rnd gated state
+    # Resolve dimension of rnd gated state
     if "rnd_cfg" in alg_cfg and alg_cfg["rnd_cfg"] is not None:
-        # get dimension of rnd gated state
+        # Get dimension of rnd gated state
         num_rnd_state = 0
         for obs_group in obs_groups["rnd_state"]:
             assert len(obs[obs_group].shape) == 2, "The RND module only supports 1D observations."
             num_rnd_state += obs[obs_group].shape[-1]
-        # add rnd gated state to config
+        # Add rnd gated state to config
         alg_cfg["rnd_cfg"]["num_states"] = num_rnd_state
         alg_cfg["rnd_cfg"]["obs_groups"] = obs_groups
-        # scale down the rnd weight with timestep
+        # Scale down the rnd weight with timestep
         alg_cfg["rnd_cfg"]["weight"] *= env.unwrapped.step_dt
     return alg_cfg

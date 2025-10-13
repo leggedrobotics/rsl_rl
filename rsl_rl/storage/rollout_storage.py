@@ -38,7 +38,6 @@ class RolloutStorage:
         actions_shape: tuple[int] | list[int],
         device: str = "cpu",
     ) -> None:
-        # store inputs
         self.training_type = training_type
         self.device = device
         self.num_transitions_per_env = num_transitions_per_env
@@ -55,11 +54,11 @@ class RolloutStorage:
         self.actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
 
-        # for distillation
+        # For distillation
         if training_type == "distillation":
             self.privileged_actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
 
-        # for reinforcement learning
+        # For reinforcement learning
         if training_type == "rl":
             self.values = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
             self.actions_log_prob = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
@@ -72,11 +71,11 @@ class RolloutStorage:
         self.saved_hidden_states_a = None
         self.saved_hidden_states_c = None
 
-        # counter for the number of transitions stored
+        # Counter for the number of transitions stored
         self.step = 0
 
     def add_transitions(self, transition: Transition) -> None:
-        # check if the transition is valid
+        # Check if the transition is valid
         if self.step >= self.num_transitions_per_env:
             raise OverflowError("Rollout buffer overflow! You should call clear() before adding new transitions.")
 
@@ -86,11 +85,11 @@ class RolloutStorage:
         self.rewards[self.step].copy_(transition.rewards.view(-1, 1))
         self.dones[self.step].copy_(transition.dones.view(-1, 1))
 
-        # for distillation
+        # For distillation
         if self.training_type == "distillation":
             self.privileged_actions[self.step].copy_(transition.privileged_actions)
 
-        # for reinforcement learning
+        # For reinforcement learning
         if self.training_type == "rl":
             self.values[self.step].copy_(transition.values)
             self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
@@ -100,16 +99,16 @@ class RolloutStorage:
         # For RNN networks
         self._save_hidden_states(transition.hidden_states)
 
-        # increment the counter
+        # Increment the counter
         self.step += 1
 
     def _save_hidden_states(self, hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None]) -> None:
         if hidden_states == (None, None):
             return
-        # make a tuple out of GRU hidden state sto match the LSTM format
+        # Make a tuple out of GRU hidden states to match the LSTM format
         hid_a = hidden_states[0] if isinstance(hidden_states[0], tuple) else (hidden_states[0],)
         hid_c = hidden_states[1] if isinstance(hidden_states[1], tuple) else (hidden_states[1],)
-        # initialize if needed
+        # Initialize hidden states if needed
         if self.saved_hidden_states_a is None:
             self.saved_hidden_states_a = [
                 torch.zeros(self.observations.shape[0], *hid_a[i].shape, device=self.device) for i in range(len(hid_a))
@@ -117,7 +116,7 @@ class RolloutStorage:
             self.saved_hidden_states_c = [
                 torch.zeros(self.observations.shape[0], *hid_c[i].shape, device=self.device) for i in range(len(hid_c))
             ]
-        # copy the states
+        # Copy the states
         for i in range(len(hid_a)):
             self.saved_hidden_states_a[i][self.step].copy_(hid_a[i])
             self.saved_hidden_states_c[i][self.step].copy_(hid_c[i])
@@ -130,7 +129,7 @@ class RolloutStorage:
     ) -> None:
         advantage = 0
         for step in reversed(range(self.num_transitions_per_env)):
-            # if we are at the last step, bootstrap the return value
+            # If we are at the last step, bootstrap the return value
             next_values = last_values if step == self.num_transitions_per_env - 1 else self.values[step + 1]
             # 1 if we are not in a terminal state, 0 otherwise
             next_is_not_terminal = 1.0 - self.dones[step].float()
@@ -144,11 +143,11 @@ class RolloutStorage:
         # Compute the advantages
         self.advantages = self.returns - self.values
         # Normalize the advantages if flag is set
-        # This is to prevent double normalization (i.e. if per minibatch normalization is used)
+        # Note: This is to prevent double normalization (i.e. if per minibatch normalization is used)
         if normalize_advantage:
             self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
 
-    # for distillation
+    # For distillation
     def generator(self) -> Generator:
         if self.training_type != "distillation":
             raise ValueError("This function is only available for distillation training.")
@@ -156,7 +155,7 @@ class RolloutStorage:
         for i in range(self.num_transitions_per_env):
             yield self.observations[i], self.actions[i], self.privileged_actions[i], self.dones[i]
 
-    # for reinforcement learning with feedforward networks
+    # For reinforcement learning with feedforward networks
     def mini_batch_generator(self, num_mini_batches: int, num_epochs: int = 8) -> Generator:
         if self.training_type != "rl":
             raise ValueError("This function is only available for reinforcement learning training.")
@@ -180,15 +179,12 @@ class RolloutStorage:
             for i in range(num_mini_batches):
                 # Select the indices for the mini-batch
                 start = i * mini_batch_size
-                end = (i + 1) * mini_batch_size
-                batch_idx = indices[start:end]
+                stop = (i + 1) * mini_batch_size
+                batch_idx = indices[start:stop]
 
                 # Create the mini-batch
-                # -- Core
                 obs_batch = observations[batch_idx]
                 actions_batch = actions[batch_idx]
-
-                # -- For PPO
                 target_values_batch = values[batch_idx]
                 returns_batch = returns[batch_idx]
                 old_actions_log_prob_batch = old_actions_log_prob[batch_idx]
@@ -196,7 +192,7 @@ class RolloutStorage:
                 old_mu_batch = old_mu[batch_idx]
                 old_sigma_batch = old_sigma[batch_idx]
 
-                # yield the mini-batch
+                # Yield the mini-batch
                 yield (
                     obs_batch,
                     actions_batch,
@@ -213,7 +209,7 @@ class RolloutStorage:
                     None,
                 )
 
-    # for reinforcement learning with recurrent networks
+    # For reinforcement learning with recurrent networks
     def recurrent_mini_batch_generator(self, num_mini_batches: int, num_epochs: int = 8) -> Generator:
         if self.training_type != "rl":
             raise ValueError("This function is only available for reinforcement learning training.")
@@ -243,11 +239,11 @@ class RolloutStorage:
                 values_batch = self.values[:, start:stop]
                 old_actions_log_prob_batch = self.actions_log_prob[:, start:stop]
 
-                # reshape to [num_envs, time, num layers, hidden dim]
-                # (original shape: [time, num_layers, num_envs, hidden_dim])
-                # then take only time steps after dones (flattens num envs and time dimensions),
-                # take a batch of trajectories and finally reshape back to [num_layers, batch, hidden_dim]
+                # Reshape to [num_envs, time, num layers, hidden dim]
+                # Original shape: [time, num_layers, num_envs, hidden_dim])
                 last_was_done = last_was_done.permute(1, 0)
+                # Take only time steps after dones (flattens num envs and time dimensions),
+                # take a batch of trajectories and finally reshape back to [num_layers, batch, hidden_dim]
                 hid_a_batch = [
                     saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
                     .transpose(1, 0)
@@ -260,10 +256,11 @@ class RolloutStorage:
                     .contiguous()
                     for saved_hidden_states in self.saved_hidden_states_c
                 ]
-                # remove the tuple for GRU
+                # Remove the tuple for GRU
                 hid_a_batch = hid_a_batch[0] if len(hid_a_batch) == 1 else hid_a_batch
                 hid_c_batch = hid_c_batch[0] if len(hid_c_batch) == 1 else hid_c_batch
 
+                # Yield the mini-batch
                 yield (
                     obs_batch,
                     actions_batch,

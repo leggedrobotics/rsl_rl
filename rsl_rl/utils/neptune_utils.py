@@ -52,16 +52,12 @@ class NeptuneSummaryWriter(SummaryWriter):
             ) from None
 
         neptune_project = entity + "/" + project
-
         self.neptune_logger = NeptuneLogger(neptune_project, token)
-
         self.name_map = {
             "Train/mean_reward/time": "Train/mean_reward_time",
             "Train/mean_episode_length/time": "Train/mean_episode_length_time",
         }
-
         run_name = os.path.split(log_dir)[-1]
-
         self.neptune_logger.run["log_dir"].log(run_name)
 
     def add_scalar(
@@ -93,10 +89,6 @@ class NeptuneSummaryWriter(SummaryWriter):
     def save_file(self, path: str) -> None:
         name = path.rsplit("/", 1)[-1].split(".")[0]
         self.neptune_logger.run["git_diff/" + name].upload(path)
-
-    """
-    Private methods.
-    """
 
     def _map_path(self, path: str) -> str:
         if path in self.name_map:
