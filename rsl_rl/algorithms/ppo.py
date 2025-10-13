@@ -101,7 +101,7 @@ class PPO:
         self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
 
         # Create rollout storage
-        self.storage: RolloutStorage = None  # type: ignore
+        self.storage: RolloutStorage | None = None
         self.transition = RolloutStorage.Transition()
 
         # PPO parameters
@@ -362,7 +362,7 @@ class PPO:
             loss.backward()
             # Compute the gradients for RND
             if self.rnd:
-                self.rnd_optimizer.zero_grad()  # type: ignore
+                self.rnd_optimizer.zero_grad()
                 rnd_loss.backward()
 
             # Collect gradients from all GPUs

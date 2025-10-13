@@ -119,7 +119,7 @@ class OnPolicyRunner:
                         # Update rewards
                         if self.alg.rnd:
                             cur_ereward_sum += rewards
-                            cur_ireward_sum += intrinsic_rewards  # type: ignore
+                            cur_ireward_sum += intrinsic_rewards
                             cur_reward_sum += rewards + intrinsic_rewards
                         else:
                             cur_reward_sum += rewards

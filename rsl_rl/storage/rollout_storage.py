@@ -15,16 +15,16 @@ from rsl_rl.utils import split_and_pad_trajectories
 class RolloutStorage:
     class Transition:
         def __init__(self) -> None:
-            self.observations: TensorDict = None  # type: ignore
-            self.actions: torch.Tensor = None  # type: ignore
-            self.privileged_actions: torch.Tensor = None  # type: ignore
-            self.rewards: torch.Tensor = None  # type: ignore
-            self.dones: torch.Tensor = None  # type: ignore
-            self.values: torch.Tensor = None  # type: ignore
-            self.actions_log_prob: torch.Tensor = None  # type: ignore
-            self.action_mean: torch.Tensor = None  # type: ignore
-            self.action_sigma: torch.Tensor = None  # type: ignore
-            self.hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None] = (None, None)  # type: ignore
+            self.observations: TensorDict | None = None
+            self.actions: torch.Tensor | None = None
+            self.privileged_actions: torch.Tensor | None = None
+            self.rewards: torch.Tensor | None = None
+            self.dones: torch.Tensor | None = None
+            self.values: torch.Tensor | None = None
+            self.actions_log_prob: torch.Tensor
+            self.action_mean: torch.Tensor | None = None
+            self.action_sigma: torch.Tensor | None = None
+            self.hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None, ...] = (None, None)
 
         def clear(self) -> None:
             self.__init__()
@@ -102,7 +102,7 @@ class RolloutStorage:
         # Increment the counter
         self.step += 1
 
-    def _save_hidden_states(self, hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None]) -> None:
+    def _save_hidden_states(self, hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None, ...]) -> None:
         if hidden_states == (None, None):
             return
         # Make a tuple out of GRU hidden states to match the LSTM format

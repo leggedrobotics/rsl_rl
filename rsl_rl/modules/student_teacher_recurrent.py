@@ -112,7 +112,7 @@ class StudentTeacherRecurrent(nn.Module):
     def reset(
         self,
         dones: torch.Tensor | None = None,
-        hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None] = (None, None),
+        hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None, ...] = (None, None),
     ) -> None:
         self.memory_s.reset(dones, hidden_states[0])
         if self.teacher_recurrent:
@@ -176,7 +176,9 @@ class StudentTeacherRecurrent(nn.Module):
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["teacher"]]
         return torch.cat(obs_list, dim=-1)
 
-    def get_hidden_states(self) -> tuple[torch.Tensor | tuple[torch.Tensor] | None]:
+    def get_hidden_states(
+        self,
+    ) -> tuple[torch.Tensor | tuple[torch.Tensor] | None, torch.Tensor | tuple[torch.Tensor] | None]:
         if self.teacher_recurrent:
             return self.memory_s.hidden_states, self.memory_t.hidden_states
         else:
