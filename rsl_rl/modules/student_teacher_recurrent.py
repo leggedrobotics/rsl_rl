@@ -112,7 +112,7 @@ class StudentTeacherRecurrent(nn.Module):
     def reset(
         self,
         dones: torch.Tensor | None = None,
-        hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None, ...] = (None, None),
+        hidden_states: tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, ...] = (None, None),
     ) -> None:
         self.memory_s.reset(dones, hidden_states[0])
         if self.teacher_recurrent:
@@ -178,7 +178,7 @@ class StudentTeacherRecurrent(nn.Module):
 
     def get_hidden_states(
         self,
-    ) -> tuple[torch.Tensor | tuple[torch.Tensor] | None, torch.Tensor | tuple[torch.Tensor] | None]:
+    ) -> tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, torch.Tensor | tuple[torch.Tensor, ...] | None]:
         if self.teacher_recurrent:
             return self.memory_s.hidden_states, self.memory_t.hidden_states
         else:

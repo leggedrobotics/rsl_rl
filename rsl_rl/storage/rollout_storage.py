@@ -24,7 +24,7 @@ class RolloutStorage:
             self.actions_log_prob: torch.Tensor
             self.action_mean: torch.Tensor | None = None
             self.action_sigma: torch.Tensor | None = None
-            self.hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None, ...] = (None, None)
+            self.hidden_states: tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, ...] = (None, None)
 
         def clear(self) -> None:
             self.__init__()
@@ -102,7 +102,7 @@ class RolloutStorage:
         # Increment the counter
         self.step += 1
 
-    def _save_hidden_states(self, hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None, ...]) -> None:
+    def _save_hidden_states(self, hidden_states: tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, ...]) -> None:
         if hidden_states == (None, None):
             return
         # Make a tuple out of GRU hidden states to match the LSTM format

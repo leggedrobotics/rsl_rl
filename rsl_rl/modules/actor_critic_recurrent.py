@@ -166,7 +166,7 @@ class ActorCriticRecurrent(nn.Module):
         self,
         obs: TensorDict,
         masks: torch.Tensor | None = None,
-        hidden_states: torch.Tensor | tuple[torch.Tensor] | None = None,
+        hidden_states: torch.Tensor | tuple[torch.Tensor, ...] | None = None,
     ) -> torch.Tensor:
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
@@ -187,7 +187,7 @@ class ActorCriticRecurrent(nn.Module):
         self,
         obs: TensorDict,
         masks: torch.Tensor | None = None,
-        hidden_states: torch.Tensor | tuple[torch.Tensor] | None = None,
+        hidden_states: torch.Tensor | tuple[torch.Tensor, ...] | None = None,
     ) -> torch.Tensor:
         obs = self.get_critic_obs(obs)
         obs = self.critic_obs_normalizer(obs)
@@ -207,7 +207,7 @@ class ActorCriticRecurrent(nn.Module):
 
     def get_hidden_states(
         self,
-    ) -> tuple[torch.Tensor | tuple[torch.Tensor] | None, torch.Tensor | tuple[torch.Tensor] | None]:
+    ) -> tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, torch.Tensor | tuple[torch.Tensor, ...] | None]:
         return self.memory_a.hidden_states, self.memory_c.hidden_states
 
     def update_normalization(self, obs: TensorDict) -> None:

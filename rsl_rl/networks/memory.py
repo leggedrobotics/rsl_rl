@@ -27,7 +27,7 @@ class Memory(nn.Module):
         self,
         input: torch.Tensor,
         masks: torch.Tensor | None = None,
-        hidden_states: torch.Tensor | tuple[torch.Tensor] | None = None,
+        hidden_states: torch.Tensor | tuple[torch.Tensor, ...] | None = None,
     ) -> torch.Tensor:
         batch_mode = masks is not None
         if batch_mode:
@@ -42,7 +42,7 @@ class Memory(nn.Module):
         return out
 
     def reset(
-        self, dones: torch.Tensor | None = None, hidden_states: torch.Tensor | tuple[torch.Tensor] | None = None
+        self, dones: torch.Tensor | None = None, hidden_states: torch.Tensor | tuple[torch.Tensor, ...] | None = None
     ) -> None:
         if dones is None:  # Reset hidden states
             if hidden_states is None:

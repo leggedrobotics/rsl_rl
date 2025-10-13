@@ -93,7 +93,7 @@ class StudentTeacher(nn.Module):
     def reset(
         self,
         dones: torch.Tensor | None = None,
-        hidden_states: tuple[torch.Tensor | tuple[torch.Tensor] | None, ...] = (None, None),
+        hidden_states: tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, ...] = (None, None),
     ) -> None:
         pass
 
@@ -150,7 +150,7 @@ class StudentTeacher(nn.Module):
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["teacher"]]
         return torch.cat(obs_list, dim=-1)
 
-    def get_hidden_states(self) -> tuple[torch.Tensor | tuple[torch.Tensor] | None, ...]:
+    def get_hidden_states(self) -> tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, ...]:
         return None, None
 
     def detach_hidden_states(self, dones: torch.Tensor | None = None) -> None:
