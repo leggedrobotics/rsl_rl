@@ -15,17 +15,12 @@ from rsl_rl.utils import resolve_nn_activation
 class MLP(nn.Sequential):
     """Multi-layer perceptron.
 
-    The MLP network is a sequence of linear layers and activation functions. The
-    last layer is a linear layer that outputs the desired dimension unless the
-    last activation function is specified.
+    The MLP network is a sequence of linear layers and activation functions. The last layer is a linear layer that
+    outputs the desired dimension unless the last activation function is specified.
 
     It provides additional conveniences:
-
-    - If the hidden dimensions have a value of ``-1``, the dimension is inferred
-      from the input dimension.
-    - If the output dimension is a tuple, the output is reshaped to the desired
-      shape.
-
+    - If the hidden dimensions have a value of ``-1``, the dimension is inferred from the input dimension.
+    - If the output dimension is a tuple, the output is reshaped to the desired shape.
     """
 
     def __init__(
@@ -41,11 +36,10 @@ class MLP(nn.Sequential):
         Args:
             input_dim: Dimension of the input.
             output_dim: Dimension of the output.
-            hidden_dims: Dimensions of the hidden layers. A value of ``-1`` indicates
-                that the dimension should be inferred from the input dimension.
-            activation: Activation function. Defaults to "elu".
-            last_activation: Activation function of the last layer. Defaults to None,
-                in which case the last layer is linear.
+            hidden_dims: Dimensions of the hidden layers. A value of ``-1`` indicates that the dimension should be
+                inferred from the input dimension.
+            activation: Activation function.
+            last_activation: Activation function of the last layer. None results in a linear last layer.
         """
         super().__init__()
 

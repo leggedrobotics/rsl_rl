@@ -57,8 +57,7 @@ For documentation, we adopt the [Google Style Guide](https://sphinxcontrib-napol
 We use the following tools for maintaining code quality:
 
 - [pre-commit](https://pre-commit.com/): Runs a list of formatters and linters over the codebase.
-- [black](https://black.readthedocs.io/en/stable/): The uncompromising code formatter.
-- [flake8](https://flake8.pycqa.org/en/latest/): A wrapper around PyFlakes, pycodestyle, and McCabe complexity checker.
+- [ruff](https://github.com/astral-sh/ruff): An extremely fast Python linter and code formatter, written in Rust.
 
 Please check [here](https://pre-commit.com/#install) for instructions to set these up. To run over the entire repository, please execute the following command in the terminal:
 

@@ -12,8 +12,8 @@ def resolve_symmetry_config(alg_cfg: dict, env: VecEnv) -> dict:
     """Resolve the symmetry configuration.
 
     Args:
-        alg_cfg: The algorithm configuration dictionary.
-        env: The environment.
+        alg_cfg: Algorithm configuration dictionary.
+        env: Environment object.
 
     Returns:
         The resolved algorithm configuration dictionary.

@@ -17,13 +17,12 @@ class EmpiricalNormalization(nn.Module):
     def __init__(self, shape: int | tuple[int] | list[int], eps: float = 1e-2, until: int | None = None) -> None:
         """Initialize EmpiricalNormalization module.
 
+        .. note:: The normalization parameters are computed over the whole batch, not for each environment separately.
+
         Args:
             shape: Shape of input values except batch axis.
             eps: Small value for stability.
-            until: If this arg is specified, the module learns input values until the sum of batch sizes
-            exceeds it.
-
-        Note: The normalization parameters are computed over the whole batch, not for each environment separately.
+            until: If this arg is specified, the module learns input values until the sum of batch sizes exceeds it.
         """
         super().__init__()
         self.eps = eps
@@ -72,9 +71,9 @@ class EmpiricalNormalization(nn.Module):
 class EmpiricalDiscountedVariationNormalization(nn.Module):
     """Reward normalization from Pathak's large scale study on PPO.
 
-    Reward normalization. Since the reward function is non-stationary, it is useful to normalize
-    the scale of the rewards so that the value function can learn quickly. We did this by dividing
-    the rewards by a running estimate of the standard deviation of the sum of discounted rewards.
+    Reward normalization. Since the reward function is non-stationary, it is useful to normalize the scale of the
+    rewards so that the value function can learn quickly. We did this by dividing the rewards by a running estimate of
+    the standard deviation of the sum of discounted rewards.
     """
 
     def __init__(
@@ -99,11 +98,6 @@ class EmpiricalDiscountedVariationNormalization(nn.Module):
             return rew
 
 
-"""
-Helper class.
-"""
-
-
 class _DiscountedAverage:
     r"""Discounted average of rewards.
 
@@ -112,9 +106,6 @@ class _DiscountedAverage:
     .. math::
 
         \bar{R}_t = \gamma \bar{R}_{t-1} + r_t
-
-    Args:
-        gamma (float): Discount factor.
     """
 
     def __init__(self, gamma: float) -> None:

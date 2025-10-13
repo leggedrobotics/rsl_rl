@@ -41,10 +41,8 @@ class RandomNetworkDistillation(nn.Module):
           layer.
         - If :attr:`reward_normalization` is True, then the intrinsic reward is normalized using an Empirical Discounted
           Variation Normalization layer.
-
-        .. note::
-            If the hidden dimensions are -1 in the predictor and target networks configuration, then the number of
-            states is used as the hidden dimension.
+        - If the hidden dimensions are -1 in the predictor and target networks configuration, then the number of states
+          is used as the hidden dimension.
 
         Args:
             num_states: Number of states/inputs to the predictor and target networks.
@@ -52,29 +50,28 @@ class RandomNetworkDistillation(nn.Module):
             num_outputs: Number of outputs (embedding size) of the predictor and target networks.
             predictor_hidden_dims: List of hidden dimensions of the predictor network.
             target_hidden_dims: List of hidden dimensions of the target network.
-            activation: Activation function. Defaults to "elu".
-            weight: Scaling factor of the intrinsic reward. Defaults to 0.0.
-            state_normalization: Whether to normalize the input state. Defaults to False.
-            reward_normalization: Whether to normalize the intrinsic reward. Defaults to False.
-            device: Device to use. Defaults to "cpu".
-            weight_schedule: The type of schedule to use for the RND weight parameter.
-                Defaults to None, in which case the weight parameter is constant.
+            activation: Activation function.
+            weight: Scaling factor of the intrinsic reward.
+            state_normalization: Whether to normalize the input state.
+            reward_normalization: Whether to normalize the intrinsic reward.
+            device: Device to use.
+            weight_schedule: Type of schedule to use for the RND weight parameter.
                 It is a dictionary with the following keys:
 
-                - "mode": The type of schedule to use for the RND weight parameter.
+                - "mode": Type of schedule to use for the RND weight parameter.
                     - "constant": Constant weight schedule.
                     - "step": Step weight schedule.
                     - "linear": Linear weight schedule.
 
                 For the "step" weight schedule, the following parameters are required:
 
-                - "final_step": The step at which the weight parameter is set to the final value.
-                - "final_value": The final value of the weight parameter.
+                - "final_step": Step at which the weight parameter is set to the final value.
+                - "final_value": Final value of the weight parameter.
 
                 For the "linear" weight schedule, the following parameters are required:
-                - "initial_step": The step at which the weight parameter is set to the initial value.
-                - "final_step": The step at which the weight parameter is set to the final value.
-                - "final_value": The final value of the weight parameter.
+                - "initial_step": Step at which the weight parameter is set to the initial value.
+                - "final_step": Step at which the weight parameter is set to the final value.
+                - "final_value": Final value of the weight parameter.
         """
         # Initialize parent class
         super().__init__()
@@ -165,10 +162,6 @@ class RandomNetworkDistillation(nn.Module):
             rnd_state = self.get_rnd_state(obs)
             self.state_normalizer.update(rnd_state)
 
-    """
-    Different weight schedules.
-    """
-
     def _constant_weight_schedule(self, step: int, **kwargs: dict[str, Any]) -> float:
         return self.initial_weight
 
@@ -192,10 +185,10 @@ def resolve_rnd_config(alg_cfg: dict, obs: TensorDict, obs_groups: dict[str, lis
     """Resolve the RND configuration.
 
     Args:
-        alg_cfg: The algorithm configuration dictionary.
-        obs: The observation dictionary.
-        obs_groups: The observation groups dictionary.
-        env: The environment.
+        alg_cfg: Algorithm configuration dictionary.
+        obs: Observation dictionary.
+        obs_groups: Observation groups dictionary.
+        env: Environment object.
 
     Returns:
         The resolved algorithm configuration dictionary.

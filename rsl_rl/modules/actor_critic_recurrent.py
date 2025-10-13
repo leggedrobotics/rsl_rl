@@ -223,12 +223,12 @@ class ActorCriticRecurrent(nn.Module):
 
         Args:
             state_dict: State dictionary of the model.
-            strict: Whether to strictly enforce that the keys in state_dict match the keys returned by this
-                           module's state_dict() function.
+            strict: Whether to strictly enforce that the keys in `state_dict` match the keys returned by this module's
+                :meth:`state_dict` function.
 
         Returns:
-            bool: Whether this training resumes a previous training. This flag is used by the `load()` function of
-                  `OnPolicyRunner` to determine how to load further parameters (relevant for, e.g., distillation).
+            Whether this training resumes a previous training. This flag is used by the :func:`load` function of
+                :class:`OnPolicyRunner` to determine how to load further parameters (relevant for, e.g., distillation).
         """
         super().load_state_dict(state_dict, strict=strict)
         return True

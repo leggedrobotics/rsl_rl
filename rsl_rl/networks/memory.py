@@ -14,8 +14,7 @@ from rsl_rl.utils import unpad_trajectories
 class Memory(nn.Module):
     """Memory module for recurrent networks.
 
-    This module is used to store the hidden states of the policy.
-    Currently only supports GRU and LSTM.
+    This module is used to store the hidden states of the policy. It currently only supports GRU and LSTM.
     """
 
     def __init__(self, input_size: int, hidden_dim: int = 256, num_layers: int = 1, type: str = "lstm") -> None:

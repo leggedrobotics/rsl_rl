@@ -19,7 +19,7 @@ def resolve_nn_activation(act_name: str) -> torch.nn.Module:
     """Resolve the activation function from the name.
 
     Args:
-        act_name: The name of the activation function.
+        act_name: Name of the activation function.
 
     Returns:
         The activation function.
@@ -53,7 +53,7 @@ def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
     """Resolve the optimizer from the name.
 
     Args:
-        optimizer_name: The name of the optimizer.
+        optimizer_name: Name of the optimizer.
 
     Returns:
         The optimizer.
@@ -174,14 +174,14 @@ def string_to_callable(name: str) -> Callable:
     """Resolve the module and function names to return the function.
 
     Args:
-        name: The function name. The format should be 'module:attribute_name'.
+        name: Function name. The format should be 'module:attribute_name'.
+
+    Returns:
+        The function loaded from the module.
 
     Raises:
         ValueError: When the resolved attribute is not a function.
         ValueError: When unable to resolve the attribute.
-
-    Returns:
-        The function loaded from the module.
     """
     try:
         mod_name, attr_name = name.split(":")
@@ -214,13 +214,13 @@ def resolve_obs_groups(
             "critic": ["group_1", "group_3"]
         }
 
-    This means that the 'policy' observation set will contain the observations "group_1" and "group_2" and the
-    'critic' observation set will contain the observations "group_1" and "group_3". This function will check that all
-    the observations in the 'policy' and 'critic' observation sets are present in the observation dictionary from the
+    This means that the 'policy' observation set will contain the observations "group_1" and "group_2" and the 'critic'
+    observation set will contain the observations "group_1" and "group_3". This function will check that all the
+    observations in the 'policy' and 'critic' observation sets are present in the observation dictionary from the
     environment.
 
-    Additionally, if one of the `default_sets`, e.g. "critic", is not present in the configuration dictionary,
-    this function will:
+    Additionally, if one of the `default_sets`, e.g. "critic", is not present in the configuration dictionary, this
+    function will:
 
     1. Check if a group with the same name exists in the observations and assign this group to the observation set.
     2. If 1. fails, it will assign the observations from the 'policy' observation set to the default observation set.
@@ -228,8 +228,8 @@ def resolve_obs_groups(
     Args:
         obs: Observations from the environment in the form of a dictionary.
         obs_groups: Observation sets configuration.
-        default_sets: Reserved observation set names used by the algorithm (besides 'policy').
-            If not provided in 'obs_groups', a default behavior gets triggered.
+        default_sets: Reserved observation set names used by the algorithm (besides 'policy'). If not provided in
+            'obs_groups', a default behavior gets triggered.
 
     Returns:
         The resolved observation groups.
