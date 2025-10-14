@@ -163,10 +163,10 @@ class ActorCriticRecurrent(nn.Module):
         self.update_distribution(out_mem)
         return self.distribution.sample()
 
-    def act_inference(self, obs):
+    def act_inference(self, obs, masks=None, hidden_states=None):
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
-        out_mem = self.memory_a(obs).squeeze(0)
+        out_mem = self.memory_a(obs, masks, hidden_states).squeeze(0)
         if self.state_dependent_std:
             return self.actor(out_mem)[..., 0, :]
         else:
