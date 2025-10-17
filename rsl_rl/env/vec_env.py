@@ -13,9 +13,8 @@ from tensordict import TensorDict
 class VecEnv(ABC):
     """Abstract class for a vectorized environment.
 
-    The vectorized environment is a collection of environments that are synchronized. This means that
-    the same type of action is applied to all environments and the same type of observation is returned from all
-    environments.
+    The vectorized environment is a collection of environments that are synchronized. This means that the same type of
+    action is applied to all environments and the same type of observation is returned from all environments.
     """
 
     num_envs: int
@@ -41,16 +40,12 @@ class VecEnv(ABC):
     cfg: dict | object
     """Configuration object."""
 
-    """
-    Operations.
-    """
-
     @abstractmethod
     def get_observations(self) -> TensorDict:
         """Return the current observations.
 
         Returns:
-            observations (TensorDict): Observations from the environment.
+            The observations from the environment.
         """
         raise NotImplementedError
 
@@ -59,16 +54,15 @@ class VecEnv(ABC):
         """Apply input action to the environment.
 
         Args:
-            actions (torch.Tensor): Input actions to apply. Shape: (num_envs, num_actions)
+            actions: Input actions to apply. Shape: (num_envs, num_actions)
 
         Returns:
-                observations (TensorDict): Observations from the environment.
-                rewards (torch.Tensor): Rewards from the environment. Shape: (num_envs,)
-                dones (torch.Tensor): Done flags from the environment. Shape: (num_envs,)
-                extras (dict): Extra information from the environment.
+            observations: Observations from the environment.
+            rewards: Rewards from the environment. Shape: (num_envs,)
+            dones: Done flags from the environment. Shape: (num_envs,)
+            extras: Extra information from the environment.
 
         Observations:
-
             The observations TensorDict usually contains multiple observation groups. The `obs_groups`
             dictionary of the runner configuration specifies which observation groups are used for which
             purpose, i.e., it maps the available observation groups to observation sets. The observation sets
@@ -83,7 +77,6 @@ class VecEnv(ABC):
             `rsl_rl/utils/utils.py`.
 
         Extras:
-
             The extras dictionary includes metrics such as the episode reward, episode length, etc. The following
             dictionary keys are used by rsl_rl:
 
