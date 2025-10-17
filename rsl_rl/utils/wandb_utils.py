@@ -40,11 +40,6 @@ class WandbSummaryWriter(SummaryWriter):
         # Add log directory to wandb
         wandb.config.update({"log_dir": log_dir})
 
-        self.name_map = {
-            "Train/mean_reward/time": "Train/mean_reward_time",
-            "Train/mean_episode_length/time": "Train/mean_episode_length_time",
-        }
-
     def store_config(self, env_cfg: dict | object, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
         wandb.config.update({"runner_cfg": runner_cfg})
         wandb.config.update({"policy_cfg": policy_cfg})
@@ -69,7 +64,7 @@ class WandbSummaryWriter(SummaryWriter):
             walltime=walltime,
             new_style=new_style,
         )
-        wandb.log({self._map_path(tag): scalar_value}, step=global_step)
+        wandb.log({tag: scalar_value}, step=global_step)
 
     def stop(self) -> None:
         wandb.finish()
@@ -82,9 +77,3 @@ class WandbSummaryWriter(SummaryWriter):
 
     def save_file(self, path: str) -> None:
         wandb.save(path, base_path=os.path.dirname(path))
-
-    def _map_path(self, path: str) -> str:
-        if path in self.name_map:
-            return self.name_map[path]
-        else:
-            return path
