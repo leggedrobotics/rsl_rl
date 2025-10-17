@@ -192,6 +192,10 @@ class RolloutStorage:
                 old_mu_batch = old_mu[batch_idx]
                 old_sigma_batch = old_sigma[batch_idx]
 
+                hid_a_batch = None
+                hid_c_batch = None
+                masks_batch = None
+
                 # Yield the mini-batch
                 yield (
                     obs_batch,
@@ -203,10 +207,10 @@ class RolloutStorage:
                     old_mu_batch,
                     old_sigma_batch,
                     (
-                        None,
-                        None,
+                        hid_a_batch,
+                        hid_c_batch,
                     ),
-                    None,
+                    masks_batch,
                 )
 
     # For reinforcement learning with recurrent networks
