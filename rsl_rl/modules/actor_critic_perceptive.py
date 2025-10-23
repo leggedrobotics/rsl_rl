@@ -14,8 +14,8 @@ from rsl_rl.networks import CNN, MLP, EmpiricalNormalization
 from .actor_critic import ActorCritic
 
 
-class PerceptiveActorCritic(ActorCritic):
-    def __init__(  # noqa: C901
+class ActorCriticPerceptive(ActorCritic):
+    def __init__(
         self,
         obs,
         obs_groups,
@@ -34,7 +34,7 @@ class PerceptiveActorCritic(ActorCritic):
         if kwargs:
             print(
                 "PerceptiveActorCritic.__init__ got unexpected arguments, which will be ignored: "
-                + str([key for key in kwargs.keys()])
+                + str([key for key in kwargs])
             )
         nn.Module.__init__(self)
 
@@ -74,9 +74,9 @@ class PerceptiveActorCritic(ActorCritic):
 
             # check if multiple 2D actor observations are provided
             if len(self.actor_obs_group_2d) > 1 and all(isinstance(item, dict) for item in actor_cnn_config.values()):
-                assert len(actor_cnn_config) == len(
-                    self.actor_obs_group_2d
-                ), "Number of CNN configs must match number of 2D actor observations."
+                assert len(actor_cnn_config) == len(self.actor_obs_group_2d), (
+                    "Number of CNN configs must match number of 2D actor observations."
+                )
             elif len(self.actor_obs_group_2d) > 1:
                 print(
                     "Only one CNN config for multiple 2D actor observations given, using the same CNN for all groups."
@@ -116,9 +116,9 @@ class PerceptiveActorCritic(ActorCritic):
 
             # check if multiple 2D critic observations are provided
             if len(self.critic_obs_group_2d) > 1 and all(isinstance(item, dict) for item in critic_cnn_config.values()):
-                assert len(critic_cnn_config) == len(
-                    self.critic_obs_group_2d
-                ), "Number of CNN configs must match number of 2D critic observations."
+                assert len(critic_cnn_config) == len(self.critic_obs_group_2d), (
+                    "Number of CNN configs must match number of 2D critic observations."
+                )
             elif len(self.critic_obs_group_2d) > 1:
                 print(
                     "Only one CNN config for multiple 2D critic observations given, using the same CNN for all groups."
@@ -171,7 +171,6 @@ class PerceptiveActorCritic(ActorCritic):
         Normal.set_default_validate_args(False)
 
     def update_distribution(self, mlp_obs: torch.Tensor, cnn_obs: dict[str, torch.Tensor]):
-
         if self.actor_cnns is not None:
             # encode the 2D actor observations
             cnn_enc_list = []

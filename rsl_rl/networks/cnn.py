@@ -24,8 +24,7 @@ class CNN(nn.Sequential):
         batchnorm: bool | list[bool] = False,
         max_pool: bool | list[bool] = False,
     ):
-        """
-        Convolutional Neural Network model.
+        """Convolutional Neural Network model.
 
         .. note::
             Do not save config to allow for the model to be jit compiled.
@@ -87,7 +86,6 @@ class CNN(nn.Sequential):
 
     def init_weights(self, scales: float | tuple[float]):
         """Initialize the weights of the CNN."""
-
         # initialize the weights
         for idx, module in enumerate(self):
             if isinstance(module, nn.Conv2d):
