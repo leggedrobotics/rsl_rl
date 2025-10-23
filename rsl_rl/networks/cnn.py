@@ -23,7 +23,7 @@ class CNN(nn.Sequential):
         avg_pool: tuple[int, int] | None = None,
         batchnorm: bool | list[bool] = False,
         max_pool: bool | list[bool] = False,
-    ):
+    ) -> None:
         """Convolutional Neural Network model.
 
         .. note::
@@ -84,7 +84,7 @@ class CNN(nn.Sequential):
             x = x.flatten(start_dim=1)
         return x
 
-    def init_weights(self, scales: float | tuple[float]):
+    def init_weights(self, scales: float | tuple[float]) -> None:
         """Initialize the weights of the CNN."""
         # initialize the weights
         for idx, module in enumerate(self):

@@ -30,7 +30,7 @@ class ActorCriticPerceptive(ActorCritic):
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
         **kwargs,
-    ):
+    ) -> None:
         if kwargs:
             print(
                 "PerceptiveActorCritic.__init__ got unexpected arguments, which will be ignored: "
@@ -170,12 +170,10 @@ class ActorCriticPerceptive(ActorCritic):
         # disable args validation for speedup
         Normal.set_default_validate_args(False)
 
-    def update_distribution(self, mlp_obs: torch.Tensor, cnn_obs: dict[str, torch.Tensor]):
+    def update_distribution(self, mlp_obs: torch.Tensor, cnn_obs: dict[str, torch.Tensor]) -> None:
         if self.actor_cnns is not None:
             # encode the 2D actor observations
-            cnn_enc_list = []
-            for obs_group in self.actor_obs_group_2d:
-                cnn_enc_list.append(self.actor_cnns[obs_group](cnn_obs[obs_group]))
+            cnn_enc_list = [self.actor_cnns[obs_group](cnn_obs[obs_group]) for obs_group in self.actor_obs_group_2d]
             cnn_enc = torch.cat(cnn_enc_list, dim=-1)
             # update mlp obs
             mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
@@ -194,9 +192,7 @@ class ActorCriticPerceptive(ActorCritic):
 
         if self.actor_cnns is not None:
             # encode the 2D actor observations
-            cnn_enc_list = []
-            for obs_group in self.actor_obs_group_2d:
-                cnn_enc_list.append(self.actor_cnns[obs_group](cnn_obs[obs_group]))
+            cnn_enc_list = [self.actor_cnns[obs_group](cnn_obs[obs_group]) for obs_group in self.actor_obs_group_2d]
             cnn_enc = torch.cat(cnn_enc_list, dim=-1)
             # update mlp obs
             mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
@@ -209,9 +205,7 @@ class ActorCriticPerceptive(ActorCritic):
 
         if self.critic_cnns is not None:
             # encode the 2D critic observations
-            cnn_enc_list = []
-            for obs_group in self.critic_obs_group_2d:
-                cnn_enc_list.append(self.critic_cnns[obs_group](cnn_obs[obs_group]))
+            cnn_enc_list = [self.critic_cnns[obs_group](cnn_obs[obs_group]) for obs_group in self.critic_obs_group_2d]
             cnn_enc = torch.cat(cnn_enc_list, dim=-1)
             # update mlp obs
             mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
@@ -219,24 +213,20 @@ class ActorCriticPerceptive(ActorCritic):
         return self.critic(mlp_obs)
 
     def get_actor_obs(self, obs):
-        obs_list_1d = []
         obs_dict_2d = {}
-        for obs_group in self.actor_obs_group_1d:
-            obs_list_1d.append(obs[obs_group])
+        obs_list_1d = [obs[obs_group] for obs_group in self.actor_obs_group_1d]
         for obs_group in self.actor_obs_group_2d:
             obs_dict_2d[obs_group] = obs[obs_group]
         return torch.cat(obs_list_1d, dim=-1), obs_dict_2d
 
     def get_critic_obs(self, obs):
-        obs_list_1d = []
         obs_dict_2d = {}
-        for obs_group in self.critic_obs_group_1d:
-            obs_list_1d.append(obs[obs_group])
+        obs_list_1d = [obs[obs_group] for obs_group in self.critic_obs_group_1d]
         for obs_group in self.critic_obs_group_2d:
             obs_dict_2d[obs_group] = obs[obs_group]
         return torch.cat(obs_list_1d, dim=-1), obs_dict_2d
 
-    def update_normalization(self, obs):
+    def update_normalization(self, obs) -> None:
         if self.actor_obs_normalization:
             actor_obs, _ = self.get_actor_obs(obs)
             self.actor_obs_normalizer.update(actor_obs)
