@@ -12,6 +12,12 @@ from rsl_rl.utils import resolve_nn_activation
 
 
 class CNN(nn.Sequential):
+    """Convolutional Neural Network (CNN).
+
+    The CNN network is a sequence of convolutional layers, optional batch normalization, activation functions, and
+    optional max pooling. The final output can be flattened or pooled depending on the configuration.
+    """
+
     def __init__(
         self,
         in_channels: int,
@@ -24,13 +30,25 @@ class CNN(nn.Sequential):
         batchnorm: bool | list[bool] = False,
         max_pool: bool | list[bool] = False,
     ) -> None:
-        """Convolutional Neural Network model.
+        """Initialize the CNN.
+
+        Args:
+            in_channels: Number of input channels.
+            activation: Activation function to use.
+            out_channels: List of output channels for each convolutional layer.
+            kernel_size: List of kernel sizes for each convolutional layer or a single kernel size for all layers.
+            stride: List of strides for each convolutional layer or a single stride for all layers.
+            flatten: Whether to flatten the output tensor.
+            avg_pool: If specified, applies an adaptive average pooling to the given output size after the convolutions.
+            batchnorm: Whether to apply batch normalization after each convolutional layer.
+            max_pool: Whether to apply max pooling after each convolutional layer.
 
         .. note::
             Do not save config to allow for the model to be jit compiled.
         """
         super().__init__()
 
+        # If parameters are not lists, convert them to lists
         if isinstance(batchnorm, bool):
             batchnorm = [batchnorm] * len(out_channels)
         if isinstance(max_pool, bool):
@@ -40,12 +58,11 @@ class CNN(nn.Sequential):
         if isinstance(stride, int):
             stride = [stride] * len(out_channels)
 
-        # get activation function
+        # Resolve activation function
         activation_function = resolve_nn_activation(activation)
 
-        # build model layers
+        # Create layers sequentially
         layers = []
-
         for idx in range(len(out_channels)):
             in_channels = in_channels if idx == 0 else out_channels[idx - 1]
             layers.append(
@@ -62,16 +79,17 @@ class CNN(nn.Sequential):
             if max_pool[idx]:
                 layers.append(nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
 
-        # register the layers
+        # Register the layers
         for idx, layer in enumerate(layers):
             self.add_module(f"{idx}", layer)
 
+        # Add avgpool if specified
         if avg_pool is not None:
             self.avgpool = nn.AdaptiveAvgPool2d(avg_pool)
         else:
             self.avgpool = None
 
-        # save flatten config for forward function
+        # Save flatten flag for forward function
         self.flatten = flatten
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -84,9 +102,8 @@ class CNN(nn.Sequential):
             x = x.flatten(start_dim=1)
         return x
 
-    def init_weights(self, scales: float | tuple[float]) -> None:
-        """Initialize the weights of the CNN."""
-        # initialize the weights
+    def init_weights(self) -> None:
+        """Initialize the weights of the CNN with Xavier initialization."""
         for idx, module in enumerate(self):
             if isinstance(module, nn.Conv2d):
                 nn.init.xavier_uniform_(module.weight)
