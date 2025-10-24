@@ -18,9 +18,9 @@ For GRUs, this is a single tensor while for LSTMs, this is a tuple of two tensor
 
 
 class Memory(nn.Module):
-    """Memory module for recurrent networks.
+    """Memory network for recurrent architectures.
 
-    This module is used to store the hidden state of the policy. It currently supports GRU and LSTM.
+    This network is used to store the hidden state of the policy. It currently supports GRU and LSTM.
     """
 
     def __init__(self, input_size: int, hidden_dim: int = 256, num_layers: int = 1, type: str = "lstm") -> None:
