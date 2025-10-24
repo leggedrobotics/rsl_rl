@@ -11,7 +11,7 @@ from tensordict import TensorDict
 from torch.distributions import Normal
 from typing import Any, NoReturn
 
-from rsl_rl.networks import MLP, EmpiricalNormalization
+from rsl_rl.networks import MLP, EmpiricalNormalization, HiddenState
 
 
 class StudentTeacher(nn.Module):
@@ -91,9 +91,7 @@ class StudentTeacher(nn.Module):
         Normal.set_default_validate_args(False)
 
     def reset(
-        self,
-        dones: torch.Tensor | None = None,
-        hidden_states: tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, ...] = (None, None),
+        self, dones: torch.Tensor | None = None, hidden_states: tuple[HiddenState, HiddenState] = (None, None)
     ) -> None:
         pass
 
@@ -150,7 +148,7 @@ class StudentTeacher(nn.Module):
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["teacher"]]
         return torch.cat(obs_list, dim=-1)
 
-    def get_hidden_states(self) -> tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, ...]:
+    def get_hidden_states(self) -> tuple[HiddenState, HiddenState]:
         return None, None
 
     def detach_hidden_states(self, dones: torch.Tensor | None = None) -> None:

@@ -12,7 +12,7 @@ from tensordict import TensorDict
 from torch.distributions import Normal
 from typing import Any, NoReturn
 
-from rsl_rl.networks import MLP, EmpiricalNormalization, Memory
+from rsl_rl.networks import MLP, EmpiricalNormalization, HiddenState, Memory
 
 
 class ActorCriticRecurrent(nn.Module):
@@ -162,15 +162,10 @@ class ActorCriticRecurrent(nn.Module):
         # Create distribution
         self.distribution = Normal(mean, std)
 
-    def act(
-        self,
-        obs: TensorDict,
-        masks: torch.Tensor | None = None,
-        hidden_states: torch.Tensor | tuple[torch.Tensor, ...] | None = None,
-    ) -> torch.Tensor:
+    def act(self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None) -> torch.Tensor:
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
-        out_mem = self.memory_a(obs, masks, hidden_states).squeeze(0)
+        out_mem = self.memory_a(obs, masks, hidden_state).squeeze(0)
         self._update_distribution(out_mem)
         return self.distribution.sample()
 
@@ -184,14 +179,11 @@ class ActorCriticRecurrent(nn.Module):
             return self.actor(out_mem)
 
     def evaluate(
-        self,
-        obs: TensorDict,
-        masks: torch.Tensor | None = None,
-        hidden_states: torch.Tensor | tuple[torch.Tensor, ...] | None = None,
+        self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
     ) -> torch.Tensor:
         obs = self.get_critic_obs(obs)
         obs = self.critic_obs_normalizer(obs)
-        out_mem = self.memory_c(obs, masks, hidden_states).squeeze(0)
+        out_mem = self.memory_c(obs, masks, hidden_state).squeeze(0)
         return self.critic(out_mem)
 
     def get_actor_obs(self, obs: TensorDict) -> torch.Tensor:
@@ -205,10 +197,8 @@ class ActorCriticRecurrent(nn.Module):
     def get_actions_log_prob(self, actions: torch.Tensor) -> torch.Tensor:
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def get_hidden_states(
-        self,
-    ) -> tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, torch.Tensor | tuple[torch.Tensor, ...] | None]:
-        return self.memory_a.hidden_states, self.memory_c.hidden_states
+    def get_hidden_states(self) -> tuple[HiddenState, HiddenState]:
+        return self.memory_a.hidden_state, self.memory_c.hidden_state
 
     def update_normalization(self, obs: TensorDict) -> None:
         if self.actor_obs_normalization:

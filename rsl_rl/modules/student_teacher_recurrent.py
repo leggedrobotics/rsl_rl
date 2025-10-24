@@ -12,7 +12,7 @@ from tensordict import TensorDict
 from torch.distributions import Normal
 from typing import Any, NoReturn
 
-from rsl_rl.networks import MLP, EmpiricalNormalization, Memory
+from rsl_rl.networks import MLP, EmpiricalNormalization, HiddenState, Memory
 
 
 class StudentTeacherRecurrent(nn.Module):
@@ -110,9 +110,7 @@ class StudentTeacherRecurrent(nn.Module):
         Normal.set_default_validate_args(False)
 
     def reset(
-        self,
-        dones: torch.Tensor | None = None,
-        hidden_states: tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, ...] = (None, None),
+        self, dones: torch.Tensor | None = None, hidden_states: tuple[HiddenState, HiddenState] = (None, None)
     ) -> None:
         self.memory_s.reset(dones, hidden_states[0])
         if self.teacher_recurrent:
@@ -176,18 +174,16 @@ class StudentTeacherRecurrent(nn.Module):
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["teacher"]]
         return torch.cat(obs_list, dim=-1)
 
-    def get_hidden_states(
-        self,
-    ) -> tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, torch.Tensor | tuple[torch.Tensor, ...] | None]:
+    def get_hidden_states(self) -> tuple[HiddenState, HiddenState]:
         if self.teacher_recurrent:
-            return self.memory_s.hidden_states, self.memory_t.hidden_states
+            return self.memory_s.hidden_state, self.memory_t.hidden_state
         else:
-            return self.memory_s.hidden_states, None
+            return self.memory_s.hidden_state, None
 
     def detach_hidden_states(self, dones: torch.Tensor | None = None) -> None:
-        self.memory_s.detach_hidden_states(dones)
+        self.memory_s.detach_hidden_state(dones)
         if self.teacher_recurrent:
-            self.memory_t.detach_hidden_states(dones)
+            self.memory_t.detach_hidden_state(dones)
 
     def train(self, mode: bool = True) -> None:
         super().train(mode)

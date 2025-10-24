@@ -9,6 +9,7 @@ import torch
 from collections.abc import Generator
 from tensordict import TensorDict
 
+from rsl_rl.networks import HiddenState
 from rsl_rl.utils import split_and_pad_trajectories
 
 
@@ -24,7 +25,7 @@ class RolloutStorage:
             self.actions_log_prob: torch.Tensor
             self.action_mean: torch.Tensor | None = None
             self.action_sigma: torch.Tensor | None = None
-            self.hidden_states: tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, ...] = (None, None)
+            self.hidden_states: tuple[HiddenState, HiddenState] = (None, None)
 
         def clear(self) -> None:
             self.__init__()
@@ -68,8 +69,8 @@ class RolloutStorage:
             self.advantages = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
 
         # For RNN networks
-        self.saved_hidden_states_a = None
-        self.saved_hidden_states_c = None
+        self.saved_hidden_state_a = None
+        self.saved_hidden_state_c = None
 
         # Counter for the number of transitions stored
         self.step = 0
@@ -102,24 +103,26 @@ class RolloutStorage:
         # Increment the counter
         self.step += 1
 
-    def _save_hidden_states(self, hidden_states: tuple[torch.Tensor | tuple[torch.Tensor, ...] | None, ...]) -> None:
+    def _save_hidden_states(self, hidden_states: tuple[HiddenState, HiddenState]) -> None:
         if hidden_states == (None, None):
             return
         # Make a tuple out of GRU hidden states to match the LSTM format
-        hid_a = hidden_states[0] if isinstance(hidden_states[0], tuple) else (hidden_states[0],)
-        hid_c = hidden_states[1] if isinstance(hidden_states[1], tuple) else (hidden_states[1],)
+        hidden_state_a = hidden_states[0] if isinstance(hidden_states[0], tuple) else (hidden_states[0],)
+        hidden_state_c = hidden_states[1] if isinstance(hidden_states[1], tuple) else (hidden_states[1],)
         # Initialize hidden states if needed
-        if self.saved_hidden_states_a is None:
-            self.saved_hidden_states_a = [
-                torch.zeros(self.observations.shape[0], *hid_a[i].shape, device=self.device) for i in range(len(hid_a))
+        if self.saved_hidden_state_a is None:
+            self.saved_hidden_state_a = [
+                torch.zeros(self.observations.shape[0], *hidden_state_a[i].shape, device=self.device)
+                for i in range(len(hidden_state_a))
             ]
-            self.saved_hidden_states_c = [
-                torch.zeros(self.observations.shape[0], *hid_c[i].shape, device=self.device) for i in range(len(hid_c))
+            self.saved_hidden_state_c = [
+                torch.zeros(self.observations.shape[0], *hidden_state_c[i].shape, device=self.device)
+                for i in range(len(hidden_state_c))
             ]
         # Copy the states
-        for i in range(len(hid_a)):
-            self.saved_hidden_states_a[i][self.step].copy_(hid_a[i])
-            self.saved_hidden_states_c[i][self.step].copy_(hid_c[i])
+        for i in range(len(hidden_state_a)):
+            self.saved_hidden_state_a[i][self.step].copy_(hidden_state_a[i])
+            self.saved_hidden_state_c[i][self.step].copy_(hidden_state_c[i])
 
     def clear(self) -> None:
         self.step = 0
@@ -192,8 +195,8 @@ class RolloutStorage:
                 old_mu_batch = old_mu[batch_idx]
                 old_sigma_batch = old_sigma[batch_idx]
 
-                hid_a_batch = None
-                hid_c_batch = None
+                hidden_state_a_batch = None
+                hidden_state_c_batch = None
                 masks_batch = None
 
                 # Yield the mini-batch
@@ -207,8 +210,8 @@ class RolloutStorage:
                     old_mu_batch,
                     old_sigma_batch,
                     (
-                        hid_a_batch,
-                        hid_c_batch,
+                        hidden_state_a_batch,
+                        hidden_state_c_batch,
                     ),
                     masks_batch,
                 )
@@ -248,21 +251,25 @@ class RolloutStorage:
                 last_was_done = last_was_done.permute(1, 0)
                 # Take only time steps after dones (flattens num envs and time dimensions),
                 # take a batch of trajectories and finally reshape back to [num_layers, batch, hidden_dim]
-                hid_a_batch = [
-                    saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
+                hidden_state_a_batch = [
+                    saved_hidden_state.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
                     .transpose(1, 0)
                     .contiguous()
-                    for saved_hidden_states in self.saved_hidden_states_a
+                    for saved_hidden_state in self.saved_hidden_state_a
                 ]
-                hid_c_batch = [
-                    saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
+                hidden_state_c_batch = [
+                    saved_hidden_state.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
                     .transpose(1, 0)
                     .contiguous()
-                    for saved_hidden_states in self.saved_hidden_states_c
+                    for saved_hidden_state in self.saved_hidden_state_c
                 ]
                 # Remove the tuple for GRU
-                hid_a_batch = hid_a_batch[0] if len(hid_a_batch) == 1 else hid_a_batch
-                hid_c_batch = hid_c_batch[0] if len(hid_c_batch) == 1 else hid_c_batch
+                hidden_state_a_batch = (
+                    hidden_state_a_batch[0] if len(hidden_state_a_batch) == 1 else hidden_state_a_batch
+                )
+                hidden_state_c_batch = (
+                    hidden_state_c_batch[0] if len(hidden_state_c_batch) == 1 else hidden_state_c_batch
+                )
 
                 # Yield the mini-batch
                 yield (
@@ -275,8 +282,8 @@ class RolloutStorage:
                     old_mu_batch,
                     old_sigma_batch,
                     (
-                        hid_a_batch,
-                        hid_c_batch,
+                        hidden_state_a_batch,
+                        hidden_state_c_batch,
                     ),
                     masks_batch,
                 )
