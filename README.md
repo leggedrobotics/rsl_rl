@@ -7,6 +7,7 @@ Environment repositories using the framework:
 * **`Isaac Lab`** (built on top of NVIDIA Isaac Sim): https://github.com/isaac-sim/IsaacLab
 * **`Legged Gym`** (built on top of NVIDIA Isaac Gym): https://leggedrobotics.github.io/legged_gym/
 * **`MuJoCo Playground`** (built on top of MuJoCo MJX and Warp): https://github.com/google-deepmind/mujoco_playground/
+* **`mjlab`** (built on top of MuJoCo Warp): https://github.com/mujocolab/mjlab
 
 The library currently supports **PPO** and **Student-Teacher Distillation** with additional features from our research. These include:
 
