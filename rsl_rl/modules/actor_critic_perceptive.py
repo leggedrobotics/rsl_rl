@@ -24,8 +24,8 @@ class ActorCriticPerceptive(ActorCritic):
         num_actions: int,
         actor_obs_normalization: bool = False,
         critic_obs_normalization: bool = False,
-        actor_hidden_dims: list[int] = [256, 256, 256],
-        critic_hidden_dims: list[int] = [256, 256, 256],
+        actor_hidden_dims: tuple[int] | list[int] = [256, 256, 256],
+        critic_hidden_dims: tuple[int] | list[int] = [256, 256, 256],
         actor_cnn_cfg: dict[str, dict] | dict | None = None,
         critic_cnn_cfg: dict[str, dict] | dict | None = None,
         activation: str = "elu",
@@ -43,30 +43,34 @@ class ActorCriticPerceptive(ActorCritic):
 
         # Get the observation dimensions
         self.obs_groups = obs_groups
-        num_actor_obs = 0
-        num_actor_in_channels = []
+        num_actor_obs_1d = 0
         self.actor_obs_groups_1d = []
+        actor_in_dims_2d = []
+        actor_in_channels_2d = []
         self.actor_obs_groups_2d = []
         for obs_group in obs_groups["policy"]:
             if len(obs[obs_group].shape) == 4:  # B, C, H, W
                 self.actor_obs_groups_2d.append(obs_group)
-                num_actor_in_channels.append(obs[obs_group].shape[1])
+                actor_in_dims_2d.append(obs[obs_group].shape[2:4])
+                actor_in_channels_2d.append(obs[obs_group].shape[1])
             elif len(obs[obs_group].shape) == 2:  # B, C
                 self.actor_obs_groups_1d.append(obs_group)
-                num_actor_obs += obs[obs_group].shape[-1]
+                num_actor_obs_1d += obs[obs_group].shape[-1]
             else:
                 raise ValueError(f"Invalid observation shape for {obs_group}: {obs[obs_group].shape}")
-        num_critic_obs = 0
-        num_critic_in_channels = []
+        num_critic_obs_1d = 0
         self.critic_obs_groups_1d = []
+        critic_in_dims_2d = []
+        critic_in_channels_2d = []
         self.critic_obs_groups_2d = []
         for obs_group in obs_groups["critic"]:
             if len(obs[obs_group].shape) == 4:  # B, C, H, W
                 self.critic_obs_groups_2d.append(obs_group)
-                num_critic_in_channels.append(obs[obs_group].shape[1])
+                critic_in_dims_2d.append(obs[obs_group].shape[2:4])
+                critic_in_channels_2d.append(obs[obs_group].shape[1])
             elif len(obs[obs_group].shape) == 2:  # B, C
                 self.critic_obs_groups_1d.append(obs_group)
-                num_critic_obs += obs[obs_group].shape[-1]
+                num_critic_obs_1d += obs[obs_group].shape[-1]
             else:
                 raise ValueError(f"Invalid observation shape for {obs_group}: {obs[obs_group].shape}")
 
@@ -90,14 +94,19 @@ class ActorCriticPerceptive(ActorCritic):
 
             # Create CNNs for each 2D actor observation
             self.actor_cnns = nn.ModuleDict()
-            encoding_dims = []
+            encoding_dim = 0
             for idx, obs_group in enumerate(self.actor_obs_groups_2d):
-                self.actor_cnns[obs_group] = CNN(num_actor_in_channels[idx], activation, **actor_cnn_cfg[obs_group])
+                self.actor_cnns[obs_group] = CNN(
+                    input_dim=actor_in_dims_2d[idx],
+                    input_channels=actor_in_channels_2d[idx],
+                    **actor_cnn_cfg[obs_group],
+                )
                 print(f"Actor CNN for {obs_group}: {self.actor_cnns[obs_group]}")
-
-                # Compute the encoding dimension (cpu necessary as model not moved to device yet)
-                encoding_dims.append(self.actor_cnns[obs_group](obs[obs_group].to("cpu")).shape[-1])
-            encoding_dim = sum(encoding_dims)
+                # Get the output dimension of the CNN
+                if self.actor_cnns[obs_group].output_channels is None:
+                    encoding_dim += int(self.actor_cnns[obs_group].output_dim)  # type: ignore
+                else:
+                    raise ValueError("The output of the actor CNN must be flattened before passing it to the MLP.")
         else:
             self.actor_cnns = None
             encoding_dim = 0
@@ -105,15 +114,15 @@ class ActorCriticPerceptive(ActorCritic):
         # Actor MLP
         self.state_dependent_std = state_dependent_std
         if self.state_dependent_std:
-            self.actor = MLP(num_actor_obs + encoding_dim, [2, num_actions], actor_hidden_dims, activation)
+            self.actor = MLP(num_actor_obs_1d + encoding_dim, [2, num_actions], actor_hidden_dims, activation)
         else:
-            self.actor = MLP(num_actor_obs + encoding_dim, num_actions, actor_hidden_dims, activation)
+            self.actor = MLP(num_actor_obs_1d + encoding_dim, num_actions, actor_hidden_dims, activation)
         print(f"Actor MLP: {self.actor}")
 
         # Actor observation normalization (only for 1D actor observations)
         self.actor_obs_normalization = actor_obs_normalization
         if actor_obs_normalization:
-            self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs)
+            self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs_1d)
         else:
             self.actor_obs_normalizer = torch.nn.Identity()
 
@@ -137,26 +146,31 @@ class ActorCriticPerceptive(ActorCritic):
 
             # Create CNNs for each 2D critic observation
             self.critic_cnns = nn.ModuleDict()
-            encoding_dims = []
+            encoding_dim = 0
             for idx, obs_group in enumerate(self.critic_obs_groups_2d):
-                self.critic_cnns[obs_group] = CNN(num_critic_in_channels[idx], activation, **critic_cnn_cfg[obs_group])
+                self.critic_cnns[obs_group] = CNN(
+                    input_dim=critic_in_dims_2d[idx],
+                    input_channels=critic_in_channels_2d[idx],
+                    **critic_cnn_cfg[obs_group],
+                )
                 print(f"Critic CNN for {obs_group}: {self.critic_cnns[obs_group]}")
-
-                # Compute the encoding dimension (cpu necessary as model not moved to device yet)
-                encoding_dims.append(self.critic_cnns[obs_group](obs[obs_group].to("cpu")).shape[-1])
-            encoding_dim = sum(encoding_dims)
+                # Get the output dimension of the CNN
+                if self.critic_cnns[obs_group].output_channels is None:
+                    encoding_dim += int(self.critic_cnns[obs_group].output_dim)  # type: ignore
+                else:
+                    raise ValueError("The output of the critic CNN must be flattened before passing it to the MLP.")
         else:
             self.critic_cnns = None
             encoding_dim = 0
 
         # Critic MLP
-        self.critic = MLP(num_critic_obs + encoding_dim, 1, critic_hidden_dims, activation)
+        self.critic = MLP(num_critic_obs_1d + encoding_dim, 1, critic_hidden_dims, activation)
         print(f"Critic MLP: {self.critic}")
 
         # Critic observation normalization (only for 1D critic observations)
         self.critic_obs_normalization = critic_obs_normalization
         if critic_obs_normalization:
-            self.critic_obs_normalizer = EmpiricalNormalization(num_critic_obs)
+            self.critic_obs_normalizer = EmpiricalNormalization(num_critic_obs_1d)
         else:
             self.critic_obs_normalizer = torch.nn.Identity()
 
