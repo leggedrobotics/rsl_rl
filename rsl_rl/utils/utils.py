@@ -12,7 +12,20 @@ import pathlib
 import torch
 import warnings
 from tensordict import TensorDict
-from typing import Callable
+from typing import Any, Callable
+
+
+def get_param(param: Any, idx: int) -> Any:
+    """Get a parameter for the given index.
+
+    Args:
+        param: Parameter or list/tuple of parameters.
+        idx: Index to get the parameter for.
+    """
+    if isinstance(param, (tuple, list)):
+        return param[idx]
+    else:
+        return param
 
 
 def resolve_nn_activation(act_name: str) -> torch.nn.Module:
