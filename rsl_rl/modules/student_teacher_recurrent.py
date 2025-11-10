@@ -81,7 +81,8 @@ class StudentTeacherRecurrent(nn.Module):
         # Teacher
         if self.teacher_recurrent:
             self.memory_t = Memory(num_teacher_obs, rnn_hidden_dim, rnn_num_layers, rnn_type)
-        self.teacher = MLP(rnn_hidden_dim, num_actions, teacher_hidden_dims, activation)
+        teacher_input_dim = rnn_hidden_dim if self.teacher_recurrent else num_teacher_obs
+        self.teacher = MLP(teacher_input_dim, num_actions, teacher_hidden_dims, activation)
         if self.teacher_recurrent:
             print(f"Teacher RNN: {self.memory_t}")
         print(f"Teacher MLP: {self.teacher}")
