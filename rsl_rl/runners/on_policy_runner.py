@@ -434,9 +434,8 @@ class OnPolicyRunner:
         return alg
 
     def _prepare_logging_writer(self) -> None:
-        """Prepare the logging writers."""
+        """Prepare the logging writer, which can be either Tensorboard, W&B or Neptune."""
         if self.log_dir is not None and self.writer is None and not self.disable_logs:
-            # Launch either Tensorboard or Neptune or Tensorboard summary writer, default: Tensorboard.
             self.logger_type = self.cfg.get("logger", "tensorboard")
             self.logger_type = self.logger_type.lower()
 
@@ -455,4 +454,4 @@ class OnPolicyRunner:
 
                 self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
             else:
-                raise ValueError("Logger type not found. Please choose 'neptune', 'wandb' or 'tensorboard'.")
+                raise ValueError("Logger type not found. Please choose 'wandb', 'neptune', or 'tensorboard'.")
