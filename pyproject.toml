@@ -31,6 +31,7 @@ dependencies = [
     "numpy>=1.16.4",
     "GitPython",
     "onnx",
+    "onnxscript>=0.5.4",
 ]
 
 [project.urls]
