@@ -16,6 +16,7 @@ from rsl_rl.algorithms import Distillation
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent
 from rsl_rl.runners import OnPolicyRunner
+from rsl_rl.storages import RolloutStorage
 from rsl_rl.utils import resolve_obs_groups, store_code_state
 
 
@@ -158,19 +159,15 @@ class DistillationRunner(OnPolicyRunner):
             obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 
+        # Initialize the storage
+        storage = RolloutStorage(
+            "distillation", self.env.num_envs, self.num_steps_per_env, obs, [self.env.num_actions], self.device
+        )
+
         # Initialize the algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
         alg: Distillation = alg_class(
-            student_teacher, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
-        )
-
-        # Initialize the storage
-        alg.init_storage(
-            "distillation",
-            self.env.num_envs,
-            self.num_steps_per_env,
-            obs,
-            [self.env.num_actions],
+            student_teacher, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
         )
 
         return alg

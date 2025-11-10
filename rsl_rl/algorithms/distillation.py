@@ -21,6 +21,7 @@ class Distillation:
     def __init__(
         self,
         policy: StudentTeacher | StudentTeacherRecurrent,
+        storage: RolloutStorage,
         num_learning_epochs: int = 1,
         gradient_length: int = 15,
         learning_rate: float = 1e-3,
@@ -46,12 +47,12 @@ class Distillation:
         # Distillation components
         self.policy = policy
         self.policy.to(self.device)
-        self.storage = None  # Initialized later
 
-        # Initialize the optimizer
+        # Create the optimizer
         self.optimizer = resolve_optimizer(optimizer)(self.policy.parameters(), lr=learning_rate)
 
-        # Initialize the transition
+        # Add storage
+        self.storage = storage
         self.transition = RolloutStorage.Transition()
         self.last_hidden_states = (None, None)
 
@@ -73,24 +74,6 @@ class Distillation:
 
         self.num_updates = 0
 
-    def init_storage(
-        self,
-        training_type: str,
-        num_envs: int,
-        num_transitions_per_env: int,
-        obs: TensorDict,
-        actions_shape: tuple[int],
-    ) -> None:
-        # Create rollout storage
-        self.storage = RolloutStorage(
-            training_type,
-            num_envs,
-            num_transitions_per_env,
-            obs,
-            actions_shape,
-            self.device,
-        )
-
     def act(self, obs: TensorDict) -> torch.Tensor:
         # Compute the actions
         self.transition.actions = self.policy.act(obs).detach()
@@ -104,12 +87,11 @@ class Distillation:
     ) -> None:
         # Update the normalizers
         self.policy.update_normalization(obs)
-
         # Record the rewards and dones
         self.transition.rewards = rewards
         self.transition.dones = dones
         # Record the transition
-        self.storage.add_transitions(self.transition)
+        self.storage.add_transition(self.transition)
         self.transition.clear()
         self.policy.reset(dones)
 
