@@ -64,7 +64,6 @@ class StudentTeacher(nn.Module):
 
         # Teacher
         self.teacher = MLP(num_teacher_obs, num_actions, teacher_hidden_dims, activation)
-        self.teacher.eval()
         print(f"Teacher MLP: {self.teacher}")
 
         # Teacher observation normalization
