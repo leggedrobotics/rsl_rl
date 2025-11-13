@@ -116,7 +116,7 @@ def split_and_pad_trajectories(
             # Remove the added trajectory
             padded_trajectories[k] = padded_trajectories[k][:, :-1]
         padded_trajectories = TensorDict(
-            padded_trajectories, batch_size=[tensor.batch_size[0], len(trajectory_lengths_list)]
+            padded_trajectories, batch_size=[tensor.batch_size[0], len(trajectory_lengths_list)], device=tensor.device
         )
     else:
         # Split the tensor into trajectories
