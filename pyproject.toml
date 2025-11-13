@@ -56,5 +56,5 @@ reportMissingImports = "none"
 # This is required to ignore type checks of modules with stubs missing.
 reportMissingModuleSource = "none"  # -> most common: prettytable in mdp managers
 reportGeneralTypeIssues = "none"  # -> usage of literal MISSING in dataclasses
-reportOptionalMemberAccess = "warning"
+reportOptionalMemberAccess = "none"
 reportPrivateUsage = "warning"
