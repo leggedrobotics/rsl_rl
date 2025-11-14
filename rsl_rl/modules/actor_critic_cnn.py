@@ -16,7 +16,7 @@ from rsl_rl.networks import CNN, MLP, EmpiricalNormalization
 from .actor_critic import ActorCritic
 
 
-class ActorCriticPerceptive(ActorCritic):
+class ActorCriticCNN(ActorCritic):
     def __init__(
         self,
         obs: TensorDict,
@@ -36,7 +36,7 @@ class ActorCriticPerceptive(ActorCritic):
     ) -> None:
         if kwargs:
             print(
-                "PerceptiveActorCritic.__init__ got unexpected arguments, which will be ignored: "
+                "ActorCriticCNN.__init__ got unexpected arguments, which will be ignored: "
                 + str([key for key in kwargs])
             )
         super(ActorCritic, self).__init__()
