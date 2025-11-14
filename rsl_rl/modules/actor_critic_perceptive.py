@@ -39,7 +39,7 @@ class ActorCriticPerceptive(ActorCritic):
                 "PerceptiveActorCritic.__init__ got unexpected arguments, which will be ignored: "
                 + str([key for key in kwargs])
             )
-        nn.Module.__init__(self)
+        super(ActorCritic, self).__init__()
 
         # Get the observation dimensions
         self.obs_groups = obs_groups
@@ -74,23 +74,22 @@ class ActorCriticPerceptive(ActorCritic):
             else:
                 raise ValueError(f"Invalid observation shape for {obs_group}: {obs[obs_group].shape}")
 
+        # Assert that there are 2D observations
+        assert self.actor_obs_groups_2d or self.critic_obs_groups_2d, (
+            "No 2D observations are provided. If this is intentional, use the ActorCritic module instead."
+        )
+
         # Actor CNN
         if self.actor_obs_groups_2d:
+            # Resolve the actor CNN configuration
             assert actor_cnn_cfg is not None, "An actor CNN configuration is required for 2D actor observations."
-
-            # Check if multiple 2D actor observations are provided
-            if len(self.actor_obs_groups_2d) > 1 and all(isinstance(item, dict) for item in actor_cnn_cfg.values()):
-                assert len(actor_cnn_cfg) == len(self.actor_obs_groups_2d), (
-                    "The number of CNN configurations must match the number of 2D actor observations."
-                )
-            elif len(self.actor_obs_groups_2d) > 1:
-                print(
-                    "Only one CNN configuration for multiple 2D actor observations given, using the same configuration "
-                    "for all groups."
-                )
-                actor_cnn_cfg = dict(zip(self.actor_obs_groups_2d, [actor_cnn_cfg] * len(self.actor_obs_groups_2d)))
-            else:
-                actor_cnn_cfg = dict(zip(self.actor_obs_groups_2d, [actor_cnn_cfg]))
+            # If a single configuration dictionary is provided, create a dictionary for each 2D observation group
+            if not all(isinstance(v, dict) for v in actor_cnn_cfg.values()):
+                actor_cnn_cfg = {group: actor_cnn_cfg for group in self.actor_obs_groups_2d}
+            # Check that the number of configs matches the number of observation groups
+            assert len(actor_cnn_cfg) == len(self.actor_obs_groups_2d), (
+                "The number of CNN configurations must match the number of 2D actor observations."
+            )
 
             # Create CNNs for each 2D actor observation
             self.actor_cnns = nn.ModuleDict()
@@ -128,21 +127,15 @@ class ActorCriticPerceptive(ActorCritic):
 
         # Critic CNN
         if self.critic_obs_groups_2d:
-            assert critic_cnn_cfg is not None, " A critic CNN configuration is required for 2D critic observations."
-
-            # check if multiple 2D critic observations are provided
-            if len(self.critic_obs_groups_2d) > 1 and all(isinstance(item, dict) for item in critic_cnn_cfg.values()):
-                assert len(critic_cnn_cfg) == len(self.critic_obs_groups_2d), (
-                    "The number of CNN configurations must match the number of 2D critic observations."
-                )
-            elif len(self.critic_obs_groups_2d) > 1:
-                print(
-                    "Only one CNN configuration for multiple 2D critic observations given, using the same configuration"
-                    " for all groups."
-                )
-                critic_cnn_cfg = dict(zip(self.critic_obs_groups_2d, [critic_cnn_cfg] * len(self.critic_obs_groups_2d)))
-            else:
-                critic_cnn_cfg = dict(zip(self.critic_obs_groups_2d, [critic_cnn_cfg]))
+            # Resolve the critic CNN configuration
+            assert critic_cnn_cfg is not None, "A critic CNN configuration is required for 2D critic observations."
+            # If a single configuration dictionary is provided, create a dictionary for each 2D observation group
+            if not all(isinstance(v, dict) for v in critic_cnn_cfg.values()):
+                critic_cnn_cfg = {group: critic_cnn_cfg for group in self.critic_obs_groups_2d}
+            # Check that the number of configs matches the number of observation groups
+            assert len(critic_cnn_cfg) == len(self.critic_obs_groups_2d), (
+                "The number of CNN configurations must match the number of 2D critic observations."
+            )
 
             # Create CNNs for each 2D critic observation
             self.critic_cnns = nn.ModuleDict()
@@ -229,7 +222,7 @@ class ActorCriticPerceptive(ActorCritic):
             mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
 
         if self.state_dependent_std:
-            return self.actor(obs)[..., 0, :]
+            return self.actor(mlp_obs)[..., 0, :]
         else:
             return self.actor(mlp_obs)
 
