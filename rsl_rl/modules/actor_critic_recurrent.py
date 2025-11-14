@@ -61,9 +61,8 @@ class ActorCriticRecurrent(nn.Module):
             assert len(obs[obs_group].shape) == 2, "The ActorCriticRecurrent module only supports 1D observations."
             num_critic_obs += obs[obs_group].shape[-1]
 
-        self.state_dependent_std = state_dependent_std
-
         # Actor
+        self.state_dependent_std = state_dependent_std
         self.memory_a = Memory(num_actor_obs, rnn_hidden_dim, rnn_num_layers, rnn_type)
         if self.state_dependent_std:
             self.actor = MLP(rnn_hidden_dim, [2, num_actions], actor_hidden_dims, activation)
@@ -138,7 +137,7 @@ class ActorCriticRecurrent(nn.Module):
     def forward(self) -> NoReturn:
         raise NotImplementedError
 
-    def _update_distribution(self, obs: TensorDict) -> None:
+    def _update_distribution(self, obs: torch.Tensor) -> None:
         if self.state_dependent_std:
             # Compute mean and standard deviation
             mean_and_std = self.actor(obs)
