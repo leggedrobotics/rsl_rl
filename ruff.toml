@@ -1,0 +1,71 @@
+line-length = 120
+target-version = "py39"
+preview = true
+
+[lint]
+select = [
+    # pycodestyle
+    "E", "W",
+    # pydocstyle
+    "D",
+    # pylint for later
+    # "PL",
+    # pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # pep8-naming
+    "N",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # flake8-tidy-imports
+    "TID",
+    # flake8-annotations
+    "ANN",
+    # isort
+    "I",
+    # perflint
+    "PERF",
+    # ruff
+    "RUF",
+]
+ignore = ["B006",
+          "B007", 
+          "B028", 
+          "ANN401", 
+          "D100", 
+          "D101", 
+          "D102", 
+          "D103", 
+          "D104", 
+          "D105", 
+          "D106", 
+          "D107",
+          "D203",
+          "D213",
+          "D413",
+]
+per-file-ignores = {"*/__init__.py" = ["F401"]}
+
+[lint.isort]
+# Order of imports
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "local-folder",
+]
+# Extra standard libraries considered as part of python (permissive licenses)
+extra-standard-library = [
+    "numpy",
+    "torch",
+    "tensordict",
+    "warp",
+    "typing_extensions",
+    "git",
+]
+# Imports from this repository
+known-first-party = ["rsl_rl"]
