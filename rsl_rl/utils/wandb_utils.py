@@ -12,7 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 try:
     import wandb
 except ModuleNotFoundError:
-    raise ModuleNotFoundError("Wandb is required to log to Weights and Biases.") from None
+    raise ModuleNotFoundError("wandb package is required to log to Weights and Biases.") from None
 
 
 class WandbSummaryWriter(SummaryWriter):
@@ -24,11 +24,11 @@ class WandbSummaryWriter(SummaryWriter):
         # Get the run name
         run_name = os.path.split(log_dir)[-1]
 
+        # Get wandb project and entity
         try:
             project = cfg["wandb_project"]
         except KeyError:
             raise KeyError("Please specify wandb_project in the runner config, e.g. legged_gym.") from None
-
         try:
             entity = os.environ["WANDB_USERNAME"]
         except KeyError:
@@ -36,8 +36,6 @@ class WandbSummaryWriter(SummaryWriter):
 
         # Initialize wandb
         wandb.init(project=project, entity=entity, name=run_name)
-
-        # Add log directory to wandb
         wandb.config.update({"log_dir": log_dir})
 
     def store_config(self, env_cfg: dict | object, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:

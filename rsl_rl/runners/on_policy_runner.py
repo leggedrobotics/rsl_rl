@@ -173,7 +173,7 @@ class OnPolicyRunner:
         if self.log_dir is not None and not self.disable_logs:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
 
-    def log(self, locs: dict, width: int = 80, pad: int = 35) -> None:
+    def log(self, locs: dict, width: int = 80, pad: int = 30) -> None:
         # Compute the collection size
         collection_size = self.num_steps_per_env * self.env.num_envs * self.gpu_world_size
         # Update total time-steps and time
@@ -242,7 +242,7 @@ class OnPolicyRunner:
             log_string = (
                 f"""{"#" * width}\n"""
                 f"""{str.center(width, " ")}\n\n"""
-                f"""{"Computation:":>{pad}} {fps:.0f} steps/s (collection: {locs["collection_time"]:.3f}s, learning {
+                f"""{"Computation:":>{pad}} {fps:.0f} steps/s (collect: {locs["collection_time"]:.3f}s, learn: {
                     locs["learn_time"]:.3f}s)\n"""
                 f"""{"Mean action noise std:":>{pad}} {mean_std.item():.2f}\n"""
             )
