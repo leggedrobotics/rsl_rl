@@ -53,10 +53,10 @@ class NeptuneSummaryWriter(SummaryWriter):
             "Train/mean_episode_length/time": "Train/mean_episode_length_time",
         }
 
-    def store_config(self, env_cfg: dict | object, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
-        self.run["runner_cfg"] = runner_cfg
-        self.run["policy_cfg"] = policy_cfg
-        self.run["alg_cfg"] = alg_cfg
+    def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
+        self.run["runner_cfg"] = train_cfg
+        self.run["policy_cfg"] = train_cfg["policy"]
+        self.run["alg_cfg"] = train_cfg["algorithm"]
         try:
             self.run["env_cfg"] = env_cfg.to_dict()
         except Exception:
@@ -82,11 +82,8 @@ class NeptuneSummaryWriter(SummaryWriter):
     def stop(self) -> None:
         self.run.stop()
 
-    def log_config(self, env_cfg: dict | object, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
-        self.store_config(env_cfg, runner_cfg, alg_cfg, policy_cfg)
-
-    def save_model(self, model_path: str, iter: int) -> None:
-        self.run["model/saved_model_" + str(iter)].upload(model_path)
+    def save_model(self, model_path: str, it: int) -> None:
+        self.run["model/saved_model_" + str(it)].upload(model_path)
 
     def save_file(self, path: str) -> None:
         name = path.rsplit("/", 1)[-1].split(".")[0]

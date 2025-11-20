@@ -5,10 +5,7 @@
 
 from __future__ import annotations
 
-import git
 import importlib
-import os
-import pathlib
 import torch
 import warnings
 from tensordict import TensorDict
@@ -140,34 +137,6 @@ def unpad_trajectories(trajectories: torch.Tensor | TensorDict, masks: torch.Ten
         .view(-1, trajectories.shape[0], trajectories.shape[-1])
         .transpose(1, 0)
     )
-
-
-def store_code_state(logdir: str, repositories: list[str]) -> list[str]:
-    git_log_dir = os.path.join(logdir, "git")
-    os.makedirs(git_log_dir, exist_ok=True)
-    file_paths = []
-    for repository_file_path in repositories:
-        try:
-            repo = git.Repo(repository_file_path, search_parent_directories=True)
-            t = repo.head.commit.tree
-        except Exception:
-            print(f"Could not find git repository in {repository_file_path}. Skipping.")
-            # Skip if not a git repository
-            continue
-        # Get the name of the repository
-        repo_name = pathlib.Path(repo.working_dir).name
-        diff_file_name = os.path.join(git_log_dir, f"{repo_name}.diff")
-        # Check if the diff file already exists
-        if os.path.isfile(diff_file_name):
-            continue
-        # Write the diff file
-        print(f"Storing git diff for '{repo_name}' in: {diff_file_name}")
-        with open(diff_file_name, "x", encoding="utf-8") as f:
-            content = f"--- git status ---\n{repo.git.status()} \n\n\n--- git diff ---\n{repo.git.diff(t)}"
-            f.write(content)
-        # Add the file path to the list of files to be uploaded
-        file_paths.append(diff_file_name)
-    return file_paths
 
 
 def string_to_callable(name: str) -> Callable:

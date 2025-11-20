@@ -38,10 +38,10 @@ class WandbSummaryWriter(SummaryWriter):
         wandb.init(project=project, entity=entity, name=run_name)
         wandb.config.update({"log_dir": log_dir})
 
-    def store_config(self, env_cfg: dict | object, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
-        wandb.config.update({"runner_cfg": runner_cfg})
-        wandb.config.update({"policy_cfg": policy_cfg})
-        wandb.config.update({"alg_cfg": alg_cfg})
+    def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
+        wandb.config.update({"runner_cfg": train_cfg})
+        wandb.config.update({"policy_cfg": train_cfg["policy"]})
+        wandb.config.update({"alg_cfg": train_cfg["algorithm"]})
         try:
             wandb.config.update({"env_cfg": env_cfg.to_dict()})
         except Exception:
@@ -67,10 +67,7 @@ class WandbSummaryWriter(SummaryWriter):
     def stop(self) -> None:
         wandb.finish()
 
-    def log_config(self, env_cfg: dict | object, runner_cfg: dict, alg_cfg: dict, policy_cfg: dict) -> None:
-        self.store_config(env_cfg, runner_cfg, alg_cfg, policy_cfg)
-
-    def save_model(self, model_path: str, iter: int) -> None:
+    def save_model(self, model_path: str, it: int) -> None:
         wandb.save(model_path, base_path=os.path.dirname(model_path))
 
     def save_file(self, path: str) -> None:
