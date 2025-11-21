@@ -114,7 +114,7 @@ class Logger:
         learn_time: float,
         loss_dict: dict,
         width: int = 80,
-        pad: int = 35,
+        pad: int = 40,
     ) -> None:
         """Log the training metrics to the logging service and print them to the console."""
         if self.log_dir is not None and not self.disable_logs:
@@ -179,17 +179,15 @@ class Logger:
 
             # Print to console
             log_string = f"""{"#" * width}\n"""
-            header = f" \033[1m Learning iteration {it}/{total_it} \033[0m "
-            log_string += f"""{header.center(width, " ")}\n\n"""
+            log_string += f"""\033[1m{f" Learning iteration {it}/{total_it} ".center(width)}\033[0m \n\n"""
 
             # Print performance
             log_string += (
-                f"""{"Computation:":>{pad}} {fps:.0f} steps/s (collect: {collect_time:.3f}s, """
-                f"""learn: {learn_time:.3f}s)\n"""
+                f"""{"Total steps:":>{pad}} {self.tot_timesteps} \n"""
+                f"""{"Steps per second:":>{pad}} {fps:.0f} \n"""
+                f"""{"Collection time:":>{pad}} {collect_time:.3f}s \n"""
+                f"""{"Learning time:":>{pad}} {learn_time:.3f}s \n"""
             )
-
-            # Print noise std
-            log_string += f"""{"Mean action noise std:":>{pad}} {self.alg.policy.action_std.mean().item():.2f}\n"""
 
             # Print losses
             for key, value in loss_dict.items():
@@ -203,6 +201,9 @@ class Logger:
                 log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(self.rewbuffer):.2f}\n"""
                 log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(self.lenbuffer):.2f}\n"""
 
+            # Print noise std
+            log_string += f"""{"Mean action noise std:":>{pad}} {self.alg.policy.action_std.mean().item():.2f}\n"""
+
             # Print episode extras
             log_string += extras_string
 
@@ -212,7 +213,6 @@ class Logger:
             eta = self.tot_time / done_it * remaining_it
             log_string += (
                 f"""{"-" * width}\n"""
-                f"""{"Total timesteps:":>{pad}} {self.tot_timesteps}\n"""
                 f"""{"Iteration time:":>{pad}} {iteration_time:.2f}s\n"""
                 f"""{"Time elapsed:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
                 f"""{"ETA:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(eta))}\n"""
