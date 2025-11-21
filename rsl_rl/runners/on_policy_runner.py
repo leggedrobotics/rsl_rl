@@ -28,12 +28,8 @@ class OnPolicyRunner:
         self.device = device
         self.env = env
 
-        # Check if multi-GPU is enabled
+        # Setup multi-GPU training if enabled
         self._configure_multi_gpu()
-
-        # Store training configuration
-        self.num_steps_per_env = self.cfg["num_steps_per_env"]
-        self.save_interval = self.cfg["save_interval"]
 
         # Query observations from environment for algorithm construction
         obs = self.env.get_observations()
@@ -80,7 +76,7 @@ class OnPolicyRunner:
             start = time.time()
             # Rollout
             with torch.inference_mode():
-                for _ in range(self.num_steps_per_env):
+                for _ in range(self.cfg["num_steps_per_env"]):
                     # Sample actions
                     actions = self.alg.act(obs)
                     # Step the environment
@@ -112,7 +108,7 @@ class OnPolicyRunner:
             self.logger.log(it, start_it, total_it, collect_time, learn_time, loss_dict)
 
             # Save model
-            if it % self.save_interval == 0:
+            if it % self.cfg["save_interval"] == 0:
                 self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))
 
         # Save the final model after training
@@ -215,7 +211,7 @@ class OnPolicyRunner:
             raise ValueError(
                 f"Device '{self.device}' does not match expected device for local rank '{self.gpu_local_rank}'."
             )
-        # Validate multi-gpu configuration
+        # Validate multi-GPU configuration
         if self.gpu_local_rank >= self.gpu_world_size:
             raise ValueError(
                 f"Local rank '{self.gpu_local_rank}' is greater than or equal to world size '{self.gpu_world_size}'."
@@ -232,10 +228,10 @@ class OnPolicyRunner:
 
     def _construct_algorithm(self, obs: TensorDict) -> PPO:
         """Construct the actor-critic algorithm."""
-        # Resolve RND config
+        # Resolve RND config if used
         self.alg_cfg = resolve_rnd_config(self.alg_cfg, obs, self.cfg["obs_groups"], self.env)
 
-        # Resolve symmetry config
+        # Resolve symmetry config if used
         self.alg_cfg = resolve_symmetry_config(self.alg_cfg, self.env)
 
         # Resolve deprecated normalization config
@@ -264,7 +260,7 @@ class OnPolicyRunner:
         alg.init_storage(
             "rl",
             self.env.num_envs,
-            self.num_steps_per_env,
+            self.cfg["num_steps_per_env"],
             obs,
             [self.env.num_actions],
         )

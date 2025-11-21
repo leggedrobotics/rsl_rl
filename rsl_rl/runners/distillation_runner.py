@@ -44,9 +44,12 @@ class DistillationRunner(OnPolicyRunner):
         alg.init_storage(
             "distillation",
             self.env.num_envs,
-            self.num_steps_per_env,
+            self.cfg["num_steps_per_env"],
             obs,
             [self.env.num_actions],
         )
+
+        # Set RND configuration to None as it does not apply to distillation
+        self.cfg["algorithm"]["rnd_cfg"] = None
 
         return alg

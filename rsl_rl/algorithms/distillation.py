@@ -113,6 +113,10 @@ class Distillation:
         self.transition.clear()
         self.policy.reset(dones)
 
+    def compute_returns(self, obs: TensorDict) -> None:
+        # Not needed for distillation
+        pass
+
     def update(self) -> dict[str, float]:
         self.num_updates += 1
         mean_behavior_loss = 0
