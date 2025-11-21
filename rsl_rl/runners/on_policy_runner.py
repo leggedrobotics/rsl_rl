@@ -51,6 +51,7 @@ class OnPolicyRunner:
             self.gpu_world_size,
             self.is_distributed,
             self.gpu_global_rank,
+            self.alg,
             self.device,
         )
 
@@ -89,7 +90,7 @@ class OnPolicyRunner:
                     # Process the step
                     self.alg.process_env_step(obs, rewards, dones, extras)
                     # Extract intrinsic rewards (only for logging)
-                    intrinsic_rewards = self.alg.intrinsic_rewards if self.alg.rnd else None
+                    intrinsic_rewards = self.alg.intrinsic_rewards if self.alg_cfg["rnd_cfg"] else None
                     # Book keeping
                     self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
 
@@ -108,16 +109,8 @@ class OnPolicyRunner:
             self.current_learning_iteration = it
 
             # Log information
-            self.logger.log(
-                it,
-                start_it,
-                total_it,
-                collect_time,
-                learn_time,
-                loss_dict,
-                self.alg.policy,
-                self.alg.rnd if hasattr(self.alg, "rnd") else None,
-            )
+            self.logger.log(it, start_it, total_it, collect_time, learn_time, loss_dict)
+
             # Save model
             if it % self.save_interval == 0:
                 self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))
@@ -135,7 +128,7 @@ class OnPolicyRunner:
             "infos": infos,
         }
         # Save RND model if used
-        if hasattr(self.alg, "rnd") and self.alg.rnd:
+        if self.alg_cfg["rnd_cfg"]:
             saved_dict["rnd_state_dict"] = self.alg.rnd.state_dict()
             if self.alg.rnd_optimizer:
                 saved_dict["rnd_optimizer_state_dict"] = self.alg.rnd_optimizer.state_dict()
@@ -149,14 +142,14 @@ class OnPolicyRunner:
         # Load model
         resumed_training = self.alg.policy.load_state_dict(loaded_dict["model_state_dict"])
         # Load RND model if used
-        if hasattr(self.alg, "rnd") and self.alg.rnd:
+        if self.alg_cfg["rnd_cfg"]:
             self.alg.rnd.load_state_dict(loaded_dict["rnd_state_dict"])
         # Load optimizer if used
         if load_optimizer and resumed_training:
             # Algorithm optimizer
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
             # RND optimizer if used
-            if hasattr(self.alg, "rnd") and self.alg.rnd:
+            if self.alg_cfg["rnd_cfg"]:
                 self.alg.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
         # Load current learning iteration
         if resumed_training:
@@ -173,14 +166,14 @@ class OnPolicyRunner:
         # PPO
         self.alg.policy.train()
         # RND
-        if hasattr(self.alg, "rnd") and self.alg.rnd:
+        if self.alg_cfg["rnd_cfg"]:
             self.alg.rnd.train()
 
     def eval_mode(self) -> None:
         # PPO
         self.alg.policy.eval()
         # RND
-        if hasattr(self.alg, "rnd") and self.alg.rnd:
+        if self.alg_cfg["rnd_cfg"]:
             self.alg.rnd.eval()
 
     def add_git_repo_to_log(self, repo_file_path: str) -> None:

@@ -14,8 +14,7 @@ import torch
 from collections import deque
 
 import rsl_rl
-from rsl_rl.modules import ActorCritic, ActorCriticRecurrent
-from rsl_rl.modules.rnd import RandomNetworkDistillation
+from rsl_rl.algorithms import PPO, Distillation
 
 
 class Logger:
@@ -30,12 +29,14 @@ class Logger:
         gpu_world_size: int,
         is_distributed: bool,
         gpu_global_rank: int,
+        alg: PPO | Distillation,
         device: str,
     ) -> None:
         self.log_dir = log_dir
         self.cfg = cfg
         self.num_envs = num_envs
         self.gpu_world_size = gpu_world_size
+        self.alg = alg
         self.device = device
         self.git_status_repos = [rsl_rl.__file__]
         self.tot_timesteps = 0
@@ -49,7 +50,7 @@ class Logger:
         self.cur_episode_length = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # Create RND buffers
-        if self.cfg["alg_cfg"]["rnd_cfg"] is not None:
+        if self.cfg["algorithm"]["rnd_cfg"]:
             self.erewbuffer = deque(maxlen=100)
             self.irewbuffer = deque(maxlen=100)
             self.cur_ereward_sum = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -112,10 +113,8 @@ class Logger:
         collect_time: float,
         learn_time: float,
         loss_dict: dict,
-        policy: ActorCritic | ActorCriticRecurrent,
-        rnd: RandomNetworkDistillation | None = None,
         width: int = 80,
-        pad: int = 30,
+        pad: int = 35,
     ) -> None:
         """Log the training metrics to the logging service and print them to the console."""
         if self.log_dir is not None and not self.disable_logs:
@@ -151,10 +150,10 @@ class Logger:
             # Log losses
             for key, value in loss_dict.items():
                 self.writer.add_scalar(f"Loss/{key}", value, it)
-            self.writer.add_scalar("Loss/learning_rate", policy.learning_rate, it)
+            self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, it)
 
             # Log noise std
-            self.writer.add_scalar("Policy/mean_noise_std", policy.action_std.mean().item(), it)
+            self.writer.add_scalar("Policy/mean_noise_std", self.alg.policy.action_std.mean().item(), it)
 
             # Log performance
             fps = int(collection_size / (collect_time + learn_time))
@@ -164,10 +163,10 @@ class Logger:
 
             # Log rewards and episode length
             if len(self.rewbuffer) > 0:
-                if rnd:
+                if self.cfg["algorithm"]["rnd_cfg"]:
                     self.writer.add_scalar("Rnd/mean_extrinsic_reward", statistics.mean(self.erewbuffer), it)
                     self.writer.add_scalar("Rnd/mean_intrinsic_reward", statistics.mean(self.irewbuffer), it)
-                    self.writer.add_scalar("Rnd/weight", rnd.weight, it)
+                    self.writer.add_scalar("Rnd/weight", self.alg.rnd.weight, it)
                 self.writer.add_scalar("Train/mean_reward", statistics.mean(self.rewbuffer), it)
                 self.writer.add_scalar("Train/mean_episode_length", statistics.mean(self.lenbuffer), it)
                 if self.logger_type != "wandb":
@@ -190,7 +189,7 @@ class Logger:
             )
 
             # Print noise std
-            log_string += f"""{"Mean action noise std:":>{pad}} {policy.action_std.mean().item():.2f}\n"""
+            log_string += f"""{"Mean action noise std:":>{pad}} {self.alg.policy.action_std.mean().item():.2f}\n"""
 
             # Print losses
             for key, value in loss_dict.items():
@@ -198,7 +197,7 @@ class Logger:
 
             # Print rewards and episode length
             if len(self.rewbuffer) > 0:
-                if rnd:
+                if self.cfg["algorithm"]["rnd_cfg"]:
                     log_string += f"""{"Mean extrinsic reward:":>{pad}} {statistics.mean(self.erewbuffer):.2f}\n"""
                     log_string += f"""{"Mean intrinsic reward:":>{pad}} {statistics.mean(self.irewbuffer):.2f}\n"""
                 log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(self.rewbuffer):.2f}\n"""
@@ -230,7 +229,7 @@ class Logger:
 
     def _prepare_logging_writer(self) -> None:
         """Prepare the logging writer, which can be either Tensorboard, W&B or Neptune."""
-        if self.log_dir is not None and self.writer is None and not self.disable_logs:
+        if self.log_dir is not None and not self.disable_logs:
             self.logger_type = self.cfg.get("logger", "tensorboard")
             self.logger_type = self.logger_type.lower()
 
