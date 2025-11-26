@@ -58,6 +58,7 @@ class DistillationRunner(OnPolicyRunner):
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         # Initialize writer
         self._prepare_logging_writer()
+
         # Check if teacher is loaded
         if not self.alg.policy.loaded_teacher:
             raise ValueError("Teacher model parameters not loaded. Please load a teacher model to distill.")
