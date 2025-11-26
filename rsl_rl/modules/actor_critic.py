@@ -49,9 +49,8 @@ class ActorCritic(nn.Module):
             assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
             num_critic_obs += obs[obs_group].shape[-1]
 
-        self.state_dependent_std = state_dependent_std
-
         # Actor
+        self.state_dependent_std = state_dependent_std
         if self.state_dependent_std:
             self.actor = MLP(num_actor_obs, [2, num_actions], actor_hidden_dims, activation)
         else:
@@ -121,7 +120,7 @@ class ActorCritic(nn.Module):
     def entropy(self) -> torch.Tensor:
         return self.distribution.entropy().sum(dim=-1)
 
-    def _update_distribution(self, obs: TensorDict) -> None:
+    def _update_distribution(self, obs: torch.Tensor) -> None:
         if self.state_dependent_std:
             # Compute mean and standard deviation
             mean_and_std = self.actor(obs)

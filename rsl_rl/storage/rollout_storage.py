@@ -14,7 +14,15 @@ from rsl_rl.utils import split_and_pad_trajectories
 
 
 class RolloutStorage:
+    """Storage for the data collected during a rollout.
+
+    The rollout storage is populated by adding transitions during the rollout phase. It then returns a generator for
+    learning, depending on the algorithm and the policy architecture.
+    """
+
     class Transition:
+        """Storage for a single state transition."""
+
         def __init__(self) -> None:
             self.observations: TensorDict | None = None
             self.actions: torch.Tensor | None = None
@@ -75,7 +83,7 @@ class RolloutStorage:
         # Counter for the number of transitions stored
         self.step = 0
 
-    def add_transitions(self, transition: Transition) -> None:
+    def add_transition(self, transition: Transition) -> None:
         # Check if the transition is valid
         if self.step >= self.num_transitions_per_env:
             raise OverflowError("Rollout buffer overflow! You should call clear() before adding new transitions.")
@@ -103,52 +111,8 @@ class RolloutStorage:
         # Increment the counter
         self.step += 1
 
-    def _save_hidden_states(self, hidden_states: tuple[HiddenState, HiddenState]) -> None:
-        if hidden_states == (None, None):
-            return
-        # Make a tuple out of GRU hidden states to match the LSTM format
-        hidden_state_a = hidden_states[0] if isinstance(hidden_states[0], tuple) else (hidden_states[0],)
-        hidden_state_c = hidden_states[1] if isinstance(hidden_states[1], tuple) else (hidden_states[1],)
-        # Initialize hidden states if needed
-        if self.saved_hidden_state_a is None:
-            self.saved_hidden_state_a = [
-                torch.zeros(self.observations.shape[0], *hidden_state_a[i].shape, device=self.device)
-                for i in range(len(hidden_state_a))
-            ]
-            self.saved_hidden_state_c = [
-                torch.zeros(self.observations.shape[0], *hidden_state_c[i].shape, device=self.device)
-                for i in range(len(hidden_state_c))
-            ]
-        # Copy the states
-        for i in range(len(hidden_state_a)):
-            self.saved_hidden_state_a[i][self.step].copy_(hidden_state_a[i])
-            self.saved_hidden_state_c[i][self.step].copy_(hidden_state_c[i])
-
     def clear(self) -> None:
         self.step = 0
-
-    def compute_returns(
-        self, last_values: torch.Tensor, gamma: float, lam: float, normalize_advantage: bool = True
-    ) -> None:
-        advantage = 0
-        for step in reversed(range(self.num_transitions_per_env)):
-            # If we are at the last step, bootstrap the return value
-            next_values = last_values if step == self.num_transitions_per_env - 1 else self.values[step + 1]
-            # 1 if we are not in a terminal state, 0 otherwise
-            next_is_not_terminal = 1.0 - self.dones[step].float()
-            # TD error: r_t + gamma * V(s_{t+1}) - V(s_t)
-            delta = self.rewards[step] + next_is_not_terminal * gamma * next_values - self.values[step]
-            # Advantage: A(s_t, a_t) = delta_t + gamma * lambda * A(s_{t+1}, a_{t+1})
-            advantage = delta + next_is_not_terminal * gamma * lam * advantage
-            # Return: R_t = A(s_t, a_t) + V(s_t)
-            self.returns[step] = advantage + self.values[step]
-
-        # Compute the advantages
-        self.advantages = self.returns - self.values
-        # Normalize the advantages if flag is set
-        # Note: This is to prevent double normalization (i.e. if per minibatch normalization is used)
-        if normalize_advantage:
-            self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
 
     # For distillation
     def generator(self) -> Generator:
@@ -289,3 +253,24 @@ class RolloutStorage:
                 )
 
                 first_traj = last_traj
+
+    def _save_hidden_states(self, hidden_states: tuple[HiddenState, HiddenState]) -> None:
+        if hidden_states == (None, None):
+            return
+        # Make a tuple out of GRU hidden states to match the LSTM format
+        hidden_state_a = hidden_states[0] if isinstance(hidden_states[0], tuple) else (hidden_states[0],)
+        hidden_state_c = hidden_states[1] if isinstance(hidden_states[1], tuple) else (hidden_states[1],)
+        # Initialize hidden states if needed
+        if self.saved_hidden_state_a is None:
+            self.saved_hidden_state_a = [
+                torch.zeros(self.observations.shape[0], *hidden_state_a[i].shape, device=self.device)
+                for i in range(len(hidden_state_a))
+            ]
+            self.saved_hidden_state_c = [
+                torch.zeros(self.observations.shape[0], *hidden_state_c[i].shape, device=self.device)
+                for i in range(len(hidden_state_c))
+            ]
+        # Copy the states
+        for i in range(len(hidden_state_a)):
+            self.saved_hidden_state_a[i][self.step].copy_(hidden_state_a[i])
+            self.saved_hidden_state_c[i][self.step].copy_(hidden_state_c[i])

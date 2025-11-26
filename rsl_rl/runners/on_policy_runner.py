@@ -13,7 +13,14 @@ from tensordict import TensorDict
 
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
-from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, resolve_rnd_config, resolve_symmetry_config
+from rsl_rl.modules import (
+    ActorCritic,
+    ActorCriticCNN,
+    ActorCriticRecurrent,
+    resolve_rnd_config,
+    resolve_symmetry_config,
+)
+from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_obs_groups
 from rsl_rl.utils.logger import Logger
 
@@ -248,21 +255,19 @@ class OnPolicyRunner:
 
         # Initialize the policy
         actor_critic_class = eval(self.policy_cfg.pop("class_name"))
-        actor_critic: ActorCritic | ActorCriticRecurrent = actor_critic_class(
+        actor_critic: ActorCritic | ActorCriticRecurrent | ActorCriticCNN = actor_critic_class(
             obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 
+        # Initialize the storage
+        storage = RolloutStorage(
+            "rl", self.env.num_envs, self.num_steps_per_env, obs, [self.env.num_actions], self.device
+        )
+
         # Initialize the algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
-        alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
-
-        # Initialize the storage
-        alg.init_storage(
-            "rl",
-            self.env.num_envs,
-            self.cfg["num_steps_per_env"],
-            obs,
-            [self.env.num_actions],
+        alg: PPO = alg_class(
+            actor_critic, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
         )
 
         return alg

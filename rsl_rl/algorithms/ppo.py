@@ -11,7 +11,7 @@ import torch.optim as optim
 from itertools import chain
 from tensordict import TensorDict
 
-from rsl_rl.modules import ActorCritic, ActorCriticRecurrent
+from rsl_rl.modules import ActorCritic, ActorCriticCNN, ActorCriticRecurrent
 from rsl_rl.modules.rnd import RandomNetworkDistillation
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import string_to_callable
@@ -20,12 +20,13 @@ from rsl_rl.utils import string_to_callable
 class PPO:
     """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
 
-    policy: ActorCritic | ActorCriticRecurrent
+    policy: ActorCritic | ActorCriticRecurrent | ActorCriticCNN
     """The actor critic module."""
 
     def __init__(
         self,
-        policy: ActorCritic | ActorCriticRecurrent,
+        policy: ActorCritic | ActorCriticRecurrent | ActorCriticCNN,
+        storage: RolloutStorage,
         num_learning_epochs: int = 5,
         num_mini_batches: int = 4,
         clip_param: float = 0.2,
@@ -38,8 +39,8 @@ class PPO:
         use_clipped_value_loss: bool = True,
         schedule: str = "adaptive",
         desired_kl: float = 0.01,
-        device: str = "cpu",
         normalize_advantage_per_mini_batch: bool = False,
+        device: str = "cpu",
         # RND parameters
         rnd_cfg: dict | None = None,
         # Symmetry parameters
@@ -100,11 +101,11 @@ class PPO:
         self.policy = policy
         self.policy.to(self.device)
 
-        # Create optimizer
+        # Create the optimizer
         self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
 
-        # Create rollout storage
-        self.storage: RolloutStorage | None = None
+        # Add storage
+        self.storage = storage
         self.transition = RolloutStorage.Transition()
 
         # PPO parameters
@@ -121,24 +122,6 @@ class PPO:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
-
-    def init_storage(
-        self,
-        training_type: str,
-        num_envs: int,
-        num_transitions_per_env: int,
-        obs: TensorDict,
-        actions_shape: tuple[int] | list[int],
-    ) -> None:
-        # Create rollout storage
-        self.storage = RolloutStorage(
-            training_type,
-            num_envs,
-            num_transitions_per_env,
-            obs,
-            actions_shape,
-            self.device,
-        )
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:
@@ -180,16 +163,32 @@ class PPO:
             )
 
         # Record the transition
-        self.storage.add_transitions(self.transition)
+        self.storage.add_transition(self.transition)
         self.transition.clear()
         self.policy.reset(dones)
 
     def compute_returns(self, obs: TensorDict) -> None:
+        st = self.storage
         # Compute value for the last step
         last_values = self.policy.evaluate(obs).detach()
-        self.storage.compute_returns(
-            last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
-        )
+        # Compute returns and advantages
+        advantage = 0
+        for step in reversed(range(st.num_transitions_per_env)):
+            # If we are at the last step, bootstrap the return value
+            next_values = last_values if step == st.num_transitions_per_env - 1 else st.values[step + 1]
+            # 1 if we are not in a terminal state, 0 otherwise
+            next_is_not_terminal = 1.0 - st.dones[step].float()
+            # TD error: r_t + gamma * V(s_{t+1}) - V(s_t)
+            delta = st.rewards[step] + next_is_not_terminal * self.gamma * next_values - st.values[step]
+            # Advantage: A(s_t, a_t) = delta_t + gamma * lambda * A(s_{t+1}, a_{t+1})
+            advantage = delta + next_is_not_terminal * self.gamma * self.lam * advantage
+            # Return: R_t = A(s_t, a_t) + V(s_t)
+            st.returns[step] = advantage + st.values[step]
+        # Compute the advantages
+        st.advantages = st.returns - st.values
+        # Normalize the advantages if per minibatch normalization is not used
+        if not self.normalize_advantage_per_mini_batch:
+            st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
 
     def update(self) -> dict[str, float]:
         mean_value_loss = 0

@@ -9,7 +9,20 @@ import importlib
 import torch
 import warnings
 from tensordict import TensorDict
-from typing import Callable
+from typing import Any, Callable
+
+
+def get_param(param: Any, idx: int) -> Any:
+    """Get a parameter for the given index.
+
+    Args:
+        param: Parameter or list/tuple of parameters.
+        idx: Index to get the parameter for.
+    """
+    if isinstance(param, (tuple, list)):
+        return param[idx]
+    else:
+        return param
 
 
 def resolve_nn_activation(act_name: str) -> torch.nn.Module:
@@ -113,7 +126,7 @@ def split_and_pad_trajectories(
             # Remove the added trajectory
             padded_trajectories[k] = padded_trajectories[k][:, :-1]
         padded_trajectories = TensorDict(
-            padded_trajectories, batch_size=[tensor.batch_size[0], len(trajectory_lengths_list)]
+            padded_trajectories, batch_size=[tensor.batch_size[0], len(trajectory_lengths_list)], device=tensor.device
         )
     else:
         # Split the tensor into trajectories
