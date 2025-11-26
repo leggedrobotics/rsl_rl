@@ -183,7 +183,11 @@ class OnPolicyRunner:
         self.logger.git_status_repos.append(repo_file_path)
 
     def _get_default_obs_sets(self) -> list[str]:
-        """Get the default observation sets."""
+        """Get the the default observation sets required for the algorithm.
+
+        .. note::
+            See :func:`resolve_obs_groups` for more details on the handling of observation sets.
+        """
         default_sets = ["critic"]
         if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
             default_sets.append("rnd_state")

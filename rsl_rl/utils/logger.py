@@ -113,6 +113,7 @@ class Logger:
         collect_time: float,
         learn_time: float,
         loss_dict: dict,
+        print_minimal: bool = False,
         width: int = 80,
         pad: int = 40,
     ) -> None:
@@ -205,7 +206,8 @@ class Logger:
             log_string += f"""{"Mean action noise std:":>{pad}} {self.alg.policy.action_std.mean().item():.2f}\n"""
 
             # Print episode extras
-            log_string += extras_string
+            if not print_minimal:
+                log_string += extras_string
 
             # Print footer
             done_it = it + 1 - start_it

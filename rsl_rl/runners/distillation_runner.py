@@ -24,7 +24,11 @@ class DistillationRunner(OnPolicyRunner):
         super().learn(num_learning_iterations, init_at_random_ep_len)
 
     def _get_default_obs_sets(self) -> list[str]:
-        """Get the default observation sets."""
+        """Get the the default observation sets required for the algorithm.
+
+        .. note::
+            See :func:`resolve_obs_groups` for more details on the handling of observation sets.
+        """
         return ["teacher"]
 
     def _construct_algorithm(self, obs: TensorDict) -> Distillation:

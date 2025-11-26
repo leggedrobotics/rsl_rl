@@ -185,7 +185,7 @@ def string_to_callable(name: str) -> Callable:
 def resolve_obs_groups(
     obs: TensorDict, obs_groups: dict[str, list[str]], default_sets: list[str]
 ) -> dict[str, list[str]]:
-    """Validate the observation configuration and defaults missing observation sets.
+    """Validate the observation configuration and resolve missing observation sets.
 
     The input is an observation dictionary `obs` containing observation groups and a configuration dictionary
     `obs_groups` where the keys are the observation sets and the values are lists of observation groups.
