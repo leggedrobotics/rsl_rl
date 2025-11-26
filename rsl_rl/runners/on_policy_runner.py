@@ -116,7 +116,7 @@ class OnPolicyRunner:
 
             # Save model
             if it % self.cfg["save_interval"] == 0:
-                self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))
+                self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore
 
         # Save the final model after training
         if self.logger.log_dir is not None and not self.logger.disable_logs:
@@ -261,7 +261,7 @@ class OnPolicyRunner:
 
         # Initialize the storage
         storage = RolloutStorage(
-            "rl", self.env.num_envs, self.num_steps_per_env, obs, [self.env.num_actions], self.device
+            "rl", self.env.num_envs, self.cfg["num_steps_per_env"], obs, [self.env.num_actions], self.device
         )
 
         # Initialize the algorithm

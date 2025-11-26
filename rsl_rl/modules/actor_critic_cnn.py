@@ -103,7 +103,7 @@ class ActorCriticCNN(ActorCritic):
                 print(f"Actor CNN for {obs_group}: {self.actor_cnns[obs_group]}")
                 # Get the output dimension of the CNN
                 if self.actor_cnns[obs_group].output_channels is None:
-                    encoding_dim += int(self.actor_cnns[obs_group].output_dim)  # type: ignore
+                    encoding_dim += int(self.actor_cnns[obs_group].output_dim)
                 else:
                     raise ValueError("The output of the actor CNN must be flattened before passing it to the MLP.")
         else:
@@ -149,7 +149,7 @@ class ActorCriticCNN(ActorCritic):
                 print(f"Critic CNN for {obs_group}: {self.critic_cnns[obs_group]}")
                 # Get the output dimension of the CNN
                 if self.critic_cnns[obs_group].output_channels is None:
-                    encoding_dim += int(self.critic_cnns[obs_group].output_dim)  # type: ignore
+                    encoding_dim += int(self.critic_cnns[obs_group].output_dim)
                 else:
                     raise ValueError("The output of the critic CNN must be flattened before passing it to the MLP.")
         else:
@@ -208,7 +208,7 @@ class ActorCriticCNN(ActorCritic):
         mlp_obs, cnn_obs = self.get_actor_obs(obs)
         mlp_obs = self.actor_obs_normalizer(mlp_obs)
         self._update_distribution(mlp_obs, cnn_obs)
-        return self.distribution.sample()
+        return self.distribution.sample()  # type: ignore
 
     def act_inference(self, obs: TensorDict) -> torch.Tensor:
         mlp_obs, cnn_obs = self.get_actor_obs(obs)

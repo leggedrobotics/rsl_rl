@@ -17,9 +17,6 @@ class DistillationRunner(OnPolicyRunner):
     """Distillation runner for training and evaluation of teacher-student methods."""
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
-        # Initialize writer
-        self._prepare_logging_writer()
-
         # Check if teacher is loaded
         if not self.alg.policy.loaded_teacher:
             raise ValueError("Teacher model parameters not loaded. Please load a teacher model to distill.")
@@ -40,7 +37,7 @@ class DistillationRunner(OnPolicyRunner):
 
         # Initialize the storage
         storage = RolloutStorage(
-            "distillation", self.env.num_envs, self.num_steps_per_env, obs, [self.env.num_actions], self.device
+            "distillation", self.env.num_envs, self.cfg["num_steps_per_env"], obs, [self.env.num_actions], self.device
         )
 
         # Initialize the algorithm
