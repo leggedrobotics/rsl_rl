@@ -47,15 +47,14 @@ class OnPolicyRunner:
 
         # Create the logger
         self.logger = Logger(
-            log_dir,
-            self.cfg,
-            self.env.cfg,
-            self.env.num_envs,
-            self.gpu_world_size,
-            self.is_distributed,
-            self.gpu_global_rank,
-            self.alg,
-            self.device,
+            log_dir=log_dir,
+            cfg=self.cfg,
+            env_cfg=self.env.cfg,
+            num_envs=self.env.num_envs,
+            is_distributed=self.is_distributed,
+            gpu_world_size=self.gpu_world_size,
+            gpu_global_rank=self.gpu_global_rank,
+            device=self.device,
         )
 
         self.current_learning_iteration = 0
@@ -112,7 +111,17 @@ class OnPolicyRunner:
             self.current_learning_iteration = it
 
             # Log information
-            self.logger.log(it, start_it, total_it, collect_time, learn_time, loss_dict)
+            self.logger.log(
+                it=it,
+                start_it=start_it,
+                total_it=total_it,
+                collect_time=collect_time,
+                learn_time=learn_time,
+                loss_dict=loss_dict,
+                learning_rate=self.alg.learning_rate,
+                action_std=self.alg.policy.action_std,
+                rnd_weight=self.alg.rnd.weight if self.alg_cfg["rnd_cfg"] else None,
+            )
 
             # Save model
             if it % self.cfg["save_interval"] == 0:

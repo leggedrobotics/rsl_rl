@@ -14,7 +14,6 @@ import torch
 from collections import deque
 
 import rsl_rl
-from rsl_rl.algorithms import PPO, Distillation
 
 
 class Logger:
@@ -26,17 +25,15 @@ class Logger:
         cfg: dict,
         env_cfg: dict | object,
         num_envs: int,
-        gpu_world_size: int,
         is_distributed: bool,
+        gpu_world_size: int,
         gpu_global_rank: int,
-        alg: PPO | Distillation,
         device: str,
     ) -> None:
         self.log_dir = log_dir
         self.cfg = cfg
         self.num_envs = num_envs
         self.gpu_world_size = gpu_world_size
-        self.alg = alg
         self.device = device
         self.git_status_repos = [rsl_rl.__file__]
         self.tot_timesteps = 0
@@ -113,6 +110,9 @@ class Logger:
         collect_time: float,
         learn_time: float,
         loss_dict: dict,
+        learning_rate: float,
+        action_std: torch.Tensor,
+        rnd_weight: float | None,
         print_minimal: bool = False,
         width: int = 80,
         pad: int = 40,
@@ -151,10 +151,10 @@ class Logger:
             # Log losses
             for key, value in loss_dict.items():
                 self.writer.add_scalar(f"Loss/{key}", value, it)
-            self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, it)
+            self.writer.add_scalar("Loss/learning_rate", learning_rate, it)
 
             # Log noise std
-            self.writer.add_scalar("Policy/mean_noise_std", self.alg.policy.action_std.mean().item(), it)
+            self.writer.add_scalar("Policy/mean_noise_std", action_std.mean().item(), it)
 
             # Log performance
             fps = int(collection_size / (collect_time + learn_time))
@@ -167,7 +167,7 @@ class Logger:
                 if self.cfg["algorithm"]["rnd_cfg"]:
                     self.writer.add_scalar("Rnd/mean_extrinsic_reward", statistics.mean(self.erewbuffer), it)
                     self.writer.add_scalar("Rnd/mean_intrinsic_reward", statistics.mean(self.irewbuffer), it)
-                    self.writer.add_scalar("Rnd/weight", self.alg.rnd.weight, it)
+                    self.writer.add_scalar("Rnd/weight", rnd_weight, it)
                 self.writer.add_scalar("Train/mean_reward", statistics.mean(self.rewbuffer), it)
                 self.writer.add_scalar("Train/mean_episode_length", statistics.mean(self.lenbuffer), it)
                 if self.logger_type != "wandb":
@@ -203,7 +203,7 @@ class Logger:
                 log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(self.lenbuffer):.2f}\n"""
 
             # Print noise std
-            log_string += f"""{"Mean action noise std:":>{pad}} {self.alg.policy.action_std.mean().item():.2f}\n"""
+            log_string += f"""{"Mean action noise std:":>{pad}} {action_std.mean().item():.2f}\n"""
 
             # Print episode extras
             if not print_minimal:
