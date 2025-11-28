@@ -182,6 +182,10 @@ class Logger:
             log_string = f"""{"#" * width}\n"""
             log_string += f"""\033[1m{f" Learning iteration {it}/{total_it} ".center(width)}\033[0m \n\n"""
 
+            # Print run name if provided
+            run_name = self.cfg.get("run_name")
+            log_string += f"""{"Run name:":>{pad}} {run_name}\n""" if run_name else ""
+
             # Print performance
             log_string += (
                 f"""{"Total steps:":>{pad}} {self.tot_timesteps} \n"""
