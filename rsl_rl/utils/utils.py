@@ -5,10 +5,7 @@
 
 from __future__ import annotations
 
-import git
 import importlib
-import os
-import pathlib
 import torch
 import warnings
 from tensordict import TensorDict
@@ -155,34 +152,6 @@ def unpad_trajectories(trajectories: torch.Tensor | TensorDict, masks: torch.Ten
     )
 
 
-def store_code_state(logdir: str, repositories: list[str]) -> list[str]:
-    git_log_dir = os.path.join(logdir, "git")
-    os.makedirs(git_log_dir, exist_ok=True)
-    file_paths = []
-    for repository_file_path in repositories:
-        try:
-            repo = git.Repo(repository_file_path, search_parent_directories=True)
-            t = repo.head.commit.tree
-        except Exception:
-            print(f"Could not find git repository in {repository_file_path}. Skipping.")
-            # Skip if not a git repository
-            continue
-        # Get the name of the repository
-        repo_name = pathlib.Path(repo.working_dir).name
-        diff_file_name = os.path.join(git_log_dir, f"{repo_name}.diff")
-        # Check if the diff file already exists
-        if os.path.isfile(diff_file_name):
-            continue
-        # Write the diff file
-        print(f"Storing git diff for '{repo_name}' in: {diff_file_name}")
-        with open(diff_file_name, "x", encoding="utf-8") as f:
-            content = f"--- git status ---\n{repo.git.status()} \n\n\n--- git diff ---\n{repo.git.diff(t)}"
-            f.write(content)
-        # Add the file path to the list of files to be uploaded
-        file_paths.append(diff_file_name)
-    return file_paths
-
-
 def string_to_callable(name: str) -> Callable:
     """Resolve the module and function names to return the function.
 
@@ -216,7 +185,7 @@ def string_to_callable(name: str) -> Callable:
 def resolve_obs_groups(
     obs: TensorDict, obs_groups: dict[str, list[str]], default_sets: list[str]
 ) -> dict[str, list[str]]:
-    """Validate the observation configuration and defaults missing observation sets.
+    """Validate the observation configuration and resolve missing observation sets.
 
     The input is an observation dictionary `obs` containing observation groups and a configuration dictionary
     `obs_groups` where the keys are the observation sets and the values are lists of observation groups.

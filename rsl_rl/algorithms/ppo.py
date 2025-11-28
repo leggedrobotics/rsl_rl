@@ -61,7 +61,7 @@ class PPO:
             self.gpu_world_size = 1
 
         # RND components
-        if rnd_cfg is not None:
+        if rnd_cfg:
             # Extract parameters used in ppo
             rnd_lr = rnd_cfg.pop("learning_rate", 1e-3)
             # Create RND module
@@ -404,7 +404,7 @@ class PPO:
 
         # Construct the loss dictionary
         loss_dict = {
-            "value_function": mean_value_loss,
+            "value": mean_value_loss,
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
         }
