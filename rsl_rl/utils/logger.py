@@ -234,12 +234,14 @@ class Logger:
             self.writer.save_model(path, it)
 
     def _prepare_logging_writer(self) -> None:
-        """Prepare the logging writer, which can be either Tensorboard, W&B or Neptune."""
+        """Prepare the logging writer, which can be either Tensorboard, W&B, Neptune, or None."""
         if self.log_dir is not None and not self.disable_logs:
             self.logger_type = self.cfg.get("logger", "tensorboard")
-            self.logger_type = self.logger_type.lower()
+            self.logger_type = self.logger_type.lower() if self.logger_type else "none"
 
-            if self.logger_type == "neptune":
+            if self.logger_type == "none":
+                self.writer = None
+            elif self.logger_type == "neptune":
                 from rsl_rl.utils.neptune_utils import NeptuneSummaryWriter
 
                 self.writer = NeptuneSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
@@ -252,13 +254,14 @@ class Logger:
 
                 self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
             else:
-                raise ValueError("Logger type not found. Please choose 'wandb', 'neptune', or 'tensorboard'.")
+                raise ValueError("Logger type not found. Please choose 'wandb', 'neptune', 'tensorboard', or 'none'.")
         else:
+            self.logger_type = "none"
             self.writer = None
 
     def _store_code_state(self) -> None:
         """Store the current git diff of the code repositories involved in the experiment."""
-        if self.log_dir is not None and not self.disable_logs:
+        if self.log_dir is not None and not self.disable_logs and self.logger_type != "none":
             git_log_dir = os.path.join(self.log_dir, "git")
             os.makedirs(git_log_dir, exist_ok=True)
             file_paths = []
