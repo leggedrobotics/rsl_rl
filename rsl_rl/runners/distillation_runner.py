@@ -11,6 +11,7 @@ from rsl_rl.algorithms import Distillation
 from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent
 from rsl_rl.runners import OnPolicyRunner
 from rsl_rl.storage import RolloutStorage
+from rsl_rl.utils import resolve_callable
 
 
 class DistillationRunner(OnPolicyRunner):
@@ -34,7 +35,7 @@ class DistillationRunner(OnPolicyRunner):
     def _construct_algorithm(self, obs: TensorDict) -> Distillation:
         """Construct the distillation algorithm."""
         # Initialize the policy
-        student_teacher_class = eval(self.policy_cfg.pop("class_name"))
+        student_teacher_class = resolve_callable(self.policy_cfg.pop("class_name"))
         student_teacher: StudentTeacher | StudentTeacherRecurrent = student_teacher_class(
             obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
         ).to(self.device)
@@ -45,7 +46,7 @@ class DistillationRunner(OnPolicyRunner):
         )
 
         # Initialize the algorithm
-        alg_class = eval(self.alg_cfg.pop("class_name"))
+        alg_class = resolve_callable(self.alg_cfg.pop("class_name"))
         alg: Distillation = alg_class(
             student_teacher, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
         )
