@@ -9,6 +9,7 @@ import math
 import torch
 from torch import nn as nn
 
+from rsl_rl.networks.spatial_softmax import SpatialSoftmax
 from rsl_rl.utils import get_param, resolve_nn_activation
 
 
@@ -16,7 +17,7 @@ class CNN(nn.Sequential):
     """Convolutional Neural Network (CNN).
 
     The CNN network is a sequence of convolutional layers, optional normalization layers, optional activation functions,
-    and optional pooling. The final output can be flattened.
+    and optional pooling. The final output can be flattened or passed through spatial softmax.
     """
 
     def __init__(
@@ -32,6 +33,8 @@ class CNN(nn.Sequential):
         activation: str = "elu",
         max_pool: bool | tuple[bool] | list[bool] = False,
         global_pool: str = "none",
+        spatial_softmax: bool = False,
+        spatial_softmax_temperature: float = 1.0,
         flatten: bool = True,
     ) -> None:
         """Initialize the CNN.
@@ -50,9 +53,14 @@ class CNN(nn.Sequential):
             max_pool: List of booleans indicating whether to apply max pooling after each convolutional layer or a
                 single boolean for all layers.
             global_pool: Global pooling type to apply at the end. Either 'none', 'max', or 'avg'.
-            flatten: Whether to flatten the output tensor.
+            spatial_softmax: Whether to apply spatial softmax instead of global pooling.
+            spatial_softmax_temperature: Temperature parameter for spatial softmax.
+            flatten: Whether to flatten the output tensor (ignored if spatial_softmax=True).
         """
         super().__init__()
+
+        if spatial_softmax and global_pool != "none":
+            raise ValueError("Cannot use both spatial_softmax and global_pool. Set global_pool='none'.")
 
         # Resolve activation function
         activation_function = resolve_nn_activation(activation)
@@ -110,27 +118,41 @@ class CNN(nn.Sequential):
             last_channels = output_channels[idx]
             last_dim = _compute_output_dim(last_dim, k, s, d, p, is_max_pool=get_param(max_pool, idx))
 
-        # Apply global pooling if specified
-        if global_pool == "none":
-            pass
+        # Apply spatial softmax or global pooling
+        if spatial_softmax:
+            layers.append(SpatialSoftmax(last_dim[0], last_dim[1], spatial_softmax_temperature))
+            self._output_channels = None
+            self._output_dim = last_channels * 2
+        elif global_pool == "none":
+            if flatten:
+                layers.append(nn.Flatten(start_dim=1))
+                self._output_channels = None
+                self._output_dim = last_channels * last_dim[0] * last_dim[1]
+            else:
+                self._output_channels = last_channels
+                self._output_dim = last_dim
         elif global_pool == "max":
             layers.append(nn.AdaptiveMaxPool2d((1, 1)))
-            last_dim = (1, 1)
+            if flatten:
+                layers.append(nn.Flatten(start_dim=1))
+                self._output_channels = None
+                self._output_dim = last_channels
+            else:
+                self._output_channels = last_channels
+                self._output_dim = (1, 1)
         elif global_pool == "avg":
             layers.append(nn.AdaptiveAvgPool2d((1, 1)))
-            last_dim = (1, 1)
+            if flatten:
+                layers.append(nn.Flatten(start_dim=1))
+                self._output_channels = None
+                self._output_dim = last_channels
+            else:
+                self._output_channels = last_channels
+                self._output_dim = (1, 1)
         else:
             raise ValueError(
                 f"Unsupported global pooling type: {global_pool}. Supported types are 'none', 'max', and 'avg'."
             )
-
-        # Apply flattening if specified
-        if flatten:
-            layers.append(nn.Flatten(start_dim=1))
-
-        # Store final output dimension
-        self._output_channels = last_channels if not flatten else None
-        self._output_dim = last_dim if not flatten else last_channels * last_dim[0] * last_dim[1]
 
         # Register the layers
         for idx, layer in enumerate(layers):
