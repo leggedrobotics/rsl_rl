@@ -13,6 +13,7 @@ from torch.distributions import Normal
 from typing import Any, NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization, HiddenState, Memory
+from rsl_rl.utils import unpad_trajectories
 
 
 class ActorCriticRecurrent(nn.Module):
@@ -34,6 +35,7 @@ class ActorCriticRecurrent(nn.Module):
         rnn_type: str = "lstm",
         rnn_hidden_dim: int = 256,
         rnn_num_layers: int = 1,
+        critic_recurrent: bool = True,
         **kwargs: dict[str, Any],
     ) -> None:
         if "rnn_hidden_size" in kwargs:
@@ -49,6 +51,8 @@ class ActorCriticRecurrent(nn.Module):
                 "ActorCriticRecurrent.__init__ got unexpected arguments, which will be ignored: " + str(kwargs.keys()),
             )
         super().__init__()
+
+        self.critic_recurrent = critic_recurrent
 
         # Get the observation dimensions
         self.obs_groups = obs_groups
@@ -79,9 +83,11 @@ class ActorCriticRecurrent(nn.Module):
             self.actor_obs_normalizer = torch.nn.Identity()
 
         # Critic
-        self.memory_c = Memory(num_critic_obs, rnn_hidden_dim, rnn_num_layers, rnn_type)
-        self.critic = MLP(rnn_hidden_dim, 1, critic_hidden_dims, activation)
-        print(f"Critic RNN: {self.memory_c}")
+        if self.critic_recurrent:
+            self.memory_c = Memory(num_critic_obs, rnn_hidden_dim, rnn_num_layers, rnn_type)
+            print(f"Critic RNN: {self.memory_c}")
+        critic_input_dim = rnn_hidden_dim if self.critic_recurrent else num_critic_obs
+        self.critic = MLP(critic_input_dim, 1, critic_hidden_dims, activation)
         print(f"Critic MLP: {self.critic}")
 
         # Critic observation normalization
@@ -132,7 +138,8 @@ class ActorCriticRecurrent(nn.Module):
 
     def reset(self, dones: torch.Tensor | None = None) -> None:
         self.memory_a.reset(dones)
-        self.memory_c.reset(dones)
+        if self.critic_recurrent:
+            self.memory_c.reset(dones)
 
     def forward(self) -> NoReturn:
         raise NotImplementedError
@@ -182,8 +189,12 @@ class ActorCriticRecurrent(nn.Module):
     ) -> torch.Tensor:
         obs = self.get_critic_obs(obs)
         obs = self.critic_obs_normalizer(obs)
-        out_mem = self.memory_c(obs, masks, hidden_state).squeeze(0)
-        return self.critic(out_mem)
+        if self.critic_recurrent:
+            critic_input = self.memory_c(obs, masks, hidden_state).squeeze(0)
+        else:
+            # critic_input = obs[masks.flatten() == 1] if masks is not None else obs
+            critic_input = unpad_trajectories(obs, masks) if masks is not None else obs
+        return self.critic(critic_input)
 
     def get_actor_obs(self, obs: TensorDict) -> torch.Tensor:
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["policy"]]
@@ -197,7 +208,10 @@ class ActorCriticRecurrent(nn.Module):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     def get_hidden_states(self) -> tuple[HiddenState, HiddenState]:
-        return self.memory_a.hidden_state, self.memory_c.hidden_state
+        if self.critic_recurrent:
+            return self.memory_a.hidden_state, self.memory_c.hidden_state
+        else:
+            return self.memory_a.hidden_state, None
 
     def update_normalization(self, obs: TensorDict) -> None:
         if self.actor_obs_normalization:

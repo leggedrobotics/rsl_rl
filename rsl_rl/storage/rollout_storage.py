@@ -221,19 +221,23 @@ class RolloutStorage:
                     .contiguous()
                     for saved_hidden_state in self.saved_hidden_state_a
                 ]
-                hidden_state_c_batch = [
-                    saved_hidden_state.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
-                    .transpose(1, 0)
-                    .contiguous()
-                    for saved_hidden_state in self.saved_hidden_state_c
-                ]
+                if self.saved_hidden_state_c != None:
+                    hidden_state_c_batch = [
+                        saved_hidden_state.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
+                        .transpose(1, 0)
+                        .contiguous()
+                        for saved_hidden_state in self.saved_hidden_state_c
+                    ]
                 # Remove the tuple for GRU
                 hidden_state_a_batch = (
                     hidden_state_a_batch[0] if len(hidden_state_a_batch) == 1 else hidden_state_a_batch
                 )
-                hidden_state_c_batch = (
-                    hidden_state_c_batch[0] if len(hidden_state_c_batch) == 1 else hidden_state_c_batch
-                )
+                if self.saved_hidden_state_c == None:
+                    hidden_state_c_batch = None
+                else:
+                    hidden_state_c_batch = (
+                        hidden_state_c_batch[0] if len(hidden_state_c_batch) == 1 else hidden_state_c_batch
+                    )
 
                 # Yield the mini-batch
                 yield (
@@ -259,18 +263,21 @@ class RolloutStorage:
             return
         # Make a tuple out of GRU hidden states to match the LSTM format
         hidden_state_a = hidden_states[0] if isinstance(hidden_states[0], tuple) else (hidden_states[0],)
-        hidden_state_c = hidden_states[1] if isinstance(hidden_states[1], tuple) else (hidden_states[1],)
+        if hidden_states[1] != None:  # None recurrent critic
+            hidden_state_c = hidden_states[1] if isinstance(hidden_states[1], tuple) else (hidden_states[1],)
         # Initialize hidden states if needed
         if self.saved_hidden_state_a is None:
             self.saved_hidden_state_a = [
                 torch.zeros(self.observations.shape[0], *hidden_state_a[i].shape, device=self.device)
                 for i in range(len(hidden_state_a))
             ]
-            self.saved_hidden_state_c = [
-                torch.zeros(self.observations.shape[0], *hidden_state_c[i].shape, device=self.device)
-                for i in range(len(hidden_state_c))
-            ]
+            if hidden_states[1] != None:
+                self.saved_hidden_state_c = [
+                    torch.zeros(self.observations.shape[0], *hidden_state_c[i].shape, device=self.device)
+                    for i in range(len(hidden_state_c))
+                ]
         # Copy the states
         for i in range(len(hidden_state_a)):
             self.saved_hidden_state_a[i][self.step].copy_(hidden_state_a[i])
-            self.saved_hidden_state_c[i][self.step].copy_(hidden_state_c[i])
+            if hidden_states[1] != None:
+                self.saved_hidden_state_c[i][self.step].copy_(hidden_state_c[i])
