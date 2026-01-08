@@ -64,7 +64,7 @@ class Logger:
         self._store_code_state()
 
         # Log configuration
-        if self.writer and not self.disable_logs and self.logger_type in ["wandb", "neptune"]:
+        if self.writer and not self.disable_logs and self.logger_type in ["wandb", "neptune", "swanlab"]:
             self.writer.store_config(env_cfg, self.cfg)
 
     def process_env_step(
@@ -251,6 +251,10 @@ class Logger:
                 from torch.utils.tensorboard import SummaryWriter
 
                 self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
+            elif self.logger_type == "swanlab":
+                from rsl_rl.utils.swanlab_utils import SwanlabSummaryWriter
+
+                self.writer = SwanlabSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
             else:
                 raise ValueError("Logger type not found. Please choose 'wandb', 'neptune', or 'tensorboard'.")
         else:

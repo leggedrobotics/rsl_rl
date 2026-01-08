@@ -44,6 +44,7 @@ The package supports the following logging frameworks which can be configured th
 * Tensorboard: https://www.tensorflow.org/tensorboard/
 * Weights & Biases: https://wandb.ai/site
 * Neptune: https://docs.neptune.ai/
+* Swanlab: https://docs.swanlab.cn/en/
 
 For a demo configuration of PPO, please check the [example_config.yaml](config/example_config.yaml) file.
 
