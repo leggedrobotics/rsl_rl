@@ -11,7 +11,7 @@ import torch.optim as optim
 from itertools import chain
 from tensordict import TensorDict
 
-from rsl_rl.modules import ActorCritic, ActorCriticCNN, ActorCriticRecurrent
+from rsl_rl.modules import ActorCritic, ActorCriticCNN, ActorCriticRecurrent, ActorCriticAttnEnc
 from rsl_rl.modules.rnd import RandomNetworkDistillation
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import string_to_callable
@@ -20,12 +20,12 @@ from rsl_rl.utils import string_to_callable
 class PPO:
     """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
 
-    policy: ActorCritic | ActorCriticRecurrent | ActorCriticCNN
+    policy: ActorCritic | ActorCriticRecurrent | ActorCriticCNN | ActorCriticAttnEnc
     """The actor critic module."""
 
     def __init__(
         self,
-        policy: ActorCritic | ActorCriticRecurrent | ActorCriticCNN,
+        policy: ActorCritic | ActorCriticRecurrent | ActorCriticCNN | ActorCriticAttnEnc,
         storage: RolloutStorage,
         num_learning_epochs: int = 5,
         num_mini_batches: int = 4,
@@ -41,6 +41,8 @@ class PPO:
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
         device: str = "cpu",
+        critic_estimation=False,
+        estimation_loss_coef=0.0,
         # RND parameters
         rnd_cfg: dict | None = None,
         # Symmetry parameters
@@ -122,6 +124,8 @@ class PPO:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.critic_estimation = critic_estimation
+        self.estimation_loss_coef = estimation_loss_coef
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:
@@ -198,6 +202,7 @@ class PPO:
         mean_rnd_loss = 0 if self.rnd else None
         # Symmetry loss
         mean_symmetry_loss = 0 if self.symmetry else None
+        mean_estimation_loss = 0 if self.critic_estimation else None
 
         # Get mini batch generator
         if self.policy.is_recurrent:
@@ -311,6 +316,12 @@ class PPO:
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
 
+            # Estimation loss
+            if self.critic_estimation:
+                critic_loss = self.policy.get_estimation_loss()
+                # add the loss to the total loss
+                loss += self.estimation_loss_coef * critic_loss
+
             # Symmetry loss
             if self.symmetry:
                 # Obtain the symmetric actions
@@ -388,6 +399,8 @@ class PPO:
             # Symmetry loss
             if mean_symmetry_loss is not None:
                 mean_symmetry_loss += symmetry_loss.item()
+            if mean_estimation_loss is not None:
+                mean_estimation_loss += critic_loss.item()
 
         # Divide the losses by the number of updates
         num_updates = self.num_learning_epochs * self.num_mini_batches
@@ -398,6 +411,8 @@ class PPO:
             mean_rnd_loss /= num_updates
         if mean_symmetry_loss is not None:
             mean_symmetry_loss /= num_updates
+        if mean_estimation_loss is not None:
+            mean_estimation_loss /= num_updates
 
         # Clear the storage
         self.storage.clear()
@@ -412,6 +427,8 @@ class PPO:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
+        if self.critic_estimation:
+            loss_dict["estimation"] = mean_estimation_loss
 
         return loss_dict
 
