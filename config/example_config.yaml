@@ -11,9 +11,10 @@ runner:
   experiment_name: walking_experiment
   run_name: ""
   # Logging writer
-  logger: tensorboard  # tensorboard, neptune, wandb
+  logger: tensorboard  # tensorboard, neptune, wandb, clearml
   neptune_project: legged_gym
   wandb_project: legged_gym
+  clearml_project: legged_gym
 
   # Policy
   policy:
