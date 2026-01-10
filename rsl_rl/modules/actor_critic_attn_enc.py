@@ -48,7 +48,7 @@ class ActorCriticAttnEnc(nn.Module):
 
         # Get the observation dimensions
         self.obs_groups = obs_groups
-        num_actor_obs = 0
+        self.num_actor_obs = 0
         self.map_size = map_size
         self.single_obs_dim = single_obs_dim
         self.critic_estimation = critic_estimation
@@ -56,11 +56,11 @@ class ActorCriticAttnEnc(nn.Module):
         self.estimation_slice = estimation_slice
         for obs_group in obs_groups["policy"]:
             assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
-            num_actor_obs += obs[obs_group].shape[-1]
-        num_critic_obs = 0
+            self.num_actor_obs += obs[obs_group].shape[-1]
+        self.num_critic_obs = 0
         for obs_group in obs_groups["critic"]:
             assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
-            num_critic_obs += obs[obs_group].shape[-1]
+            self.num_critic_obs += obs[obs_group].shape[-1]
 
         if self.critic_estimation:
             self.last_critic_pred: torch.Tensor = None
@@ -74,13 +74,13 @@ class ActorCriticAttnEnc(nn.Module):
         print(f"Encoder : {self.encoder}")
 
         if self.critic_estimation:
-            self.estimator = MLP(num_actor_obs, self.num_estimation, estimator_hidden_dims, activation)
+            self.estimator = MLP(self.num_actor_obs, self.num_estimation, estimator_hidden_dims, activation)
             mlp_input_dim_a = embedding_dim + single_obs_dim + self.num_estimation
             print(f"Estimator : {self.estimator}")
         else:
-            mlp_input_dim_a = embedding_dim + num_actor_obs
+            mlp_input_dim_a = embedding_dim + self.num_actor_obs
         
-        mlp_input_dim_c = embedding_dim + num_critic_obs
+        mlp_input_dim_c = embedding_dim + self.num_critic_obs
 
         # Actor
         self.state_dependent_std = state_dependent_std
@@ -93,7 +93,7 @@ class ActorCriticAttnEnc(nn.Module):
         # Actor observation normalization
         self.actor_obs_normalization = actor_obs_normalization
         if actor_obs_normalization:
-            self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs)
+            self.actor_obs_normalizer = EmpiricalNormalization(self.num_actor_obs)
         else:
             self.actor_obs_normalizer = torch.nn.Identity()
 
@@ -104,7 +104,7 @@ class ActorCriticAttnEnc(nn.Module):
         # Critic observation normalization
         self.critic_obs_normalization = critic_obs_normalization
         if critic_obs_normalization:
-            self.critic_obs_normalizer = EmpiricalNormalization(num_critic_obs)
+            self.critic_obs_normalizer = EmpiricalNormalization(self.num_critic_obs)
         else:
             self.critic_obs_normalizer = torch.nn.Identity()
 
