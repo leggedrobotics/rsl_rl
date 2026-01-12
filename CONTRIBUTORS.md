@@ -32,6 +32,7 @@ Please keep the lists sorted alphabetically.
 * Bikram Pandit
 * Eric Vollenweider
 * Fabian Jenelten
+* Lingshang Kong
 * Lorenzo Terenzi
 * Marko Bjelonic
 * Matthijs van der Boon
