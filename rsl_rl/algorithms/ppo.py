@@ -11,7 +11,7 @@ import torch.optim as optim
 from itertools import chain
 from tensordict import TensorDict
 
-from rsl_rl.features.rnd import RandomNetworkDistillation
+from rsl_rl.extensions.rnd import RandomNetworkDistillation
 from rsl_rl.models import ActorCritic, ActorCriticCNN, ActorCriticRecurrent
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_callable

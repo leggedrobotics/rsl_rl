@@ -12,7 +12,7 @@ from tensordict import TensorDict
 from torch.distributions import Normal
 from typing import Any, NoReturn
 
-from rsl_rl.networks import MLP, EmpiricalNormalization, HiddenState, Memory
+from rsl_rl.modules import MLP, EmpiricalNormalization, HiddenState, Memory
 
 
 class ActorCriticRecurrent(nn.Module):

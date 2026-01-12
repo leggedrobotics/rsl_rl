@@ -11,7 +11,7 @@ from tensordict import TensorDict
 from torch.distributions import Normal
 from typing import Any
 
-from rsl_rl.networks import CNN, MLP, EmpiricalNormalization
+from rsl_rl.modules import CNN, MLP, EmpiricalNormalization
 
 from .actor_critic import ActorCritic
 

@@ -13,7 +13,7 @@ from tensordict import TensorDict
 
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
-from rsl_rl.features import resolve_rnd_config, resolve_symmetry_config
+from rsl_rl.extensions import resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.models import (
     ActorCritic,
     ActorCriticCNN,

@@ -11,7 +11,7 @@ from tensordict import TensorDict
 from typing import Any, NoReturn
 
 from rsl_rl.env import VecEnv
-from rsl_rl.networks import MLP, EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
+from rsl_rl.modules import MLP, EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
 
 
 class RandomNetworkDistillation(nn.Module):

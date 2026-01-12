@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Network components for neural models."""
+"""Building blocks for neural models."""
 
 from .cnn import CNN
 from .memory import HiddenState, Memory
