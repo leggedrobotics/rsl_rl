@@ -13,12 +13,11 @@ from tensordict import TensorDict
 
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
-from rsl_rl.modules import (
+from rsl_rl.features import resolve_rnd_config, resolve_symmetry_config
+from rsl_rl.models import (
     ActorCritic,
     ActorCriticCNN,
     ActorCriticRecurrent,
-    resolve_rnd_config,
-    resolve_symmetry_config,
 )
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_callable, resolve_obs_groups

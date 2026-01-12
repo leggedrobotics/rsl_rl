@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent
+from rsl_rl.models import StudentTeacher, StudentTeacherRecurrent
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_optimizer
 

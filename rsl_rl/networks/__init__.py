@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Definitions for components of modules."""
+"""Network components for neural models."""
 
 from .cnn import CNN
 from .memory import HiddenState, Memory
