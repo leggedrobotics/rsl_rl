@@ -262,7 +262,7 @@ def resolve_obs_groups(
 
     Args:
         obs: Observations from the environment in the form of a dictionary.
-        obs_groups: Observation sets configuration.
+        obs_groups: Dictionary mapping observation sets to lists of observation groups.
         default_sets: Reserved observation set names used by the algorithm (besides 'policy'). If not provided in
             'obs_groups', a default behavior gets triggered.
 

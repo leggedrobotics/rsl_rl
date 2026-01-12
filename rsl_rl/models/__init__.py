@@ -5,16 +5,12 @@
 
 """Neural models for the learning algorithm."""
 
-from .actor_critic import ActorCritic
-from .actor_critic_cnn import ActorCriticCNN
-from .actor_critic_recurrent import ActorCriticRecurrent
-from .student_teacher import StudentTeacher
-from .student_teacher_recurrent import StudentTeacherRecurrent
+from .cnn_model import CNNModel
+from .mlp_model import MLPModel
+from .rnn_model import RNNModel
 
 __all__ = [
-    "ActorCritic",
-    "ActorCriticCNN",
-    "ActorCriticRecurrent",
-    "StudentTeacher",
-    "StudentTeacherRecurrent",
+    "CNNModel",
+    "MLPModel",
+    "RNNModel",
 ]
