@@ -14,7 +14,7 @@ from tensordict import TensorDict
 from rsl_rl.modules import ActorCritic, ActorCriticCNN, ActorCriticRecurrent
 from rsl_rl.modules.rnd import RandomNetworkDistillation
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import string_to_callable
+from rsl_rl.utils import resolve_callable
 
 
 class PPO:
@@ -80,9 +80,8 @@ class PPO:
             # Print that we are not using symmetry
             if not use_symmetry:
                 print("Symmetry not used for learning. We will use it for logging instead.")
-            # If function is a string then resolve it to a function
-            if isinstance(symmetry_cfg["data_augmentation_func"], str):
-                symmetry_cfg["data_augmentation_func"] = string_to_callable(symmetry_cfg["data_augmentation_func"])
+            # Resolve the data augmentation function (supports string names or direct callables)
+            symmetry_cfg["data_augmentation_func"] = resolve_callable(symmetry_cfg["data_augmentation_func"])
             # Check valid configuration
             if not callable(symmetry_cfg["data_augmentation_func"]):
                 raise ValueError(
