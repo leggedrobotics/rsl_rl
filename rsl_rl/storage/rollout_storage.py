@@ -90,20 +90,20 @@ class RolloutStorage:
 
         # Core
         self.observations[self.step].copy_(transition.observations)
-        self.actions[self.step].copy_(transition.actions)
+        self.actions[self.step].copy_(transition.actions)  # type: ignore
         self.rewards[self.step].copy_(transition.rewards.view(-1, 1))
         self.dones[self.step].copy_(transition.dones.view(-1, 1))
 
         # For distillation
         if self.training_type == "distillation":
-            self.privileged_actions[self.step].copy_(transition.privileged_actions)
+            self.privileged_actions[self.step].copy_(transition.privileged_actions)  # type: ignore
 
         # For reinforcement learning
         if self.training_type == "rl":
-            self.values[self.step].copy_(transition.values)
+            self.values[self.step].copy_(transition.values)  # type: ignore
             self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
-            self.mu[self.step].copy_(transition.action_mean)
-            self.sigma[self.step].copy_(transition.action_sigma)
+            self.mu[self.step].copy_(transition.action_mean)  # type: ignore
+            self.sigma[self.step].copy_(transition.action_sigma)  # type: ignore
 
         # For RNN networks
         self._save_hidden_states(transition.hidden_states)
@@ -150,7 +150,7 @@ class RolloutStorage:
                 batch_idx = indices[start:stop]
 
                 # Create the mini-batch
-                obs_batch = observations[batch_idx]
+                obs_batch = observations[batch_idx]  # type: ignore
                 actions_batch = actions[batch_idx]
                 target_values_batch = values[batch_idx]
                 returns_batch = returns[batch_idx]
@@ -215,25 +215,31 @@ class RolloutStorage:
                 last_was_done = last_was_done.permute(1, 0)
                 # Take only time steps after dones (flattens num envs and time dimensions),
                 # take a batch of trajectories and finally reshape back to [num_layers, batch, hidden_dim]
-                hidden_state_a_batch = [
-                    saved_hidden_state.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
-                    .transpose(1, 0)
-                    .contiguous()
-                    for saved_hidden_state in self.saved_hidden_state_a
-                ]
-                hidden_state_c_batch = [
-                    saved_hidden_state.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
-                    .transpose(1, 0)
-                    .contiguous()
-                    for saved_hidden_state in self.saved_hidden_state_c
-                ]
-                # Remove the tuple for GRU
-                hidden_state_a_batch = (
-                    hidden_state_a_batch[0] if len(hidden_state_a_batch) == 1 else hidden_state_a_batch
-                )
-                hidden_state_c_batch = (
-                    hidden_state_c_batch[0] if len(hidden_state_c_batch) == 1 else hidden_state_c_batch
-                )
+                if self.saved_hidden_state_a is not None:
+                    hidden_state_a_batch = [
+                        saved_hidden_state.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
+                        .transpose(1, 0)
+                        .contiguous()
+                        for saved_hidden_state in self.saved_hidden_state_a
+                    ]
+                    # Remove the tuple for GRU
+                    hidden_state_a_batch = (
+                        hidden_state_a_batch[0] if len(hidden_state_a_batch) == 1 else hidden_state_a_batch
+                    )
+                else:
+                    hidden_state_a_batch = None
+                if self.saved_hidden_state_c is not None:
+                    hidden_state_c_batch = [
+                        saved_hidden_state.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
+                        .transpose(1, 0)
+                        .contiguous()
+                        for saved_hidden_state in self.saved_hidden_state_c
+                    ]
+                    hidden_state_c_batch = (
+                        hidden_state_c_batch[0] if len(hidden_state_c_batch) == 1 else hidden_state_c_batch
+                    )
+                else:
+                    hidden_state_c_batch = None
 
                 # Yield the mini-batch
                 yield (
@@ -258,19 +264,25 @@ class RolloutStorage:
         if hidden_states == (None, None):
             return
         # Make a tuple out of GRU hidden states to match the LSTM format
-        hidden_state_a = hidden_states[0] if isinstance(hidden_states[0], tuple) else (hidden_states[0],)
-        hidden_state_c = hidden_states[1] if isinstance(hidden_states[1], tuple) else (hidden_states[1],)
+        if hidden_states[0] is not None:
+            hidden_state_a = hidden_states[0] if isinstance(hidden_states[0], tuple) else (hidden_states[0],)
+        if hidden_states[1] is not None:
+            hidden_state_c = hidden_states[1] if isinstance(hidden_states[1], tuple) else (hidden_states[1],)
         # Initialize hidden states if needed
-        if self.saved_hidden_state_a is None:
+        if self.saved_hidden_state_a is None and hidden_states[0] is not None:
             self.saved_hidden_state_a = [
                 torch.zeros(self.observations.shape[0], *hidden_state_a[i].shape, device=self.device)
                 for i in range(len(hidden_state_a))
             ]
+        if self.saved_hidden_state_c is None and hidden_states[1] is not None:
             self.saved_hidden_state_c = [
                 torch.zeros(self.observations.shape[0], *hidden_state_c[i].shape, device=self.device)
                 for i in range(len(hidden_state_c))
             ]
         # Copy the states
-        for i in range(len(hidden_state_a)):
-            self.saved_hidden_state_a[i][self.step].copy_(hidden_state_a[i])
-            self.saved_hidden_state_c[i][self.step].copy_(hidden_state_c[i])
+        if hidden_states[0] is not None:
+            for i in range(len(hidden_state_a)):
+                self.saved_hidden_state_a[i][self.step].copy_(hidden_state_a[i])  # type: ignore
+        if hidden_states[1] is not None:
+            for i in range(len(hidden_state_c)):
+                self.saved_hidden_state_c[i][self.step].copy_(hidden_state_c[i])  # type: ignore

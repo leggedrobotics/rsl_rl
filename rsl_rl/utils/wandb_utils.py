@@ -19,7 +19,7 @@ class WandbSummaryWriter(SummaryWriter):
     """Summary writer for Weights and Biases."""
 
     def __init__(self, log_dir: str, flush_secs: int, cfg: dict) -> None:
-        super().__init__(log_dir, flush_secs)
+        super().__init__(log_dir, flush_secs=flush_secs)
 
         # Get the run name
         run_name = os.path.split(log_dir)[-1]
@@ -40,8 +40,6 @@ class WandbSummaryWriter(SummaryWriter):
 
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
         wandb.config.update({"runner_cfg": train_cfg})
-        wandb.config.update({"policy_cfg": train_cfg["policy"]})
-        wandb.config.update({"alg_cfg": train_cfg["algorithm"]})
         try:
             wandb.config.update({"env_cfg": env_cfg.to_dict()})
         except Exception:

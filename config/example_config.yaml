@@ -5,7 +5,7 @@ runner:
   max_iterations: 1500  # Number of policy updates
   seed: 1
   # Observations
-  obs_groups: {"policy": ["policy"], "critic": ["policy", "privileged"]} # Maps observation groups to sets. See `vec_env.py` for more information
+  obs_groups: {"actor": ["policy"], "critic": ["policy", "privileged"]} # Maps observation groups to sets. See `vec_env.py` for more information
   # Logging parameters
   save_interval: 50  # Check for potential saves every `save_interval` iterations
   experiment_name: walking_experiment
@@ -71,7 +71,7 @@ runner:
       #
       #     @torch.no_grad()
       #     def get_symmetric_states(
-      #        obs: Optional[torch.Tensor] = None, actions: Optional[torch.Tensor] = None, cfg: "BaseEnvCfg" = None, obs_type: str = "policy"
+      #        env: VecEnv, obs: Optional[torch.Tensor] = None, actions: Optional[torch.Tensor] = None,
       #     ) -> Tuple[torch.Tensor, torch.Tensor]:
       #
       mirror_loss_coeff: 0.0 # Coefficient for symmetry loss term. If 0, no symmetry loss is used

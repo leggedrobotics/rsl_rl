@@ -43,7 +43,7 @@ class MLPModel(nn.Module):
         Args:
             obs: Observation Dictionary.
             obs_groups: Dictionary mapping observation sets to lists of observation groups.
-            obs_set: Observation set to use for this model (e.g., "policy" or "critic").
+            obs_set: Observation set to use for this model (e.g., "actor" or "critic").
             output_dim: Dimension of the output.
             hidden_dims: Hidden dimensions of the MLP.
             activation: Activation function of the MLP.
@@ -98,8 +98,13 @@ class MLPModel(nn.Module):
         # Disable args validation for speedup
         Normal.set_default_validate_args(False)
 
-    def forward(self, obs: TensorDict, stochastic_output: bool = True, **kwargs: dict[str, Any]) -> torch.Tensor:
-        """Forward pass of the MLP model."""
+    def forward(self, obs: TensorDict, stochastic_output: bool = False, **kwargs: dict[str, Any]) -> torch.Tensor:
+        """Forward pass of the MLP model.
+
+        ..note::
+            The `stochastic_output` flag only has an effect if the model is initialized as stochastic and defaults to
+            `False`, meaning that even stochastic models will return deterministic outputs by default.
+        """
         latent = self.get_latent(obs, **kwargs)
         if self.stochastic and stochastic_output:
             self._update_distribution(latent)

@@ -44,7 +44,7 @@ class CNNModel(MLPModel):
         Args:
             obs: Observation Dictionary.
             obs_groups: Dictionary mapping observation sets to lists of observation groups.
-            obs_set: Observation set to use for this model (e.g., "policy" or "critic").
+            obs_set: Observation set to use for this model (e.g., "actor" or "critic").
             output_dim: Dimension of the output.
             hidden_dims: Hidden dimensions of the MLP.
             cnn_cfg: Configuration of the CNN encoder(s).

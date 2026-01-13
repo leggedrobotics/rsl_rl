@@ -14,11 +14,7 @@ from tensordict import TensorDict
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import resolve_rnd_config, resolve_symmetry_config
-from rsl_rl.models import (
-    ActorCritic,
-    ActorCriticCNN,
-    ActorCriticRecurrent,
-)
+from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_callable, resolve_obs_groups
 from rsl_rl.utils.logger import Logger
@@ -29,7 +25,6 @@ class OnPolicyRunner:
 
     def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
         self.cfg = train_cfg
-        self.policy_cfg = train_cfg["policy"]
         self.alg_cfg = train_cfg["algorithm"]
         self.device = device
         self.env = env
@@ -37,7 +32,7 @@ class OnPolicyRunner:
         # Setup multi-GPU training if enabled
         self._configure_multi_gpu()
 
-        # Query observations from environment for algorithm construction
+        # Query observations from the environment for algorithm construction
         obs = self.env.get_observations()
         self.cfg["obs_groups"] = resolve_obs_groups(obs, self.cfg["obs_groups"], self._get_default_obs_sets())
 
@@ -90,7 +85,7 @@ class OnPolicyRunner:
                     obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                     # Process the step
                     self.alg.process_env_step(obs, rewards, dones, extras)
-                    # Extract intrinsic rewards (only for logging)
+                    # Extract intrinsic rewards if RND is used (only for logging)
                     intrinsic_rewards = self.alg.intrinsic_rewards if self.alg_cfg["rnd_cfg"] else None
                     # Book keeping
                     self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
@@ -118,7 +113,7 @@ class OnPolicyRunner:
                 learn_time=learn_time,
                 loss_dict=loss_dict,
                 learning_rate=self.alg.learning_rate,
-                action_std=self.alg.policy.action_std,
+                action_std=self.get_policy().action_std,
                 rnd_weight=self.alg.rnd.weight if self.alg_cfg["rnd_cfg"] else None,
             )
 
@@ -133,7 +128,7 @@ class OnPolicyRunner:
     def save(self, path: str, infos: dict | None = None) -> None:
         # Save model
         saved_dict = {
-            "model_state_dict": self.alg.policy.state_dict(),
+            **{f"{name}_state_dict": model.state_dict() for name, model in self.get_models().items()},
             "optimizer_state_dict": self.alg.optimizer.state_dict(),
             "iter": self.current_learning_iteration,
             "infos": infos,
@@ -144,45 +139,56 @@ class OnPolicyRunner:
             if self.alg.rnd_optimizer:
                 saved_dict["rnd_optimizer_state_dict"] = self.alg.rnd_optimizer.state_dict()
         torch.save(saved_dict, path)
-
         # Upload model to external logging services
         self.logger.save_model(path, self.current_learning_iteration)
 
     def load(self, path: str, load_optimizer: bool = True, map_location: str | None = None) -> dict:
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
-        # Load model
-        resumed_training = self.alg.policy.load_state_dict(loaded_dict["model_state_dict"])
+        # Load models
+        for name, model in self.get_models().items():
+            model.load_state_dict(loaded_dict[f"{name}_state_dict"])
         # Load RND model if used
         if self.alg_cfg["rnd_cfg"]:
             self.alg.rnd.load_state_dict(loaded_dict["rnd_state_dict"])
         # Load optimizer if used
-        if load_optimizer and resumed_training:
+        if load_optimizer:
             # Algorithm optimizer
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
             # RND optimizer if used
             if self.alg_cfg["rnd_cfg"]:
                 self.alg.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
         # Load current learning iteration
-        if resumed_training:
-            self.current_learning_iteration = loaded_dict["iter"]
+        self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
 
+    def get_policy(self) -> MLPModel:
+        """Get the policy model."""
+        return self.alg.actor
+
+    def get_models(self) -> dict[str, MLPModel]:
+        """Return a dict of {name: model} for saving/loading."""
+        return {
+            "actor": self.alg.actor,
+            "critic": self.alg.critic,
+        }
+
     def get_inference_policy(self, device: str | None = None) -> callable:
+        """Return the policy's forward method on the requested device for inference."""
         self.eval_mode()  # Switch to evaluation mode (e.g. for dropout)
         if device is not None:
-            self.alg.policy.to(device)
-        return self.alg.policy.act_inference
+            policy = self.get_policy.to(device)
+        return policy.forward
 
     def train_mode(self) -> None:
-        # PPO
-        self.alg.policy.train()
+        for model in self.get_models().values():
+            model.train()
         # RND
         if self.alg_cfg["rnd_cfg"]:
             self.alg.rnd.train()
 
     def eval_mode(self) -> None:
-        # PPO
-        self.alg.policy.eval()
+        for model in self.get_models().values():
+            model.eval()
         # RND
         if self.alg_cfg["rnd_cfg"]:
             self.alg.rnd.eval()
@@ -196,10 +202,53 @@ class OnPolicyRunner:
         .. note::
             See :func:`resolve_obs_groups` for more details on the handling of observation sets.
         """
-        default_sets = ["critic"]
+        default_sets = ["student", "critic"]
         if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
             default_sets.append("rnd_state")
         return default_sets
+
+    def _construct_algorithm(self, obs: TensorDict) -> PPO:
+        """Construct the actor-critic algorithm."""
+        # Resolve RND config if used
+        self.alg_cfg = resolve_rnd_config(self.alg_cfg, obs, self.cfg["obs_groups"], self.env)
+
+        # Resolve symmetry config if used
+        self.alg_cfg = resolve_symmetry_config(self.alg_cfg, self.env)
+
+        # Resolve deprecated normalization config
+        if self.cfg.get("empirical_normalization") is not None:
+            warnings.warn(
+                "The `empirical_normalization` parameter is deprecated. Please set `actor_obs_normalization` and "
+                "`critic_obs_normalization` as part of the `policy` configuration instead.",
+                DeprecationWarning,
+            )
+            if self.alg_cfg["actor"].get("obs_normalization") is None:
+                self.alg_cfg["actor"]["obs_normalization"] = self.cfg["empirical_normalization"]
+            if self.alg_cfg["critic"].get("obs_normalization") is None:
+                self.alg_cfg["critic"]["obs_normalization"] = self.cfg["empirical_normalization"]
+
+        # Initialize the policy
+        actor_class = resolve_callable(self.alg_cfg["actor"].pop("class_name"))
+        actor: MLPModel = actor_class(
+            obs, self.cfg["obs_groups"], "actor", self.env.num_actions, **self.alg_cfg["actor"]
+        ).to(self.device)
+        critic_class = resolve_callable(self.alg_cfg["critic"].pop("class_name"))
+        critic: MLPModel = critic_class(obs, self.cfg["obs_groups"], "critic", 1, **self.alg_cfg["critic"]).to(
+            self.device
+        )
+
+        # Initialize the storage
+        storage = RolloutStorage(
+            "rl", self.env.num_envs, self.cfg["num_steps_per_env"], obs, [self.env.num_actions], self.device
+        )
+
+        # Initialize the algorithm
+        alg_class = resolve_callable(self.alg_cfg.pop("class_name"))
+        alg: PPO = alg_class(
+            actor, critic, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
+        )
+
+        return alg
 
     def _configure_multi_gpu(self) -> None:
         """Configure multi-gpu training."""
@@ -244,42 +293,3 @@ class OnPolicyRunner:
         torch.distributed.init_process_group(backend="nccl", rank=self.gpu_global_rank, world_size=self.gpu_world_size)
         # Set device to the local rank
         torch.cuda.set_device(self.gpu_local_rank)
-
-    def _construct_algorithm(self, obs: TensorDict) -> PPO:
-        """Construct the actor-critic algorithm."""
-        # Resolve RND config if used
-        self.alg_cfg = resolve_rnd_config(self.alg_cfg, obs, self.cfg["obs_groups"], self.env)
-
-        # Resolve symmetry config if used
-        self.alg_cfg = resolve_symmetry_config(self.alg_cfg, self.env)
-
-        # Resolve deprecated normalization config
-        if self.cfg.get("empirical_normalization") is not None:
-            warnings.warn(
-                "The `empirical_normalization` parameter is deprecated. Please set `actor_obs_normalization` and "
-                "`critic_obs_normalization` as part of the `policy` configuration instead.",
-                DeprecationWarning,
-            )
-            if self.policy_cfg.get("actor_obs_normalization") is None:
-                self.policy_cfg["actor_obs_normalization"] = self.cfg["empirical_normalization"]
-            if self.policy_cfg.get("critic_obs_normalization") is None:
-                self.policy_cfg["critic_obs_normalization"] = self.cfg["empirical_normalization"]
-
-        # Initialize the policy
-        actor_critic_class = resolve_callable(self.policy_cfg.pop("class_name"))
-        actor_critic: ActorCritic | ActorCriticRecurrent | ActorCriticCNN = actor_critic_class(
-            obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
-        ).to(self.device)
-
-        # Initialize the storage
-        storage = RolloutStorage(
-            "rl", self.env.num_envs, self.cfg["num_steps_per_env"], obs, [self.env.num_actions], self.device
-        )
-
-        # Initialize the algorithm
-        alg_class = resolve_callable(self.alg_cfg.pop("class_name"))
-        alg: PPO = alg_class(
-            actor_critic, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
-        )
-
-        return alg

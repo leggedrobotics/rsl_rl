@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from rsl_rl.models import StudentTeacher, StudentTeacherRecurrent
+from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_optimizer
 
@@ -17,12 +17,16 @@ from rsl_rl.utils import resolve_optimizer
 class Distillation:
     """Distillation algorithm for training a student model to mimic a teacher model."""
 
-    policy: StudentTeacher | StudentTeacherRecurrent
-    """The student teacher model."""
+    student: MLPModel
+    """The student model."""
+
+    teacher: MLPModel
+    """The teacher model."""
 
     def __init__(
         self,
-        policy: StudentTeacher | StudentTeacherRecurrent,
+        student: MLPModel,
+        teacher: MLPModel,
         storage: RolloutStorage,
         num_learning_epochs: int = 1,
         gradient_length: int = 15,
@@ -47,11 +51,11 @@ class Distillation:
             self.gpu_world_size = 1
 
         # Distillation components
-        self.policy = policy
-        self.policy.to(self.device)
+        self.student = student.to(self.device)
+        self.teacher = teacher.to(self.device)
 
         # Create the optimizer
-        self.optimizer = resolve_optimizer(optimizer)(self.policy.parameters(), lr=learning_rate)
+        self.optimizer = resolve_optimizer(optimizer)(self.student.parameters(), lr=learning_rate)  # type: ignore
 
         # Add storage
         self.storage = storage
@@ -78,24 +82,25 @@ class Distillation:
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         # Compute the actions
-        self.transition.actions = self.policy.act(obs).detach()
-        self.transition.privileged_actions = self.policy.evaluate(obs).detach()
+        self.transition.actions = self.student(obs, stochastic_output=True).detach()
+        self.transition.privileged_actions = self.teacher(obs).detach()
         # Record the observations
         self.transition.observations = obs
-        return self.transition.actions
+        return self.transition.actions  # type: ignore
 
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
     ) -> None:
         # Update the normalizers
-        self.policy.update_normalization(obs)
+        self.student.update_normalization(obs)
         # Record the rewards and dones
         self.transition.rewards = rewards
         self.transition.dones = dones
         # Record the transition
         self.storage.add_transition(self.transition)
         self.transition.clear()
-        self.policy.reset(dones)
+        self.student.reset(dones)
+        self.teacher.reset(dones)
 
     def compute_returns(self, obs: TensorDict) -> None:
         # Not needed for distillation
@@ -108,11 +113,12 @@ class Distillation:
         cnt = 0
 
         for epoch in range(self.num_learning_epochs):
-            self.policy.reset(hidden_states=self.last_hidden_states)
-            self.policy.detach_hidden_states()
+            self.student.reset(hidden_state=self.last_hidden_states[0])
+            self.teacher.reset(hidden_state=self.last_hidden_states[1])
+            self.student.detach_hidden_state()  # TODO: Needed for teacher?
             for obs, _, privileged_actions, dones in self.storage.generator():
                 # Inference of the student for gradient computation
-                actions = self.policy.act_inference(obs)
+                actions = self.student(obs)
 
                 # Behavior cloning loss
                 behavior_loss = self.loss_fn(actions, privileged_actions)
@@ -129,19 +135,20 @@ class Distillation:
                     if self.is_multi_gpu:
                         self.reduce_parameters()
                     if self.max_grad_norm:
-                        nn.utils.clip_grad_norm_(self.policy.student.parameters(), self.max_grad_norm)
+                        nn.utils.clip_grad_norm_(self.student.parameters(), self.max_grad_norm)
                     self.optimizer.step()
-                    self.policy.detach_hidden_states()
+                    self.student.detach_hidden_state()  # TODO: Needed for teacher?
                     loss = 0
 
                 # Reset dones
-                self.policy.reset(dones.view(-1))
-                self.policy.detach_hidden_states(dones.view(-1))
+                self.student.reset(dones.view(-1))
+                self.teacher.reset(dones.view(-1))
+                self.student.detach_hidden_state(dones.view(-1))  # TODO: Needed for teacher?
 
         mean_behavior_loss /= cnt
         self.storage.clear()
-        self.last_hidden_states = self.policy.get_hidden_states()
-        self.policy.detach_hidden_states()
+        self.last_hidden_states = [self.student.get_hidden_state(), self.teacher.get_hidden_state()]
+        self.student.detach_hidden_state()  # TODO: Needed for teacher?
 
         # Construct the loss dictionary
         loss_dict = {"behavior": mean_behavior_loss}
@@ -151,11 +158,12 @@ class Distillation:
     def broadcast_parameters(self) -> None:
         """Broadcast model parameters to all GPUs."""
         # Obtain the model parameters on current GPU
-        model_params = [self.policy.state_dict()]
+        model_params = [self.student.state_dict(), self.teacher.state_dict()]
         # Broadcast the model parameters
         torch.distributed.broadcast_object_list(model_params, src=0)
         # Load the model parameters on all GPUs from source GPU
-        self.policy.load_state_dict(model_params[0])
+        self.student.load_state_dict(model_params[0])
+        self.teacher.load_state_dict(model_params[1])
 
     def reduce_parameters(self) -> None:
         """Collect gradients from all GPUs and average them.
@@ -163,14 +171,14 @@ class Distillation:
         This function is called after the backward pass to synchronize the gradients across all GPUs.
         """
         # Create a tensor to store the gradients
-        grads = [param.grad.view(-1) for param in self.policy.parameters() if param.grad is not None]
+        grads = [param.grad.view(-1) for param in self.student.parameters() if param.grad is not None]
         all_grads = torch.cat(grads)
         # Average the gradients across all GPUs
         torch.distributed.all_reduce(all_grads, op=torch.distributed.ReduceOp.SUM)
         all_grads /= self.gpu_world_size
         # Update the gradients for all parameters with the reduced gradients
         offset = 0
-        for param in self.policy.parameters():
+        for param in self.student.parameters():
             if param.grad is not None:
                 numel = param.numel()
                 # Copy data back from shared buffer
