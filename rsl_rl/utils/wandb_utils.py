@@ -41,9 +41,9 @@ class WandbSummaryWriter(SummaryWriter):
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
         wandb.config.update({"runner_cfg": train_cfg})
         try:
-            wandb.config.update({"env_cfg": env_cfg.to_dict()})
+            wandb.config.update({"env_cfg": env_cfg.to_dict()})  # type: ignore
         except Exception:
-            wandb.config.update({"env_cfg": asdict(env_cfg)})
+            wandb.config.update({"env_cfg": asdict(env_cfg)})  # type: ignore
 
     def add_scalar(
         self,

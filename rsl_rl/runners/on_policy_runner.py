@@ -179,7 +179,7 @@ class OnPolicyRunner:
         """Return the policy's forward method on the requested device for inference."""
         self.eval_mode()  # Switch to evaluation mode (e.g. for dropout)
         if device is not None:
-            policy = self.get_policy.to(device)
+            policy = self.get_policy.to(device)  # type: ignore
         return policy.forward
 
     def train_mode(self) -> None:
