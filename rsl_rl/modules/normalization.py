@@ -34,7 +34,7 @@ class EmpiricalNormalization(nn.Module):
 
     @property
     def mean(self) -> torch.Tensor:
-        return self._mean.squeeze(0).clone()
+        return self._mean.squeeze(0).clone()  # type: ignore
 
     @property
     def std(self) -> torch.Tensor:
@@ -92,8 +92,8 @@ class EmpiricalDiscountedVariationNormalization(nn.Module):
             self.emp_norm.update(avg)
 
         # Normalize rewards with the empirical std
-        if self.emp_norm._std > 0:
-            return rew / self.emp_norm._std
+        if self.emp_norm._std > 0:  # type: ignore
+            return rew / self.emp_norm._std  # type: ignore
         else:
             return rew
 

@@ -18,8 +18,8 @@ For GRUs, this is a single tensor while for LSTMs, this is a tuple of two tensor
 """
 
 
-class Memory(nn.Module):
-    """Memory network for recurrent architectures.
+class RNN(nn.Module):
+    """Network for recurrent architectures.
 
     This network is used to store the hidden state of the policy. It currently supports GRU and LSTM.
     """
@@ -40,7 +40,7 @@ class Memory(nn.Module):
         if batch_mode:
             # Batch mode needs saved hidden states
             if hidden_state is None:
-                raise ValueError("Hidden states not passed to memory module during policy update")
+                raise ValueError("Hidden states not passed to RNN module during policy update")
             out, _ = self.rnn(input, hidden_state)
             out = unpad_trajectories(out, masks)
         else:

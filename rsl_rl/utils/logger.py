@@ -65,7 +65,7 @@ class Logger:
 
         # Log configuration
         if self.writer and not self.disable_logs and self.logger_type in ["wandb", "neptune"]:
-            self.writer.store_config(env_cfg, self.cfg)
+            self.writer.store_config(env_cfg, self.cfg)  # type: ignore
 
     def process_env_step(
         self,
@@ -142,10 +142,10 @@ class Logger:
                         infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
                     value = torch.mean(infotensor)
                     if "/" in key:
-                        self.writer.add_scalar(key, value, it)
+                        self.writer.add_scalar(key, value, it)  # type: ignore
                         extras_string += f"""{f"{key}:":>{pad}} {value:.4f}\n"""
                     else:
-                        self.writer.add_scalar("Episode/" + key, value, it)
+                        self.writer.add_scalar("Episode/" + key, value, it)  # type: ignore
                         extras_string += f"""{f"Mean episode {key}:":>{pad}} {value:.4f}\n"""
 
             # Log losses
@@ -167,7 +167,7 @@ class Logger:
                 if self.cfg["algorithm"]["rnd_cfg"]:
                     self.writer.add_scalar("Rnd/mean_extrinsic_reward", statistics.mean(self.erewbuffer), it)
                     self.writer.add_scalar("Rnd/mean_intrinsic_reward", statistics.mean(self.irewbuffer), it)
-                    self.writer.add_scalar("Rnd/weight", rnd_weight, it)
+                    self.writer.add_scalar("Rnd/weight", rnd_weight, it)  # type: ignore
                 self.writer.add_scalar("Train/mean_reward", statistics.mean(self.rewbuffer), it)
                 self.writer.add_scalar("Train/mean_episode_length", statistics.mean(self.lenbuffer), it)
                 if self.logger_type != "wandb":
@@ -231,7 +231,7 @@ class Logger:
     def save_model(self, path: str, it: int) -> None:
         """Save the model to external logging services if specified."""
         if self.writer and not self.disable_logs and self.logger_type in ["neptune", "wandb"]:
-            self.writer.save_model(path, it)
+            self.writer.save_model(path, it)  # type: ignore
 
     def _prepare_logging_writer(self) -> None:
         """Prepare the logging writer, which can be either Tensorboard, W&B or Neptune."""
@@ -287,4 +287,4 @@ class Logger:
             # Upload diff files to external logging services
             if self.writer and self.logger_type in ["wandb", "neptune"] and file_paths:
                 for path in file_paths:
-                    self.writer.save_file(path)
+                    self.writer.save_file(path)  # type: ignore

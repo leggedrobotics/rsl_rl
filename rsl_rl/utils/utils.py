@@ -245,26 +245,27 @@ def resolve_obs_groups(
 
     The configuration dictionary could for example look like:
         {
-            "policy": ["group_1", "group_2"],
+            "actor": ["group_1", "group_2"],
             "critic": ["group_1", "group_3"]
         }
 
-    This means that the 'policy' observation set will contain the observations "group_1" and "group_2" and the 'critic'
+    This means that the 'actor' observation set will contain the observations "group_1" and "group_2" and the 'critic'
     observation set will contain the observations "group_1" and "group_3". This function will check that all the
-    observations in the 'policy' and 'critic' observation sets are present in the observation dictionary from the
+    observations in the 'actor' and 'critic' observation sets are present in the observation dictionary from the
     environment.
 
     Additionally, if one of the `default_sets`, e.g. "critic", is not present in the configuration dictionary, this
     function will:
 
     1. Check if a group with the same name exists in the observations and assign this group to the observation set.
-    2. If 1. fails, it will assign the observations from the 'policy' observation set to the default observation set.
+    2. If 1. fails, it will assign the 'policy' observation group to the missing observation set.
+    3. If 2. fails, an error is raised.
 
     Args:
         obs: Observations from the environment in the form of a dictionary.
-        obs_groups: Observation sets configuration.
-        default_sets: Reserved observation set names used by the algorithm (besides 'policy'). If not provided in
-            'obs_groups', a default behavior gets triggered.
+        obs_groups: Dictionary mapping observation sets to lists of observation groups.
+        default_sets: Default observation set names used by the algorithm. If not provided in 'obs_groups', a default
+        behavior gets triggered.
 
     Returns:
         The resolved observation groups.
@@ -272,43 +273,27 @@ def resolve_obs_groups(
     Raises:
         ValueError: If any observation set is an empty list.
         ValueError: If any observation set contains an observation term that is not present in the observations.
+        ValueError: If a default observation set cannot be resolved according to the rules above.
     """
-    # Check if policy observation set exists
-    if "policy" not in obs_groups:
-        if "policy" in obs:
-            obs_groups["policy"] = ["policy"]
-            warnings.warn(
-                "The observation configuration dictionary 'obs_groups' must contain the 'policy' key."
-                " As an observation group with the name 'policy' was found, this is assumed to be the observation set."
-                " Consider adding the 'policy' key to the 'obs_groups' dictionary for clarity."
-                " This behavior will be removed in a future version."
-            )
-        else:
-            raise ValueError(
-                "The observation configuration dictionary 'obs_groups' must contain the 'policy' key."
-                f" Found keys: {list(obs_groups.keys())}"
-            )
-
-    # Check all observation sets for valid observation groups
-    for set_name, groups in obs_groups.items():
-        # Check if the list is empty
-        if len(groups) == 0:
-            msg = f"The '{set_name}' key in the 'obs_groups' dictionary can not be an empty list."
-            if set_name in default_sets:
-                if set_name not in obs:
-                    msg += " Consider removing the key to default to the observations used for the 'policy' set."
-                else:
-                    msg += (
-                        f" Consider removing the key to default to the observation '{set_name}' from the environment."
+    # Check if obs_groups dictionary is empty
+    if len(obs_groups) == 0:
+        warnings.warn(
+            "The observation configuration dictionary 'obs_groups' is empty and thus likely not configured. Consider"
+            " configuring the 'obs_groups' dictionary explicitly"
+        )
+    else:
+        # Check all observation sets for valid observation groups
+        for set_name, groups in obs_groups.items():
+            # Check if the list is empty
+            if len(groups) == 0:
+                raise ValueError(f"The '{set_name}' key in the 'obs_groups' dictionary can not be an empty list.")
+            # Check groups exist inside the observations from the environment
+            for group in groups:
+                if group not in obs:
+                    raise ValueError(
+                        f"Observation '{group}' in observation set '{set_name}' not found in the observations from the"
+                        f" environment. Available observations from the environment: {list(obs.keys())}"
                     )
-            raise ValueError(msg)
-        # Check groups exist inside the observations from the environment
-        for group in groups:
-            if group not in obs:
-                raise ValueError(
-                    f"Observation '{group}' in observation set '{set_name}' not found in the observations from the"
-                    f" environment. Available observations from the environment: {list(obs.keys())}"
-                )
 
     # Fill missing observation sets
     for default_set_name in default_sets:
@@ -316,18 +301,25 @@ def resolve_obs_groups(
             if default_set_name in obs:
                 obs_groups[default_set_name] = [default_set_name]
                 warnings.warn(
-                    f"The observation configuration dictionary 'obs_groups' must contain the '{default_set_name}' key."
-                    f" As an observation group with the name '{default_set_name}' was found, this is assumed to be the"
-                    f" observation set. Consider adding the '{default_set_name}' key to the 'obs_groups' dictionary for"
-                    " clarity. This behavior will be removed in a future version."
+                    f"The observation configuration dictionary 'obs_groups' does not contain the '{default_set_name}'"
+                    f" key. As an observation group with the name '{default_set_name}' was found, this is assumed to be"
+                    f" the appropriate observation. Consider adding the '{default_set_name}' key to the 'obs_groups'"
+                    f" dictionary for clarity. This behavior will be removed in a future version."
+                )
+            elif "policy" in obs:
+                obs_groups[default_set_name] = ["policy"]
+                warnings.warn(
+                    f"The observation configuration dictionary 'obs_groups' does not contain the '{default_set_name}'"
+                    f" key. As an observation group with the name 'policy' was found, this is assumed to be the"
+                    f" appropriate observation. Consider adding the '{default_set_name}' key to the 'obs_groups'"
+                    f" dictionary for clarity. This behavior will be removed in a future version."
                 )
             else:
-                obs_groups[default_set_name] = obs_groups["policy"].copy()
-                warnings.warn(
-                    f"The observation configuration dictionary 'obs_groups' must contain the '{default_set_name}' key."
-                    f" As the configuration for '{default_set_name}' is missing, the observations from the 'policy' set"
-                    f" are used. Consider adding the '{default_set_name}' key to the 'obs_groups' dictionary for"
-                    " clarity. This behavior will be removed in a future version."
+                raise ValueError(
+                    f"The observation configuration dictionary 'obs_groups' does not contain the '{default_set_name}'"
+                    f" key and no suitable observation could be found in the observations from the environment."
+                    f" Please refer to `rsl_rl.utils.resolve_obs_groups()` for information on how to configure the"
+                    f" 'obs_groups' dictionary correctly."
                 )
 
     # Print the final parsed observation sets

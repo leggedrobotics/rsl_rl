@@ -151,7 +151,7 @@ class CNN(nn.Sequential):
         for idx, module in enumerate(self):
             if isinstance(module, nn.Conv2d):
                 torch.nn.init.kaiming_normal_(module.weight)
-                torch.nn.init.zeros_(module.bias)
+                torch.nn.init.zeros_(module.bias)  # type: ignore
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the CNN."""
