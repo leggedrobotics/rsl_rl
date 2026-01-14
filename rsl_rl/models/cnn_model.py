@@ -10,7 +10,7 @@ import torch.nn as nn
 from tensordict import TensorDict
 from typing import Any
 
-from rsl_rl.models import MLPModel
+from rsl_rl.models.mlp_model import MLPModel
 from rsl_rl.modules import CNN
 
 

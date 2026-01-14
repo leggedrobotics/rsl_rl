@@ -18,6 +18,9 @@ from rsl_rl.utils import resolve_callable
 class DistillationRunner(OnPolicyRunner):
     """Distillation runner for training and evaluation of teacher-student methods."""
 
+    alg: Distillation
+    """The distillation algorithm."""
+
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         # Check if teacher is loaded
         if not self.alg.teacher_loaded:
@@ -72,13 +75,13 @@ class DistillationRunner(OnPolicyRunner):
         self.alg_cfg["symmetry_cfg"] = None
 
         # Initialize the policy
-        student_class = resolve_callable(self.alg_cfg["student"].pop("student_class_name"))
+        student_class = resolve_callable(self.cfg["student"].pop("class_name"))
         student: MLPModel = student_class(
-            obs, self.cfg["obs_groups"], "student", self.env.num_actions, **self.alg_cfg["student"]
+            obs, self.cfg["obs_groups"], "student", self.env.num_actions, **self.cfg["student"]
         ).to(self.device)
-        teacher_class = resolve_callable(self.alg_cfg["teacher"].pop("teacher_class_name"))
+        teacher_class = resolve_callable(self.cfg["teacher"].pop("class_name"))
         teacher: MLPModel = teacher_class(
-            obs, self.cfg["obs_groups"], "teacher", self.env.num_actions, **self.alg_cfg["teacher"]
+            obs, self.cfg["obs_groups"], "teacher", self.env.num_actions, **self.cfg["teacher"]
         ).to(self.device)
 
         # Initialize the storage

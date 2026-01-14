@@ -23,6 +23,9 @@ from rsl_rl.utils.logger import Logger
 class OnPolicyRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
 
+    alg: PPO
+    """The actor-critic algorithm."""
+
     def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
         self.cfg = train_cfg
         self.alg_cfg = train_cfg["algorithm"]
@@ -113,7 +116,7 @@ class OnPolicyRunner:
                 learn_time=learn_time,
                 loss_dict=loss_dict,
                 learning_rate=self.alg.learning_rate,
-                action_std=self.get_policy().action_std,
+                action_std=self.get_policy().output_std,
                 rnd_weight=self.alg.rnd.weight if self.alg_cfg["rnd_cfg"] else None,
             )
 
@@ -202,7 +205,7 @@ class OnPolicyRunner:
         .. note::
             See :func:`resolve_obs_groups` for more details on the handling of observation sets.
         """
-        default_sets = ["student", "critic"]
+        default_sets = ["actor", "critic"]
         if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
             default_sets.append("rnd_state")
         return default_sets
@@ -228,14 +231,12 @@ class OnPolicyRunner:
                 self.alg_cfg["critic"]["obs_normalization"] = self.cfg["empirical_normalization"]
 
         # Initialize the policy
-        actor_class = resolve_callable(self.alg_cfg["actor"].pop("class_name"))
+        actor_class = resolve_callable(self.cfg["actor"].pop("class_name"))
         actor: MLPModel = actor_class(
-            obs, self.cfg["obs_groups"], "actor", self.env.num_actions, **self.alg_cfg["actor"]
+            obs, self.cfg["obs_groups"], "actor", self.env.num_actions, **self.cfg["actor"]
         ).to(self.device)
-        critic_class = resolve_callable(self.alg_cfg["critic"].pop("class_name"))
-        critic: MLPModel = critic_class(obs, self.cfg["obs_groups"], "critic", 1, **self.alg_cfg["critic"]).to(
-            self.device
-        )
+        critic_class = resolve_callable(self.cfg["critic"].pop("class_name"))
+        critic: MLPModel = critic_class(obs, self.cfg["obs_groups"], "critic", 1, **self.cfg["critic"]).to(self.device)
 
         # Initialize the storage
         storage = RolloutStorage(

@@ -23,6 +23,9 @@ class Distillation:
     teacher: MLPModel
     """The teacher model."""
 
+    teacher_loaded: bool = False
+    """Indicates whether the teacher model parameters have been loaded."""
+
     def __init__(
         self,
         student: MLPModel,
@@ -37,6 +40,7 @@ class Distillation:
         device: str = "cpu",
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        **kwargs: dict,  # handle unused config parameters
     ) -> None:
         # Device-related parameters
         self.device = device
