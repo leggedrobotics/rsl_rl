@@ -19,6 +19,8 @@ import rsl_rl
 class Logger:
     """Logger to save the learning metrics to different logging services."""
 
+    LOGGER_TYPES = ("wandb", "neptune", "clearml")
+
     def __init__(
         self,
         log_dir: str | None,
@@ -64,7 +66,7 @@ class Logger:
         self._store_code_state()
 
         # Log configuration
-        if self.writer and not self.disable_logs and self.logger_type in ["wandb", "neptune"]:
+        if self.writer and not self.disable_logs and self.logger_type in Logger.LOGGER_TYPES:
             self.writer.store_config(env_cfg, self.cfg)
 
     def process_env_step(
@@ -230,11 +232,11 @@ class Logger:
 
     def save_model(self, path: str, it: int) -> None:
         """Save the model to external logging services if specified."""
-        if self.writer and not self.disable_logs and self.logger_type in ["neptune", "wandb"]:
+        if self.writer and not self.disable_logs and self.logger_type in Logger.LOGGER_TYPES:
             self.writer.save_model(path, it)
 
     def _prepare_logging_writer(self) -> None:
-        """Prepare the logging writer, which can be either Tensorboard, W&B or Neptune."""
+        """Prepare the logging writer, which can be either Tensorboard, W&B, Neptune or ClearML."""
         if self.log_dir is not None and not self.disable_logs:
             self.logger_type = self.cfg.get("logger", "tensorboard")
             self.logger_type = self.logger_type.lower()
@@ -247,12 +249,16 @@ class Logger:
                 from rsl_rl.utils.wandb_utils import WandbSummaryWriter
 
                 self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
+            elif self.logger_type == "clearml":
+                from rsl_rl.utils.clearml_utils import ClearmlSummaryWriter
+
+                self.writer = ClearmlSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
             elif self.logger_type == "tensorboard":
                 from torch.utils.tensorboard import SummaryWriter
 
                 self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
             else:
-                raise ValueError("Logger type not found. Please choose 'wandb', 'neptune', or 'tensorboard'.")
+                raise ValueError(f"Logger type not found. Please choose one of: {', '.join(Logger.LOGGER_TYPES)}.")
         else:
             self.writer = None
 
@@ -285,6 +291,6 @@ class Logger:
                 file_paths.append(diff_file_name)
 
             # Upload diff files to external logging services
-            if self.writer and self.logger_type in ["wandb", "neptune"] and file_paths:
+            if self.writer and self.logger_type in Logger.LOGGER_TYPES and file_paths:
                 for path in file_paths:
                     self.writer.save_file(path)

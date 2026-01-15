@@ -33,6 +33,7 @@ Please keep the lists sorted alphabetically.
 * Eric Vollenweider
 * Fabian Jenelten
 * Lorenzo Terenzi
+* Maciej Aleksandrowicz
 * Marko Bjelonic
 * Matthijs van der Boon
 * Özhan Özen
