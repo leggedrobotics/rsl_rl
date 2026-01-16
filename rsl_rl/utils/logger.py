@@ -65,7 +65,7 @@ class Logger:
         self._store_code_state()
 
         # Video logging configuration
-        if self.cfg.get("video", True) and self.logger_type == "wandb":
+        if self.writer and not self.disable_logs and self.cfg.get("video", True) and self.logger_type == "wandb":
             self.video_framerate = 30
             if hasattr(self.env_cfg, "sim") and hasattr(self.env_cfg.sim, "dt") and hasattr(self.env_cfg, "decimation"):
                 self.video_framerate = int(1 / (self.env_cfg.sim.dt * self.env_cfg.decimation))
