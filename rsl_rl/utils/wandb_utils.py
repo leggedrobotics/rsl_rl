@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict
+from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 
 try:
@@ -38,6 +39,9 @@ class WandbSummaryWriter(SummaryWriter):
         wandb.init(project=project, entity=entity, name=run_name)
         wandb.config.update({"log_dir": log_dir})
 
+        # Initialize video logging
+        self.video_files: set[str] = set()
+
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
         wandb.config.update({"runner_cfg": train_cfg})
         wandb.config.update({"policy_cfg": train_cfg["policy"]})
@@ -63,6 +67,26 @@ class WandbSummaryWriter(SummaryWriter):
             new_style=new_style,
         )
         wandb.log({tag: scalar_value}, step=global_step)
+
+    def add_video_files(self, log_dir: str | os.PathLike, step: int, fps: int = 30) -> None:
+        log_path = Path(log_dir)
+
+        # Prevent logging if dir not initialized
+        if not log_path.exists():
+            return
+
+        for video_path in log_path.rglob("*.mp4"):
+            video_name = video_path.name
+            if video_name in self.video_files:
+                continue
+
+            self.video_files.add(video_name)
+
+            try:
+                video_artifact = wandb.Video(str(video_path), format="mp4")  # type: ignore[arg-type]
+                wandb.log({"Video": video_artifact}, step=step)
+            except Exception as e:
+                print(f"\033[33mWarning: Failed to log video {video_name} to wandb: {e}\033[0m")
 
     def stop(self) -> None:
         wandb.finish()
