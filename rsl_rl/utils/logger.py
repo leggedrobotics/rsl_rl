@@ -38,6 +38,7 @@ class Logger:
         self.git_status_repos = [rsl_rl.__file__]
         self.tot_timesteps = 0
         self.tot_time = 0
+        self.env_cfg = env_cfg
 
         # Create buffers
         self.ep_extras = []
@@ -62,6 +63,12 @@ class Logger:
 
         # Log code state
         self._store_code_state()
+
+        # Video logging configuration
+        if self.cfg.get("video", True) and self.logger_type == "wandb":
+            self.video_framerate = 30
+            if hasattr(self.env_cfg, "sim") and hasattr(self.env_cfg.sim, "dt") and hasattr(self.env_cfg, "decimation"):
+                self.video_framerate = int(1 / (self.env_cfg.sim.dt * self.env_cfg.decimation))
 
         # Log configuration
         if self.writer and not self.disable_logs and self.logger_type in ["wandb", "neptune"]:
@@ -161,6 +168,10 @@ class Logger:
             self.writer.add_scalar("Perf/total_fps", fps, it)
             self.writer.add_scalar("Perf/collection_time", collect_time, it)
             self.writer.add_scalar("Perf/learning_time", learn_time, it)
+
+            # Log video to wandb
+            if self.log_dir is not None and self.cfg.get("video", True) and self.logger_type == "wandb":
+                self.writer.add_video_files(self.log_dir, it, fps=self.video_framerate)
 
             # Log rewards and episode length
             if len(self.rewbuffer) > 0:
