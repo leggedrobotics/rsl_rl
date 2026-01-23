@@ -124,7 +124,7 @@ class OnPolicyRunner:
             )
 
             # Save model
-            if it % self.cfg["save_interval"] == 0:
+            if self.gpu_global_rank == 0 and it % self.cfg["save_interval"] == 0:
                 self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore
 
         # Save the final model after training
