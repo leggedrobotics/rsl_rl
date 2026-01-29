@@ -32,6 +32,7 @@ class Logger:
     ) -> None:
         self.log_dir = log_dir
         self.cfg = cfg
+        self.env_cfg = env_cfg
         self.num_envs = num_envs
         self.gpu_world_size = gpu_world_size
         self.device = device
@@ -57,15 +58,36 @@ class Logger:
         # Note: We only log from the process with rank 0 (main process)
         self.disable_logs = is_distributed and gpu_global_rank != 0
 
-        # Initialize the writer
-        self._prepare_logging_writer()
-
         # Log code state
-        self._store_code_state()
+        self.files_to_upload = self._store_code_state()
 
-        # Log configuration
-        if self.writer and not self.disable_logs and self.logger_type in ["wandb", "neptune"]:
-            self.writer.store_config(env_cfg, self.cfg)  # type: ignore
+    def init_logging_writer(self) -> None:
+        """Initialize the logging writer, which can be either Tensorboard, W&B or Neptune."""
+        if self.log_dir is not None and not self.disable_logs:
+            self.logger_type = self.cfg.get("logger", "tensorboard")
+            self.logger_type = self.logger_type.lower()
+            if self.logger_type == "neptune":
+                from rsl_rl.utils.neptune_utils import NeptuneSummaryWriter
+
+                self.writer = NeptuneSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
+            elif self.logger_type == "wandb":
+                from rsl_rl.utils.wandb_utils import WandbSummaryWriter
+
+                self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
+            elif self.logger_type == "tensorboard":
+                from torch.utils.tensorboard import SummaryWriter
+
+                self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
+            else:
+                raise ValueError("Logger type not found. Please choose 'wandb', 'neptune', or 'tensorboard'.")
+        else:
+            self.writer = None
+
+        # Upload configuration and code state
+        if self.writer and self.logger_type in ["wandb", "neptune"]:
+            self.writer.store_config(self.env_cfg, self.cfg)  # type: ignore
+            for path in self.files_to_upload:
+                self.writer.save_file(path)  # type: ignore
 
     def process_env_step(
         self,
@@ -118,7 +140,7 @@ class Logger:
         pad: int = 40,
     ) -> None:
         """Log the training metrics to the logging service and print them to the console."""
-        if self.log_dir is not None and not self.disable_logs:
+        if self.writer:
             collection_size = self.cfg["num_steps_per_env"] * self.num_envs * self.gpu_world_size
             iteration_time = collect_time + learn_time
             self.tot_timesteps += collection_size
@@ -230,38 +252,15 @@ class Logger:
 
     def save_model(self, path: str, it: int) -> None:
         """Save the model to external logging services if specified."""
-        if self.writer and not self.disable_logs and self.logger_type in ["neptune", "wandb"]:
+        if self.writer and self.logger_type in ["neptune", "wandb"]:
             self.writer.save_model(path, it)  # type: ignore
 
-    def _prepare_logging_writer(self) -> None:
-        """Prepare the logging writer, which can be either Tensorboard, W&B or Neptune."""
-        if self.log_dir is not None and not self.disable_logs:
-            self.logger_type = self.cfg.get("logger", "tensorboard")
-            self.logger_type = self.logger_type.lower()
-
-            if self.logger_type == "neptune":
-                from rsl_rl.utils.neptune_utils import NeptuneSummaryWriter
-
-                self.writer = NeptuneSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
-            elif self.logger_type == "wandb":
-                from rsl_rl.utils.wandb_utils import WandbSummaryWriter
-
-                self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
-            elif self.logger_type == "tensorboard":
-                from torch.utils.tensorboard import SummaryWriter
-
-                self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
-            else:
-                raise ValueError("Logger type not found. Please choose 'wandb', 'neptune', or 'tensorboard'.")
-        else:
-            self.writer = None
-
-    def _store_code_state(self) -> None:
+    def _store_code_state(self) -> list[str]:
         """Store the current git diff of the code repositories involved in the experiment."""
+        files_to_upload = []
         if self.log_dir is not None and not self.disable_logs:
             git_log_dir = os.path.join(self.log_dir, "git")
             os.makedirs(git_log_dir, exist_ok=True)
-            file_paths = []
             # Iterate over all repositories to log
             for repository_file_path in self.git_status_repos:
                 try:
@@ -282,9 +281,5 @@ class Logger:
                     content = f"--- git status ---\n{repo.git.status()} \n\n\n--- git diff ---\n{repo.git.diff(t)}"
                     f.write(content)
                 # Add the file path to the list of files to be uploaded
-                file_paths.append(diff_file_name)
-
-            # Upload diff files to external logging services
-            if self.writer and self.logger_type in ["wandb", "neptune"] and file_paths:
-                for path in file_paths:
-                    self.writer.save_file(path)  # type: ignore
+                files_to_upload.append(diff_file_name)
+        return files_to_upload
