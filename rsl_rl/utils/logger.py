@@ -62,7 +62,10 @@ class Logger:
         self.files_to_upload = self._store_code_state()
 
     def init_logging_writer(self) -> None:
-        """Initialize the logging writer, which can be either Tensorboard, W&B or Neptune."""
+        """Initialize the logging writer, which can be either Tensorboard, W&B or Neptune.
+
+        If the writer is either W&B or Neptune, the configuration and code state are uploaded as well.
+        """
         if self.log_dir is not None and not self.disable_logs:
             self.logger_type = self.cfg.get("logger", "tensorboard")
             self.logger_type = self.logger_type.lower()
@@ -139,7 +142,10 @@ class Logger:
         width: int = 80,
         pad: int = 40,
     ) -> None:
-        """Log the training metrics to the logging service and print them to the console."""
+        """Log the training metrics to the logging service and print them to the console.
+
+        If videos are available, they are uploaded to the logging service (W&B) as well.
+        """
         if self.writer:
             collection_size = self.cfg["num_steps_per_env"] * self.num_envs * self.gpu_world_size
             iteration_time = collect_time + learn_time
@@ -246,6 +252,11 @@ class Logger:
                 f"""{"ETA:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(eta))}\n"""
             )
             print(log_string)
+
+            # Upload available videos
+            if self.logger_type == "wandb":
+                for video in pathlib.Path(self.log_dir).rglob("*.mp4"):  # type: ignore
+                    self.writer.save_video(video, it)  # type: ignore
 
             # Clear extras buffer
             self.ep_extras.clear()
