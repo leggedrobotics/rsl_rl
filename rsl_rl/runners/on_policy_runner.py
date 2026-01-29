@@ -72,6 +72,9 @@ class OnPolicyRunner:
             print(f"Synchronizing parameters for rank {self.gpu_global_rank}...")
             self.alg.broadcast_parameters()
 
+        # Initialize the logging writer
+        self.logger.init_logging_writer()
+
         # Start training
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
@@ -121,12 +124,12 @@ class OnPolicyRunner:
             )
 
             # Save model
-            if it % self.cfg["save_interval"] == 0:
+            if self.logger.writer is not None and it % self.cfg["save_interval"] == 0:
                 self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore
 
         # Save the final model after training
-        if self.logger.log_dir is not None and not self.logger.disable_logs:
-            self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))
+        if self.logger.writer is not None:
+            self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))  # type: ignore
 
     def save(self, path: str, infos: dict | None = None) -> None:
         # Save model

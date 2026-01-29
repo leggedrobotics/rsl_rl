@@ -84,7 +84,7 @@ class Logger:
             self.writer = None
 
         # Upload configuration and code state
-        if self.writer and self.logger_type in ["wandb", "neptune"]:
+        if self.writer is not None and self.logger_type in ["wandb", "neptune"]:
             self.writer.store_config(self.env_cfg, self.cfg)  # type: ignore
             for path in self.files_to_upload:
                 self.writer.save_file(path)  # type: ignore
@@ -252,7 +252,7 @@ class Logger:
 
     def save_model(self, path: str, it: int) -> None:
         """Save the model to external logging services if specified."""
-        if self.writer and self.logger_type in ["neptune", "wandb"]:
+        if self.writer is not None and self.logger_type in ["neptune", "wandb"]:
             self.writer.save_model(path, it)  # type: ignore
 
     def _store_code_state(self) -> list[str]:
