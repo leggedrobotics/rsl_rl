@@ -39,7 +39,7 @@ class WandbSummaryWriter(SummaryWriter):
         wandb.config.update({"log_dir": log_dir})
 
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
-        wandb.config.update({"runner_cfg": train_cfg})
+        wandb.config.update({"train_cfg": train_cfg})
         try:
             wandb.config.update({"env_cfg": env_cfg.to_dict()})  # type: ignore
         except Exception:

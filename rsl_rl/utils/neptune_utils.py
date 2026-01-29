@@ -54,7 +54,7 @@ class NeptuneSummaryWriter(SummaryWriter):
         }
 
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
-        self.run["runner_cfg"] = train_cfg
+        self.run["train_cfg"] = train_cfg
         try:
             self.run["env_cfg"] = env_cfg.to_dict()  # type: ignore
         except Exception:

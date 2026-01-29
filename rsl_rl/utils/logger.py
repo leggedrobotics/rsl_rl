@@ -255,6 +255,11 @@ class Logger:
         if self.writer is not None and self.logger_type in ["neptune", "wandb"]:
             self.writer.save_model(path, it)  # type: ignore
 
+    def stop_logging_writer(self) -> None:
+        """Stop the logging writer."""
+        if self.writer is not None and self.logger_type in ["neptune", "wandb"]:
+            self.writer.stop()  # type: ignore
+
     def _store_code_state(self) -> list[str]:
         """Store the current git diff of the code repositories involved in the experiment."""
         files_to_upload = []
