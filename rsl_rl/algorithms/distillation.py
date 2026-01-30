@@ -231,9 +231,11 @@ class Distillation:
         student: MLPModel = student_class(obs, cfg["obs_groups"], "student", env.num_actions, **cfg["student"]).to(
             device
         )
+        print(f"Student Model: {student}")
         teacher: MLPModel = teacher_class(obs, cfg["obs_groups"], "teacher", env.num_actions, **cfg["teacher"]).to(
             device
         )
+        print(f"Teacher Model: {teacher}")
 
         # Initialize the storage
         storage = RolloutStorage("distillation", env.num_envs, cfg["num_steps_per_env"], obs, [env.num_actions], device)
