@@ -8,15 +8,10 @@ from __future__ import annotations
 import os
 import time
 import torch
-import warnings
-from tensordict import TensorDict
 
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
-from rsl_rl.extensions import resolve_rnd_config, resolve_symmetry_config
-from rsl_rl.models import MLPModel
-from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import resolve_callable, resolve_obs_groups
+from rsl_rl.utils import resolve_callable
 from rsl_rl.utils.logger import Logger
 
 
@@ -27,20 +22,19 @@ class OnPolicyRunner:
     """The actor-critic algorithm."""
 
     def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
-        self.cfg = train_cfg
-        self.alg_cfg = train_cfg["algorithm"]
-        self.device = device
         self.env = env
+        self.cfg = train_cfg
+        self.device = device
 
         # Setup multi-GPU training if enabled
         self._configure_multi_gpu()
 
         # Query observations from the environment for algorithm construction
         obs = self.env.get_observations()
-        self.cfg["obs_groups"] = resolve_obs_groups(obs, self.cfg["obs_groups"], self._get_default_obs_sets())
 
         # Create the algorithm
-        self.alg = self._construct_algorithm(obs)
+        alg_class: type[PPO] = resolve_callable(self.cfg["algorithm"]["class_name"])  # type: ignore
+        self.alg = alg_class.construct_algorithm(obs, self.env, self.cfg, self.device)
 
         # Create the logger
         self.logger = Logger(
@@ -65,7 +59,7 @@ class OnPolicyRunner:
 
         # Start learning
         obs = self.env.get_observations().to(self.device)
-        self.train_mode()  # switch to train mode (for dropout for example)
+        self.alg.train_mode()  # switch to train mode (for dropout for example)
 
         # Ensure all parameters are in-synced
         if self.is_distributed:
@@ -89,7 +83,7 @@ class OnPolicyRunner:
                     # Process the step
                     self.alg.process_env_step(obs, rewards, dones, extras)
                     # Extract intrinsic rewards if RND is used (only for logging)
-                    intrinsic_rewards = self.alg.intrinsic_rewards if self.alg_cfg["rnd_cfg"] else None
+                    intrinsic_rewards = self.alg.intrinsic_rewards if self.cfg["algorithm"]["rnd_cfg"] else None
                     # Book keeping
                     self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
 
@@ -116,8 +110,8 @@ class OnPolicyRunner:
                 learn_time=learn_time,
                 loss_dict=loss_dict,
                 learning_rate=self.alg.learning_rate,
-                action_std=self.get_policy().output_std,
-                rnd_weight=self.alg.rnd.weight if self.alg_cfg["rnd_cfg"] else None,
+                action_std=self.alg.get_policy().output_std,
+                rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"]["rnd_cfg"] else None,
             )
 
             # Save model
@@ -129,127 +123,31 @@ class OnPolicyRunner:
             self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))
 
     def save(self, path: str, infos: dict | None = None) -> None:
-        # Save model
-        saved_dict = {
-            **{f"{name}_state_dict": model.state_dict() for name, model in self.get_models().items()},
-            "optimizer_state_dict": self.alg.optimizer.state_dict(),
-            "iter": self.current_learning_iteration,
-            "infos": infos,
-        }
-        # Save RND model if used
-        if self.alg_cfg["rnd_cfg"]:
-            saved_dict["rnd_state_dict"] = self.alg.rnd.state_dict()
-            if self.alg.rnd_optimizer:
-                saved_dict["rnd_optimizer_state_dict"] = self.alg.rnd_optimizer.state_dict()
+        """Save the models and training state to a given path and upload them if external logging is used."""
+        saved_dict = self.alg.save()
+        saved_dict["iter"] = self.current_learning_iteration
+        saved_dict["infos"] = infos
         torch.save(saved_dict, path)
         # Upload model to external logging services
         self.logger.save_model(path, self.current_learning_iteration)
 
-    def load(self, path: str, load_optimizer: bool = True, map_location: str | None = None) -> dict:
+    def load(self, path: str, inference_only: bool = False, map_location: str | None = None) -> dict:
+        """Load the models and training state from a given path."""
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
-        # Load models
-        for name, model in self.get_models().items():
-            model.load_state_dict(loaded_dict[f"{name}_state_dict"])
-        # Load RND model if used
-        if self.alg_cfg["rnd_cfg"]:
-            self.alg.rnd.load_state_dict(loaded_dict["rnd_state_dict"])
-        # Load optimizer if used
-        if load_optimizer:
-            # Algorithm optimizer
-            self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
-            # RND optimizer if used
-            if self.alg_cfg["rnd_cfg"]:
-                self.alg.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
-        # Load current learning iteration
-        self.current_learning_iteration = loaded_dict["iter"]
+        self.alg.load(loaded_dict, inference_only)
+        if not inference_only:
+            self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
-
-    def get_policy(self) -> MLPModel:
-        """Get the policy model."""
-        return self.alg.actor
-
-    def get_models(self) -> dict[str, MLPModel]:
-        """Return a dict of {name: model} for saving/loading."""
-        return {
-            "actor": self.alg.actor,
-            "critic": self.alg.critic,
-        }
 
     def get_inference_policy(self, device: str | None = None) -> callable:
         """Return the policy's forward method on the requested device for inference."""
-        self.eval_mode()  # Switch to evaluation mode (e.g. for dropout)
+        self.alg.eval_mode()  # Switch to evaluation mode (e.g. for dropout)
         if device is not None:
-            policy = self.get_policy.to(device)  # type: ignore
+            policy = self.alg.get_policy.to(device)  # type: ignore
         return policy.forward
-
-    def train_mode(self) -> None:
-        for model in self.get_models().values():
-            model.train()
-        # RND
-        if self.alg_cfg["rnd_cfg"]:
-            self.alg.rnd.train()
-
-    def eval_mode(self) -> None:
-        for model in self.get_models().values():
-            model.eval()
-        # RND
-        if self.alg_cfg["rnd_cfg"]:
-            self.alg.rnd.eval()
 
     def add_git_repo_to_log(self, repo_file_path: str) -> None:
         self.logger.git_status_repos.append(repo_file_path)
-
-    def _get_default_obs_sets(self) -> list[str]:
-        """Get the the default observation sets required for the algorithm.
-
-        .. note::
-            See :func:`resolve_obs_groups` for more details on the handling of observation sets.
-        """
-        default_sets = ["actor", "critic"]
-        if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
-            default_sets.append("rnd_state")
-        return default_sets
-
-    def _construct_algorithm(self, obs: TensorDict) -> PPO:
-        """Construct the actor-critic algorithm."""
-        # Resolve RND config if used
-        self.alg_cfg = resolve_rnd_config(self.alg_cfg, obs, self.cfg["obs_groups"], self.env)
-
-        # Resolve symmetry config if used
-        self.alg_cfg = resolve_symmetry_config(self.alg_cfg, self.env)
-
-        # Resolve deprecated normalization config
-        if self.cfg.get("empirical_normalization") is not None:
-            warnings.warn(
-                "The `empirical_normalization` parameter is deprecated. Please set `actor_obs_normalization` and "
-                "`critic_obs_normalization` as part of the `policy` configuration instead.",
-                DeprecationWarning,
-            )
-            if self.alg_cfg["actor"].get("obs_normalization") is None:
-                self.alg_cfg["actor"]["obs_normalization"] = self.cfg["empirical_normalization"]
-            if self.alg_cfg["critic"].get("obs_normalization") is None:
-                self.alg_cfg["critic"]["obs_normalization"] = self.cfg["empirical_normalization"]
-
-        # Initialize the policy
-        actor_class = resolve_callable(self.cfg["actor"].pop("class_name"))
-        actor: MLPModel = actor_class(
-            obs, self.cfg["obs_groups"], "actor", self.env.num_actions, **self.cfg["actor"]
-        ).to(self.device)
-        critic_class = resolve_callable(self.cfg["critic"].pop("class_name"))
-        critic: MLPModel = critic_class(obs, self.cfg["obs_groups"], "critic", 1, **self.cfg["critic"]).to(self.device)
-
-        # Initialize the storage
-        storage = RolloutStorage(
-            "rl", self.env.num_envs, self.cfg["num_steps_per_env"], obs, [self.env.num_actions], self.device
-        )
-
-        # Initialize the algorithm
-        alg_class = resolve_callable(self.alg_cfg.pop("class_name"))
-        alg: PPO = alg_class(
-            actor, critic, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
-        )
-
-        return alg
 
     def _configure_multi_gpu(self) -> None:
         """Configure multi-gpu training."""
@@ -261,7 +159,7 @@ class OnPolicyRunner:
         if not self.is_distributed:
             self.gpu_local_rank = 0
             self.gpu_global_rank = 0
-            self.multi_gpu_cfg = None
+            self.cfg["multi_gpu"] = None
             return
 
         # Get rank and world size
@@ -269,7 +167,7 @@ class OnPolicyRunner:
         self.gpu_global_rank = int(os.getenv("RANK", "0"))
 
         # Make a configuration dictionary
-        self.multi_gpu_cfg = {
+        self.cfg["multi_gpu"] = {
             "global_rank": self.gpu_global_rank,  # Rank of the main process
             "local_rank": self.gpu_local_rank,  # Rank of the current process
             "world_size": self.gpu_world_size,  # Total number of processes
