@@ -6,9 +6,7 @@
 from __future__ import annotations
 
 import torch
-import warnings
 from tensordict import TensorDict
-from typing import Any
 
 from rsl_rl.models.mlp_model import MLPModel
 from rsl_rl.modules import RNN, HiddenState
@@ -25,7 +23,7 @@ class RNNModel(MLPModel):
 
     is_recurrent: bool = True
 
-    def __init__(  # noqa: D417
+    def __init__(
         self,
         obs: TensorDict,
         obs_groups: dict[str, list[str]],
@@ -41,7 +39,6 @@ class RNNModel(MLPModel):
         rnn_type: str = "lstm",
         rnn_hidden_dim: int = 256,
         rnn_num_layers: int = 1,
-        **kwargs: dict[str, Any],
     ) -> None:
         """Initialize the RNN-based model.
 
@@ -61,15 +58,6 @@ class RNNModel(MLPModel):
             rnn_hidden_dim: Dimension of the RNN hidden state.
             rnn_num_layers: Number of RNN layers.
         """
-        # Handle deprecated argument
-        if "rnn_hidden_size" in kwargs:
-            warnings.warn(
-                "The argument `rnn_hidden_size` is deprecated and will be removed in a future version. "
-                "Please use `rnn_hidden_dim` instead.",
-                DeprecationWarning,
-            )
-            if rnn_hidden_dim == 256:  # Only override if the new argument is at its default
-                rnn_hidden_dim = kwargs.pop("rnn_hidden_size")  # type: ignore
         self.latent_dim = rnn_hidden_dim
 
         # Initialize the parent MLP model
@@ -91,10 +79,7 @@ class RNNModel(MLPModel):
         self.rnn = RNN(self.obs_dim, rnn_hidden_dim, rnn_num_layers, rnn_type)
 
     def get_latent(
-        self,
-        obs: TensorDict,
-        masks: torch.Tensor | None = None,
-        hidden_state: HiddenState = None,
+        self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
     ) -> torch.Tensor:
         # Extract and concatenate observation groups and normalize
         latent = super().get_latent(obs)
