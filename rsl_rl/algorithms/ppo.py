@@ -13,7 +13,7 @@ from tensordict import TensorDict
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import RandomNetworkDistillation, resolve_rnd_config, resolve_symmetry_config
-from rsl_rl.models import MLPModel, RNNModel
+from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_callable, resolve_obs_groups, resolve_optimizer
 
@@ -95,7 +95,7 @@ class PPO:
                     f"{symmetry_cfg['data_augmentation_func']}"
                 )
             # Check if the policy is compatible with symmetry
-            if isinstance(actor, RNNModel) or isinstance(critic, RNNModel):
+            if actor.is_recurrent or critic.is_recurrent:
                 raise ValueError("Symmetry augmentation is not supported for recurrent policies.")
             # Store symmetry configuration
             self.symmetry = symmetry_cfg

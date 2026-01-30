@@ -5,32 +5,40 @@ runner:
   max_iterations: 1500  # Number of policy updates
   seed: 1
   # Observations
-  obs_groups: {"actor": ["policy"], "critic": ["policy", "privileged"]} # Maps observation groups to sets. See `vec_env.py` for more information
+  obs_groups: {"actor": ["policy"], "critic": ["policy", "privileged"]} # Maps from observation sets to groups. See `vec_env.py` for more information
   # Logging parameters
   save_interval: 50  # Check for potential saves every `save_interval` iterations
   experiment_name: walking_experiment
   run_name: ""
   # Logging writer
   logger: tensorboard  # tensorboard, neptune, wandb
-  neptune_project: legged_gym
-  wandb_project: legged_gym
+  neptune_project: rsl_rl
+  wandb_project: rsl_rl
 
-  # Policy
-  policy:
-    class_name: ActorCritic
+  # Actor
+  actor:
+    class_name: MLPModel
+    hidden_dims: [256, 256, 256]
     activation: elu
-    actor_obs_normalization: false
-    critic_obs_normalization: false
-    actor_hidden_dims: [256, 256, 256]
-    critic_hidden_dims: [256, 256, 256]
+    obs_normalization: false
+    stochastic: true
     init_noise_std: 1.0
     noise_std_type: "scalar"  # 'scalar' or 'log'
     state_dependent_std: false
+  
+  # Critic
+  critic:
+    class_name: MLPModel
+    hidden_dims: [256, 256, 256]
+    activation: elu
+    obs_normalization: false
+    stochastic: false
 
   # Algorithm
   algorithm:
     class_name: PPO
     # Training
+    optimizer: adam # adam, adamw, sgd, rmsprop
     learning_rate: 0.001
     num_learning_epochs: 5
     num_mini_batches: 4  # mini batch size = num_envs * num_steps / num_mini_batches

@@ -152,7 +152,7 @@ class Distillation:
 
         mean_behavior_loss /= cnt
         self.storage.clear()
-        self.last_hidden_states = [self.student.get_hidden_state(), self.teacher.get_hidden_state()]
+        self.last_hidden_states = (self.student.get_hidden_state(), self.teacher.get_hidden_state())
         self.student.detach_hidden_state()  # TODO: Needed for teacher?
 
         # Construct the loss dictionary
