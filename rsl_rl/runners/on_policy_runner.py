@@ -11,6 +11,7 @@ import torch
 
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
+from rsl_rl.models import MLPModel
 from rsl_rl.utils import resolve_callable
 from rsl_rl.utils.logger import Logger
 
@@ -152,12 +153,12 @@ class OnPolicyRunner:
             self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
 
-    def get_inference_policy(self, device: str | None = None) -> callable:
-        """Return the policy's forward method on the requested device for inference."""
+    def get_inference_policy(self, device: str | None = None) -> MLPModel:
+        """Return the policy on the requested device for inference."""
         self.alg.eval_mode()  # Switch to evaluation mode (e.g. for dropout)
         if device is not None:
-            policy = self.alg.get_policy.to(device)  # type: ignore
-        return policy.forward
+            policy = self.alg.get_policy().to(device)  # type: ignore
+        return policy
 
     def add_git_repo_to_log(self, repo_file_path: str) -> None:
         self.logger.git_status_repos.append(repo_file_path)
