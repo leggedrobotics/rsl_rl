@@ -32,6 +32,7 @@ class CNNModel(MLPModel):
         obs_set: str,
         output_dim: int,
         cnn_cfg: dict[str, dict] | dict[str, Any],
+        cnns: nn.ModuleDict | None = None,
         hidden_dims: tuple[int] | list[int] = [256, 256, 256],
         activation: str = "elu",
         obs_normalization: bool = False,
@@ -49,6 +50,7 @@ class CNNModel(MLPModel):
             output_dim: Dimension of the output.
             hidden_dims: Hidden dimensions of the MLP.
             cnn_cfg: Configuration of the CNN encoder(s).
+            cnns: CNN modules to use, e.g., for sharing CNNs between actor and critic. If None, new CNNs are created.
             activation: Activation function of the CNN and MLP.
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
             stochastic: Whether the model outputs stochastic or deterministic values.
@@ -59,23 +61,29 @@ class CNNModel(MLPModel):
         # Resolve observation groups and dimensions
         self._get_obs_dim(obs, obs_groups, obs_set)
 
-        # Create an rnn config for each 2D observation group in case only one is provided
-        if not all(isinstance(v, dict) for v in cnn_cfg.values()):
-            cnn_cfg = {group: cnn_cfg for group in self.obs_groups_2d}
+        # Create or assign CNN encoders
+        if cnns is not None:
+            if set(cnns.keys()) != set(self.obs_groups_2d):
+                raise ValueError("The actor's 2D observations must match the critic's for sharing CNN encoders.")
+            print("Sharing CNN encoders between actor and critic, the critic's CNN configurations are ignored.")
+            self.cnns = cnns
+        else:
+            # Create a cnn config for each 2D observation group in case only one is provided
+            if not all(isinstance(v, dict) for v in cnn_cfg.values()):
+                cnn_cfg = {group: cnn_cfg for group in self.obs_groups_2d}
 
-        # Check that the number of configs matches the number of observation groups
-        assert len(cnn_cfg) == len(self.obs_groups_2d), (
-            "The number of CNN configurations must match the number of 2D observation groups."
-        )
-
-        # CNNs for each 2D observation
-        self.cnns = nn.ModuleDict()
-        for idx, obs_group in enumerate(self.obs_groups_2d):
-            self.cnns[obs_group] = CNN(
-                input_dim=self.obs_dims_2d[idx],
-                input_channels=self.obs_channels_2d[idx],
-                **cnn_cfg[obs_group],
+            # Check that the number of configs matches the number of observation groups
+            assert len(cnn_cfg) == len(self.obs_groups_2d), (
+                "The number of CNN configurations must match the number of 2D observation groups."
             )
+            # Create CNNs for each 2D observation
+            self.cnns = nn.ModuleDict()
+            for idx, obs_group in enumerate(self.obs_groups_2d):
+                self.cnns[obs_group] = CNN(
+                    input_dim=self.obs_dims_2d[idx],
+                    input_channels=self.obs_channels_2d[idx],
+                    **cnn_cfg[obs_group],
+                )
 
         # Initialize the parent MLP model
         super().__init__(
