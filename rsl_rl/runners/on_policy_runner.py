@@ -131,15 +131,24 @@ class OnPolicyRunner:
         # Upload model to external logging services
         self.logger.save_model(path, self.current_learning_iteration)
 
-    def load(self, path: str, inference_only: bool = False, map_location: str | None = None) -> dict:
+    def load(
+        self, path: str, load_dict: dict | None = None, strict: bool = True, map_location: str | None = None
+    ) -> dict:
         """Load the models and training state from a given path.
 
         If `inference_only` is True, only load the policy needed for inference without loading other models or training
         states.
+
+        Args:
+            path (str): Path to load the model from.
+            load_dict (dict | None): Optional dictionary that defines what models and states to load. If None, all
+                models and states are loaded.
+            strict (bool): Whether state_dict loading should be strict.
+            map_location (str | None): Device mapping for loading the model.
         """
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
-        continue_run = self.alg.load(loaded_dict, inference_only)
-        if not inference_only and continue_run:
+        load_iteration = self.alg.load(loaded_dict, load_dict, strict)
+        if load_iteration:
             self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
 

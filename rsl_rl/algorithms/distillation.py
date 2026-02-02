@@ -178,19 +178,37 @@ class Distillation:
         }
         return saved_dict
 
-    def load(self, loaded_dict: dict, inference_only: bool) -> bool:
-        """Load all models from a saved dict."""
+    def load(self, loaded_dict: dict, load_dict: dict | None, strict: bool) -> bool:
+        """Load specified models from a saved dict."""
         if any("actor_state_dict" in key for key in loaded_dict):  # Load models from previous RL training
-            self.teacher.load_state_dict(loaded_dict["actor_state_dict"])  # Previous actor becomes teacher
-            self.teacher_loaded = True
-            return False  # Not continuing a previous distillation training
-        else:  # Load models from previous distillation training
-            self.student.load_state_dict(loaded_dict["student_state_dict"])
-            if not inference_only:
-                self.teacher.load_state_dict(loaded_dict["teacher_state_dict"])
-                self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+            if load_dict is None:
+                load_dict = {"teacher": True, "iteration": False}  # Only load teacher by default
+            if load_dict.get("teacher"):
+                self.teacher.load_state_dict(
+                    loaded_dict["actor_state_dict"], strict=strict
+                )  # Previous actor becomes teacher
                 self.teacher_loaded = True
-            return True  # Continuing a previous distillation training
+            if load_dict.get("student"):
+                raise ValueError("Cannot load student model from a previous RL training checkpoint.")
+            if load_dict.get("optimizer"):
+                raise ValueError("Cannot load optimizer state from a previous RL training checkpoint.")
+            return load_dict.get("iteration", False)
+        else:  # Load models from previous distillation training
+            if load_dict is None:
+                load_dict = {
+                    "student": True,
+                    "teacher": True,
+                    "optimizer": True,
+                    "iteration": True,
+                }  # Load all models and states
+            if load_dict.get("student"):
+                self.student.load_state_dict(loaded_dict["student_state_dict"], strict=strict)
+            if load_dict.get("teacher"):
+                self.teacher.load_state_dict(loaded_dict["teacher_state_dict"], strict=strict)
+                self.teacher_loaded = True
+            if load_dict.get("optimizer"):
+                self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+            return load_dict.get("iteration", False)
 
     def get_policy(self) -> MLPModel:
         """Get the policy model."""
