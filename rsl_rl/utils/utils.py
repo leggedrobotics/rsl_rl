@@ -149,17 +149,14 @@ def unpad_trajectories(trajectories: torch.Tensor | TensorDict, masks: torch.Ten
     """Do the inverse operation of `split_and_pad_trajectories()`."""
     # Select valid steps and flatten to sequence of valid steps
     valid_steps = trajectories.transpose(1, 0)[masks.transpose(1, 0)]
-
     # Reshape back to original dimensions
-    time = trajectories.shape[0]
-
     if isinstance(trajectories, TensorDict):
         # TensorDict.view() only modifies the batch size.
         # We reshape [valid_steps] -> [number of envs, time] and then transpose back to [time, number of envs]
-        return valid_steps.view(-1, time).transpose(1, 0)
+        return valid_steps.view(-1, trajectories.shape[0]).transpose(1, 0)
     else:
         # For standard Tensors, we must explicitly handle feature dimensions in view()
-        return valid_steps.view(-1, time, *trajectories.shape[2:]).transpose(1, 0)
+        return valid_steps.view(-1, trajectories.shape[0], *trajectories.shape[2:]).transpose(1, 0)
 
 
 def resolve_callable(callable_or_name: type | Callable | str) -> Callable:
