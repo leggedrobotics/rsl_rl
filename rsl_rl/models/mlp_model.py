@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
@@ -159,6 +160,14 @@ class MLPModel(nn.Module):
     def get_output_log_prob(self, outputs: torch.Tensor) -> torch.Tensor:
         return self.distribution.log_prob(outputs).sum(dim=-1)
 
+    def as_jit(self) -> nn.Module:
+        """Return a version of the model compatible with Torch JIT export."""
+        return _TorchMLPModel(self)
+
+    def as_onnx(self, verbose: bool) -> nn.Module:
+        """Return a version of the model compatible with ONNX export."""
+        return _OnnxMLPModel(self, verbose)
+
     def update_normalization(self, obs: TensorDict) -> None:
         if self.obs_normalization:
             # Select and concatenate observations
@@ -202,3 +211,56 @@ class MLPModel(nn.Module):
 
     def _get_latent_dim(self) -> int:
         return self.obs_dim
+
+
+class _TorchMLPModel(nn.Module):
+    """Exportable MLP model for JIT."""
+
+    def __init__(self, model: MLPModel) -> None:
+        super().__init__()
+        self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
+        self.mlp = copy.deepcopy(model.mlp)
+        self.state_dependent_std = model.state_dependent_std
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.obs_normalizer(x)
+        out = self.mlp(x)
+        if self.state_dependent_std:
+            return out[..., 0, :]
+        return out
+
+    @torch.jit.export
+    def reset(self) -> None:
+        pass
+
+
+class _OnnxMLPModel(nn.Module):
+    """Exportable MLP model for ONNX."""
+
+    is_recurrent: bool = False
+
+    def __init__(self, model: MLPModel, verbose: bool) -> None:
+        super().__init__()
+        self.verbose = verbose
+        self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
+        self.mlp = copy.deepcopy(model.mlp)
+        self.state_dependent_std = model.state_dependent_std
+        self.input_size = model.obs_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.obs_normalizer(x)
+        out = self.mlp(x)
+        if self.state_dependent_std:
+            return out[..., 0, :]
+        return out
+
+    def get_dummy_inputs(self) -> tuple[torch.Tensor]:
+        return (torch.zeros(1, self.input_size),)
+
+    @property
+    def input_names(self) -> list[str]:
+        return ["obs"]
+
+    @property
+    def output_names(self) -> list[str]:
+        return ["actions"]
