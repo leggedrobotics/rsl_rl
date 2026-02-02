@@ -120,7 +120,7 @@ class Distillation:
         for epoch in range(self.num_learning_epochs):
             self.student.reset(hidden_state=self.last_hidden_states[0])
             self.teacher.reset(hidden_state=self.last_hidden_states[1])
-            self.student.detach_hidden_state()  # TODO: Needed for teacher?
+            self.student.detach_hidden_state()
             for obs, _, privileged_actions, dones in self.storage.generator():
                 # Inference of the student for gradient computation
                 actions = self.student(obs)
@@ -142,18 +142,18 @@ class Distillation:
                     if self.max_grad_norm:
                         nn.utils.clip_grad_norm_(self.student.parameters(), self.max_grad_norm)
                     self.optimizer.step()
-                    self.student.detach_hidden_state()  # TODO: Needed for teacher?
+                    self.student.detach_hidden_state()
                     loss = 0
 
                 # Reset dones
                 self.student.reset(dones.view(-1))
                 self.teacher.reset(dones.view(-1))
-                self.student.detach_hidden_state(dones.view(-1))  # TODO: Needed for teacher?
+                self.student.detach_hidden_state(dones.view(-1))
 
         mean_behavior_loss /= cnt
         self.storage.clear()
         self.last_hidden_states = (self.student.get_hidden_state(), self.teacher.get_hidden_state())
-        self.student.detach_hidden_state()  # TODO: Needed for teacher?
+        self.student.detach_hidden_state()
 
         # Construct the loss dictionary
         loss_dict = {"behavior": mean_behavior_loss}
@@ -178,17 +178,19 @@ class Distillation:
         }
         return saved_dict
 
-    def load(self, loaded_dict: dict, inference_only: bool) -> None:
+    def load(self, loaded_dict: dict, inference_only: bool) -> bool:
         """Load all models from a saved dict."""
         if any("actor_state_dict" in key for key in loaded_dict):  # Load models from previous RL training
             self.teacher.load_state_dict(loaded_dict["actor_state_dict"])  # Previous actor becomes teacher
             self.teacher_loaded = True
+            return False  # Not continuing a previous distillation training
         else:  # Load models from previous distillation training
             self.student.load_state_dict(loaded_dict["student_state_dict"])
             if not inference_only:
                 self.teacher.load_state_dict(loaded_dict["teacher_state_dict"])
                 self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
                 self.teacher_loaded = True
+            return True  # Continuing a previous distillation training
 
     def get_policy(self) -> MLPModel:
         """Get the policy model."""

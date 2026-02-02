@@ -134,8 +134,8 @@ class OnPolicyRunner:
     def load(self, path: str, inference_only: bool = False, map_location: str | None = None) -> dict:
         """Load the models and training state from a given path."""
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
-        self.alg.load(loaded_dict, inference_only)
-        if not inference_only:
+        continue_run = self.alg.load(loaded_dict, inference_only)
+        if not inference_only and continue_run:
             self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
 
