@@ -71,7 +71,6 @@ class CNNModel(MLPModel):
             # Create a cnn config for each 2D observation group in case only one is provided
             if not all(isinstance(v, dict) for v in cnn_cfg.values()):
                 cnn_cfg = {group: cnn_cfg for group in self.obs_groups_2d}
-
             # Check that the number of configs matches the number of observation groups
             assert len(cnn_cfg) == len(self.obs_groups_2d), (
                 "The number of CNN configurations must match the number of 2D observation groups."
