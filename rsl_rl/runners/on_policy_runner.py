@@ -132,7 +132,11 @@ class OnPolicyRunner:
         self.logger.save_model(path, self.current_learning_iteration)
 
     def load(self, path: str, inference_only: bool = False, map_location: str | None = None) -> dict:
-        """Load the models and training state from a given path."""
+        """Load the models and training state from a given path.
+
+        If `inference_only` is True, only load the policy needed for inference without loading other models or training
+        states.
+        """
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
         continue_run = self.alg.load(loaded_dict, inference_only)
         if not inference_only and continue_run:
