@@ -156,9 +156,7 @@ class OnPolicyRunner:
     def get_inference_policy(self, device: str | None = None) -> MLPModel:
         """Return the policy on the requested device for inference."""
         self.alg.eval_mode()  # Switch to evaluation mode (e.g. for dropout)
-        if device is not None:
-            policy = self.alg.get_policy().to(device)  # type: ignore
-        return policy
+        return self.alg.get_policy().to(device)  # type: ignore
 
     def add_git_repo_to_log(self, repo_file_path: str) -> None:
         self.logger.git_status_repos.append(repo_file_path)
