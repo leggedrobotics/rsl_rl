@@ -178,37 +178,30 @@ class Distillation:
         }
         return saved_dict
 
-    def load(self, loaded_dict: dict, load_dict: dict | None, strict: bool) -> bool:
+    def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load specified models from a saved dict."""
-        if any("actor_state_dict" in key for key in loaded_dict):  # Load models from previous RL training
-            if load_dict is None:
-                load_dict = {"teacher": True, "iteration": False}  # Only load teacher by default
-            if load_dict.get("teacher"):
-                self.teacher.load_state_dict(
-                    loaded_dict["actor_state_dict"], strict=strict
-                )  # Previous actor becomes teacher
-                self.teacher_loaded = True
-            if load_dict.get("student"):
-                raise ValueError("Cannot load student model from a previous RL training checkpoint.")
-            if load_dict.get("optimizer"):
-                raise ValueError("Cannot load optimizer state from a previous RL training checkpoint.")
-            return load_dict.get("iteration", False)
-        else:  # Load models from previous distillation training
-            if load_dict is None:
-                load_dict = {
-                    "student": True,
-                    "teacher": True,
-                    "optimizer": True,
-                    "iteration": True,
-                }  # Load all models and states
-            if load_dict.get("student"):
-                self.student.load_state_dict(loaded_dict["student_state_dict"], strict=strict)
-            if load_dict.get("teacher"):
-                self.teacher.load_state_dict(loaded_dict["teacher_state_dict"], strict=strict)
-                self.teacher_loaded = True
-            if load_dict.get("optimizer"):
-                self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
-            return load_dict.get("iteration", False)
+        # If no load_cfg is provided, determine what to load automatically
+        if load_cfg is None and any("actor_state_dict" in key for key in loaded_dict):  # Load from RL training
+            load_cfg = {"teacher": True, "iteration": False}  # Only load teacher by default
+        elif load_cfg is None:  # Load from distillation training
+            load_cfg = {
+                "student": True,
+                "teacher": True,
+                "optimizer": True,
+                "iteration": True,
+            }
+
+        # Load the specified models
+        if load_cfg.get("student"):
+            self.student.load_state_dict(loaded_dict["student_state_dict"], strict=strict)
+        if load_cfg.get("teacher"):
+            self.teacher.load_state_dict(
+                loaded_dict.get("teacher_state_dict") or loaded_dict["actor_state_dict"], strict=strict
+            )
+            self.teacher_loaded = True
+        if load_cfg.get("optimizer"):
+            self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+        return load_cfg.get("iteration", False)
 
     def get_policy(self) -> MLPModel:
         """Get the policy model."""

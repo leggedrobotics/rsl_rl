@@ -450,27 +450,29 @@ class PPO:
             saved_dict["rnd_optimizer_state_dict"] = self.rnd_optimizer.state_dict()
         return saved_dict
 
-    def load(self, loaded_dict: dict, load_dict: dict | None, strict: bool) -> bool:
+    def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load specified models from a saved dict."""
-        # If no load_dict is provided, load all models and states
-        if load_dict is None:
-            load_dict = {
+        # If no load_cfg is provided, load all models and states
+        if load_cfg is None:
+            load_cfg = {
                 "actor": True,
                 "critic": True,
                 "optimizer": True,
                 "iteration": True,
                 "rnd": True,
             }
-        if load_dict.get("actor"):
+
+        # Load the specified models
+        if load_cfg.get("actor"):
             self.actor.load_state_dict(loaded_dict["actor_state_dict"], strict=strict)
-        if load_dict.get("critic"):
+        if load_cfg.get("critic"):
             self.critic.load_state_dict(loaded_dict["critic_state_dict"], strict=strict)
-        if load_dict.get("optimizer"):
+        if load_cfg.get("optimizer"):
             self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
-        if load_dict.get("rnd") and self.rnd:
+        if load_cfg.get("rnd") and self.rnd:
             self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
             self.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
-        return load_dict.get("iteration", False)
+        return load_cfg.get("iteration", False)
 
     def get_policy(self) -> MLPModel:
         """Get the policy model."""
