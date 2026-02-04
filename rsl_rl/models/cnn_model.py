@@ -63,9 +63,10 @@ class CNNModel(MLPModel):
 
         # Create or assign CNN encoders
         if cnns is not None:
+            # Check compatibility if CNNs are provided
             if set(cnns.keys()) != set(self.obs_groups_2d):
-                raise ValueError("The actor's 2D observations must match the critic's for sharing CNN encoders.")
-            print("Sharing CNN encoders between actor and critic, the critic's CNN configurations are ignored.")
+                raise ValueError("The 2D observations must be identical for all models sharing CNN encoders.")
+            print("Sharing CNN encoders between models, the CNN configurations of the receiving model are ignored.")
             self.cnns = cnns
         else:
             # Create a cnn config for each 2D observation group in case only one is provided
