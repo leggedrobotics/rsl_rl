@@ -65,16 +65,17 @@ class VecEnv(ABC):
         Observations:
             The observations TensorDict usually contains multiple observation groups. The `obs_groups`
             dictionary of the runner configuration specifies which observation groups are used for which
-            purpose, i.e., it maps the available observation groups to observation sets. The observation sets
-            (keys of the `obs_groups` dictionary) currently used by rsl_rl are:
+            purpose, i.e., it maps from required observation sets (e.g. actor) to lists of observation groups.
+            The observation sets (keys of the `obs_groups` dictionary) currently used by rsl_rl are:
 
-            - "policy": Specified observation groups are used as input to the actor/student network.
+            - "actor": Specified observation groups are used as input to the actor network.
             - "critic": Specified observation groups are used as input to the critic network.
+            - "student": Specified observation groups are used as input to the student network.
             - "teacher": Specified observation groups are used as input to the teacher network.
             - "rnd_state": Specified observation groups are used as input to the RND network.
 
             Incomplete or incorrect configurations are handled in the `resolve_obs_groups()` function in
-            `rsl_rl/utils/utils.py`.
+            `rsl_rl/utils/utils.py`, which provides detailed information on the expected configuration.
 
         Extras:
             The extras dictionary includes metrics such as the episode reward, episode length, etc. The following

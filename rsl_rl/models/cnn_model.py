@@ -1,0 +1,142 @@
+# Copyright (c) 2021-2026, ETH Zurich and NVIDIA CORPORATION
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+from __future__ import annotations
+
+import torch
+import torch.nn as nn
+from tensordict import TensorDict
+from typing import Any
+
+from rsl_rl.models.mlp_model import MLPModel
+from rsl_rl.modules import CNN
+
+
+class CNNModel(MLPModel):
+    """CNN-based neural model.
+
+    This model uses one or more convolutional neural network (CNN) encoders to process one or more 2D observation groups
+    before passing the resulting latent to an MLP. Any 1D observation groups are directly concatenated with the CNN
+    latent and passed to the MLP. 1D observations can be normalized before being passed to the MLP. The output of the
+    model can be either deterministic or stochastic, in which case a Gaussian distribution is used to sample the
+    outputs.
+    """
+
+    def __init__(
+        self,
+        obs: TensorDict,
+        obs_groups: dict[str, list[str]],
+        obs_set: str,
+        output_dim: int,
+        cnn_cfg: dict[str, dict] | dict[str, Any],
+        hidden_dims: tuple[int] | list[int] = [256, 256, 256],
+        activation: str = "elu",
+        obs_normalization: bool = False,
+        stochastic: bool = False,
+        init_noise_std: float = 1.0,
+        noise_std_type: str = "scalar",
+        state_dependent_std: bool = False,
+    ) -> None:
+        """Initialize the CNN-based model.
+
+        Args:
+            obs: Observation Dictionary.
+            obs_groups: Dictionary mapping observation sets to lists of observation groups.
+            obs_set: Observation set to use for this model (e.g., "actor" or "critic").
+            output_dim: Dimension of the output.
+            hidden_dims: Hidden dimensions of the MLP.
+            cnn_cfg: Configuration of the CNN encoder(s).
+            activation: Activation function of the CNN and MLP.
+            obs_normalization: Whether to normalize the observations before feeding them to the MLP.
+            stochastic: Whether the model outputs stochastic or deterministic values.
+            init_noise_std: Initial standard deviation of the stochatic output.
+            noise_std_type: Whether the standard deviation is defined as a "scalar" or in "log" space.
+            state_dependent_std: Whether the standard deviation is state dependent.
+        """
+        # Resolve observation groups and dimensions
+        self._get_obs_dim(obs, obs_groups, obs_set)
+
+        # Create an rnn config for each 2D observation group in case only one is provided
+        if not all(isinstance(v, dict) for v in cnn_cfg.values()):
+            cnn_cfg = {group: cnn_cfg for group in self.obs_groups_2d}
+
+        # Check that the number of configs matches the number of observation groups
+        assert len(cnn_cfg) == len(self.obs_groups_2d), (
+            "The number of CNN configurations must match the number of 2D observation groups."
+        )
+
+        # CNNs for each 2D observation
+        self.cnns = nn.ModuleDict()
+        for idx, obs_group in enumerate(self.obs_groups_2d):
+            self.cnns[obs_group] = CNN(
+                input_dim=self.obs_dims_2d[idx],
+                input_channels=self.obs_channels_2d[idx],
+                **cnn_cfg[obs_group],
+            )
+
+        # Initialize the parent MLP model
+        super().__init__(
+            obs,
+            obs_groups,
+            obs_set,
+            output_dim,
+            hidden_dims,
+            activation,
+            obs_normalization,
+            stochastic,
+            init_noise_std,
+            noise_std_type,
+            state_dependent_std,
+        )
+
+    def get_latent(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
+        # Concatenate 1D observation groups and normalize
+        latent_1d = super().get_latent(obs)
+        # Process 2D observation groups with CNNs
+        latent_cnn_list = [self.cnns[obs_group](obs[obs_group]) for obs_group in self.obs_groups_2d]
+        latend_cnn = torch.cat(latent_cnn_list, dim=-1)
+        # Concatenate 1D and CNN latents
+        return torch.cat([latent_1d, latend_cnn], dim=-1)
+
+    def _get_obs_dim(self, obs: TensorDict, obs_groups: dict[str, list[str]], obs_set: str) -> tuple[list[str], int]:
+        """Select active observation groups and compute observation dimension."""
+        active_obs_groups = obs_groups[obs_set]
+        obs_dim_1d = 0
+        obs_groups_1d = []
+        obs_dims_2d = []
+        obs_channels_2d = []
+        obs_groups_2d = []
+
+        # Iterate through active observation groups and separate 1D and 2D observations
+        for obs_group in active_obs_groups:
+            if len(obs[obs_group].shape) == 4:  # B, C, H, W
+                obs_groups_2d.append(obs_group)
+                obs_dims_2d.append(obs[obs_group].shape[2:4])
+                obs_channels_2d.append(obs[obs_group].shape[1])
+            elif len(obs[obs_group].shape) == 2:  # B, C
+                obs_groups_1d.append(obs_group)
+                obs_dim_1d += obs[obs_group].shape[-1]
+            else:
+                raise ValueError(f"Invalid observation shape for {obs_group}: {obs[obs_group].shape}")
+
+        assert self.obs_groups_2d, "No 2D observations are provided. If this is intentional, use the MLP model instead."
+
+        # Store active 2D observation groups and dimensions directly as attributes
+        self.obs_dims_2d = obs_dims_2d
+        self.obs_channels_2d = obs_channels_2d
+        self.obs_groups_2d = obs_groups_2d
+        # Return active 1D observation groups and dimension for parent class
+        return obs_groups_1d, obs_dim_1d
+
+    def _get_latent_dim(self) -> int:
+        # 1D observations dimension
+        latent_dim = self.obs_dim
+        # Add the latent dimensions of the CNNs
+        for cnn in self.cnns.values():
+            if cnn.output_channels is None:
+                latent_dim += int(cnn.output_dim)  # type: ignore
+            else:
+                raise ValueError("The output of the CNN must be flattened before passing it to the MLP.")
+        return latent_dim
