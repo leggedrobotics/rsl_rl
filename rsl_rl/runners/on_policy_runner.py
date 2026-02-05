@@ -162,6 +162,42 @@ class OnPolicyRunner:
         self.alg.eval_mode()  # Switch to evaluation mode (e.g. for dropout)
         return self.alg.get_policy().to(device)  # type: ignore
 
+    def export_policy_to_jit(self, path: str, filename: str = "policy.pt") -> None:
+        """Export the model to a Torch JIT file."""
+        jit_model = self.alg.get_policy().as_jit()
+        jit_model.to("cpu")
+
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+        save_path = os.path.join(path, filename)
+
+        # Trace and save the model
+        traced_model = torch.jit.script(jit_model)
+        traced_model.save(save_path)
+
+    def export_policy_to_onnx(self, path: str, filename: str = "policy.onnx", verbose: bool = False) -> None:
+        """Export the model into an ONNX file."""
+        onnx_model = self.alg.get_policy().as_onnx(verbose=verbose)
+        onnx_model.to("cpu")
+        onnx_model.eval()
+
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+        save_path = os.path.join(path, filename)
+
+        # Trace and save the model
+        torch.onnx.export(
+            onnx_model,
+            onnx_model.get_dummy_inputs(),  # type: ignore
+            save_path,
+            export_params=True,
+            opset_version=18,
+            verbose=verbose,
+            input_names=onnx_model.input_names,  # type: ignore
+            output_names=onnx_model.output_names,  # type: ignore
+            dynamic_axes={},
+        )
+
     def add_git_repo_to_log(self, repo_file_path: str) -> None:
         self.logger.git_status_repos.append(repo_file_path)
 

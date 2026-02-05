@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import copy
 import torch
+import torch.nn as nn
 from tensordict import TensorDict
 
 from rsl_rl.models.mlp_model import MLPModel
@@ -96,5 +98,142 @@ class RNNModel(MLPModel):
     def detach_hidden_state(self, dones: torch.Tensor | None = None) -> None:
         self.rnn.detach_hidden_state(dones)
 
+    def as_jit(self) -> nn.Module:
+        """Return a version of the model compatible with Torch JIT export."""
+        if isinstance(self.rnn.rnn, nn.LSTM):
+            return _TorchLSTMModel(self)
+        elif isinstance(self.rnn.rnn, nn.GRU):
+            return _TorchGRUModel(self)
+        else:
+            raise NotImplementedError(f"Unsupported RNN type: {type(self.rnn.rnn)}")
+
+    def as_onnx(self, verbose: bool = False) -> nn.Module:
+        """Return a version of the model compatible with ONNX export."""
+        return _OnnxRNNModel(self, verbose)
+
     def _get_latent_dim(self) -> int:
         return self.latent_dim
+
+
+class _TorchGRUModel(nn.Module):
+    """Exportable GRU model for JIT."""
+
+    def __init__(self, model: RNNModel) -> None:
+        super().__init__()
+        self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
+        self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
+        self.mlp = copy.deepcopy(model.mlp)
+        self.state_dependent_std = model.state_dependent_std
+        self.rnn.cpu()
+        self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.obs_normalizer(x)
+        x, h = self.rnn(x.unsqueeze(0), self.hidden_state)
+        self.hidden_state[:] = h  # type: ignore
+        x = x.squeeze(0)
+        out = self.mlp(x)
+        if self.state_dependent_std:
+            return out[..., 0, :]
+        return out
+
+    @torch.jit.export
+    def reset(self) -> None:
+        self.hidden_state[:] = 0.0  # type: ignore
+
+
+class _TorchLSTMModel(nn.Module):
+    """Exportable LSTM model for JIT."""
+
+    def __init__(self, model: RNNModel) -> None:
+        super().__init__()
+        self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
+        self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
+        self.mlp = copy.deepcopy(model.mlp)
+        self.state_dependent_std = model.state_dependent_std
+        self.rnn.cpu()
+        self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
+        self.register_buffer("cell_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.obs_normalizer(x)
+        x, (h, c) = self.rnn(x.unsqueeze(0), (self.hidden_state, self.cell_state))
+        self.hidden_state[:] = h  # type: ignore
+        self.cell_state[:] = c  # type: ignore
+        x = x.squeeze(0)
+        out = self.mlp(x)
+        if self.state_dependent_std:
+            return out[..., 0, :]
+        return out
+
+    @torch.jit.export
+    def reset(self) -> None:
+        self.hidden_state[:] = 0.0  # type: ignore
+        self.cell_state[:] = 0.0  # type: ignore
+
+
+class _OnnxRNNModel(nn.Module):
+    """Exportable RNN model for ONNX."""
+
+    is_recurrent: bool = True
+
+    def __init__(self, model: RNNModel, verbose: bool) -> None:
+        super().__init__()
+        self.verbose = verbose
+        self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
+        self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
+        self.mlp = copy.deepcopy(model.mlp)
+        self.state_dependent_std = model.state_dependent_std
+
+        # Detect RNN type
+        if isinstance(self.rnn, nn.LSTM):
+            self.rnn_type = "lstm"
+        elif isinstance(self.rnn, nn.GRU):
+            self.rnn_type = "gru"
+        else:
+            raise NotImplementedError(f"Unsupported RNN type: {type(self.rnn)}")
+
+        self.input_size = model.obs_dim
+        self.hidden_size = self.rnn.hidden_size
+        self.num_layers = self.rnn.num_layers
+
+    def forward(
+        self, obs: torch.Tensor, h_in: torch.Tensor, c_in: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        x = self.obs_normalizer(obs)
+
+        if self.rnn_type == "lstm":
+            x, (h, c) = self.rnn(x.unsqueeze(0), (h_in, c_in))
+            x = x.squeeze(0)
+            out = self.mlp(x)
+            if self.state_dependent_std:
+                return out[..., 0, :], h, c
+            return out, h, c
+        else:
+            x, h = self.rnn(x.unsqueeze(0), h_in)
+            x = x.squeeze(0)
+            out = self.mlp(x)
+
+            if self.state_dependent_std:
+                return out[..., 0, :], h, None
+            return out, h, None
+
+    def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:
+        obs = torch.zeros(1, self.input_size)
+        h_in = torch.zeros(self.num_layers, 1, self.hidden_size)
+        if self.rnn_type == "lstm":
+            c_in = torch.zeros(self.num_layers, 1, self.hidden_size)
+            return (obs, h_in, c_in)
+        return (obs, h_in)
+
+    @property
+    def input_names(self) -> list[str]:
+        if self.rnn_type == "lstm":
+            return ["obs", "h_in", "c_in"]
+        return ["obs", "h_in"]
+
+    @property
+    def output_names(self) -> list[str]:
+        if self.rnn_type == "lstm":
+            return ["actions", "h_out", "c_out"]
+        return ["actions", "h_out"]

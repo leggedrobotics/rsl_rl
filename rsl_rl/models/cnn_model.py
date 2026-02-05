@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
@@ -102,6 +103,14 @@ class CNNModel(MLPModel):
         # Concatenate 1D and CNN latents
         return torch.cat([latent_1d, latend_cnn], dim=-1)
 
+    def as_jit(self) -> nn.Module:
+        """Return a version of the model compatible with Torch JIT export."""
+        return _TorchCNNModel(self)
+
+    def as_onnx(self, verbose: bool = False) -> nn.Module:
+        """Return a version of the model compatible with ONNX export."""
+        return _OnnxCNNModel(self, verbose)
+
     def _get_obs_dim(self, obs: TensorDict, obs_groups: dict[str, list[str]], obs_set: str) -> tuple[list[str], int]:
         """Select active observation groups and compute observation dimension."""
         active_obs_groups = obs_groups[obs_set]
@@ -142,3 +151,84 @@ class CNNModel(MLPModel):
             else:
                 raise ValueError("The output of the CNN must be flattened before passing it to the MLP.")
         return latent_dim
+
+
+class _TorchCNNModel(nn.Module):
+    """Exportable CNN model for JIT."""
+
+    def __init__(self, model: CNNModel) -> None:
+        super().__init__()
+        self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
+        # Convert ModuleDict to ModuleList for ordered iteration
+        self.cnns = nn.ModuleList([model.cnns[g] for g in model.obs_groups_2d])
+        self.mlp = copy.deepcopy(model.mlp)
+        self.state_dependent_std = model.state_dependent_std
+
+    def forward(self, obs_1d: torch.Tensor, obs_2d: list[torch.Tensor]) -> torch.Tensor:
+        latent_1d = self.obs_normalizer(obs_1d)
+
+        latent_cnn_list = []
+        for i, cnn in enumerate(self.cnns):  # We assume obs_2d list matches the order of obs_groups_2d
+            latent_cnn_list.append(cnn(obs_2d[i]))
+
+        latent_cnn = torch.cat(latent_cnn_list, dim=-1)
+        latent = torch.cat([latent_1d, latent_cnn], dim=-1)
+
+        out = self.mlp(latent)
+        if self.state_dependent_std:
+            return out[..., 0, :]
+        return out
+
+    @torch.jit.export
+    def reset(self) -> None:
+        pass
+
+
+class _OnnxCNNModel(nn.Module):
+    """Exportable CNN model for ONNX."""
+
+    def __init__(self, model: CNNModel, verbose: bool) -> None:
+        super().__init__()
+        self.verbose = verbose
+        self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
+        # Convert ModuleDict to ModuleList for ordered iteration
+        self.cnns = nn.ModuleList([model.cnns[g] for g in model.obs_groups_2d])
+        self.mlp = copy.deepcopy(model.mlp)
+        self.state_dependent_std = model.state_dependent_std
+
+        self.obs_groups_2d = model.obs_groups_2d
+        self.obs_dims_2d = model.obs_dims_2d
+        self.obs_channels_2d = model.obs_channels_2d
+        self.obs_dim_1d = model.obs_dim
+
+    def forward(self, obs_1d: torch.Tensor, *obs_2d: torch.Tensor) -> torch.Tensor:
+        latent_1d = self.obs_normalizer(obs_1d)
+
+        latent_cnn_list = []
+        for i, cnn in enumerate(self.cnns):  # We assume obs_2d list matches the order of obs_groups_2d
+            latent_cnn_list.append(cnn(obs_2d[i]))
+
+        latent_cnn = torch.cat(latent_cnn_list, dim=-1)
+        latent = torch.cat([latent_1d, latent_cnn], dim=-1)
+
+        out = self.mlp(latent)
+        if self.state_dependent_std:
+            return out[..., 0, :]
+        return out
+
+    def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:
+        dummy_1d = torch.zeros(1, self.obs_dim_1d)
+        dummy_2d = []
+        for i in range(len(self.obs_groups_2d)):
+            h, w = self.obs_dims_2d[i]
+            c = self.obs_channels_2d[i]
+            dummy_2d.append(torch.zeros(1, c, h, w))
+        return (dummy_1d, *dummy_2d)
+
+    @property
+    def input_names(self) -> list[str]:
+        return ["obs", *self.obs_groups_2d]
+
+    @property
+    def output_names(self) -> list[str]:
+        return ["actions"]
