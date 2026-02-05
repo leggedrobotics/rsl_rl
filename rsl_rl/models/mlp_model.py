@@ -9,9 +9,9 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 from torch.distributions import Normal
-from typing import Any
 
 from rsl_rl.modules import MLP, EmpiricalNormalization, HiddenState
+from rsl_rl.utils import unpad_trajectories
 
 
 class MLPModel(nn.Module):
@@ -98,14 +98,24 @@ class MLPModel(nn.Module):
         # Disable args validation for speedup
         Normal.set_default_validate_args(False)
 
-    def forward(self, obs: TensorDict, stochastic_output: bool = False, **kwargs: dict[str, Any]) -> torch.Tensor:
+    def forward(
+        self,
+        obs: TensorDict,
+        masks: torch.Tensor | None = None,
+        hidden_state: HiddenState = None,
+        stochastic_output: bool = False,
+    ) -> torch.Tensor:
         """Forward pass of the MLP model.
 
         ..note::
             The `stochastic_output` flag only has an effect if the model is initialized as stochastic and defaults to
             `False`, meaning that even stochastic models will return deterministic outputs by default.
         """
-        latent = self.get_latent(obs, **kwargs)
+        # If observations are padded for recurrent training but the model is non-recurrent, unpad the observations
+        obs = unpad_trajectories(obs, masks) if masks is not None and not self.is_recurrent else obs
+        # Get MLP input latent
+        latent = self.get_latent(obs, masks, hidden_state)
+        # MLP forward pass
         if self.stochastic and stochastic_output:
             self._update_distribution(latent)
             return self.distribution.sample()
@@ -115,7 +125,9 @@ class MLPModel(nn.Module):
             else:
                 return self.mlp(latent)
 
-    def get_latent(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
+    def get_latent(
+        self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
+    ) -> torch.Tensor:
         # Select and concatenate observations
         obs_list = [obs[obs_group] for obs_group in self.obs_groups]
         latent = torch.cat(obs_list, dim=-1)

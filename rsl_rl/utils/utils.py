@@ -98,7 +98,7 @@ def split_and_pad_trajectories(
 
     Example (transposed for readability):
         Input: [[a1, a2, a3, a4 | a5, a6],
-                 [b1, b2 | b3, b4, b5 | b6]]
+                [b1, b2 | b3, b4, b5 | b6]]
 
         Output:[[a1, a2, a3, a4], | [[True, True, True, True],
                 [a5, a6, 0, 0],   |  [True, True, False, False],
@@ -147,12 +147,16 @@ def split_and_pad_trajectories(
 
 def unpad_trajectories(trajectories: torch.Tensor | TensorDict, masks: torch.Tensor) -> torch.Tensor | TensorDict:
     """Do the inverse operation of `split_and_pad_trajectories()`."""
-    # Need to transpose before and after the masking to have proper reshaping
-    return (
-        trajectories.transpose(1, 0)[masks.transpose(1, 0)]
-        .view(-1, trajectories.shape[0], trajectories.shape[-1])
-        .transpose(1, 0)
-    )
+    # Select valid steps and flatten to sequence of valid steps
+    valid_steps = trajectories.transpose(1, 0)[masks.transpose(1, 0)]
+    # Reshape back to original dimensions
+    if isinstance(trajectories, TensorDict):
+        # TensorDict.view() only modifies the batch size.
+        # We reshape [valid_steps] -> [number of envs, time] and then transpose back to [time, number of envs]
+        return valid_steps.view(-1, trajectories.shape[0]).transpose(1, 0)
+    else:
+        # For standard Tensors, we must explicitly handle feature dimensions in view()
+        return valid_steps.view(-1, trajectories.shape[0], *trajectories.shape[2:]).transpose(1, 0)
 
 
 def resolve_callable(callable_or_name: type | Callable | str) -> Callable:

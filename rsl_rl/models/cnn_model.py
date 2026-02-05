@@ -11,7 +11,7 @@ from tensordict import TensorDict
 from typing import Any
 
 from rsl_rl.models.mlp_model import MLPModel
-from rsl_rl.modules import CNN
+from rsl_rl.modules import CNN, HiddenState
 
 
 class CNNModel(MLPModel):
@@ -91,7 +91,9 @@ class CNNModel(MLPModel):
             state_dependent_std,
         )
 
-    def get_latent(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
+    def get_latent(
+        self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
+    ) -> torch.Tensor:
         # Concatenate 1D observation groups and normalize
         latent_1d = super().get_latent(obs)
         # Process 2D observation groups with CNNs
