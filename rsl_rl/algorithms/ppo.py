@@ -11,10 +11,11 @@ import torch.optim as optim
 from itertools import chain
 from tensordict import TensorDict
 
-from rsl_rl.extensions.rnd import RandomNetworkDistillation
-from rsl_rl.models import MLPModel, RNNModel
+from rsl_rl.env import VecEnv
+from rsl_rl.extensions import RandomNetworkDistillation, resolve_rnd_config, resolve_symmetry_config
+from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import resolve_callable, resolve_optimizer
+from rsl_rl.utils import resolve_callable, resolve_obs_groups, resolve_optimizer
 
 
 class PPO:
@@ -94,7 +95,7 @@ class PPO:
                     f"{symmetry_cfg['data_augmentation_func']}"
                 )
             # Check if the policy is compatible with symmetry
-            if isinstance(actor, RNNModel) or isinstance(critic, RNNModel):
+            if actor.is_recurrent or critic.is_recurrent:
                 raise ValueError("Symmetry augmentation is not supported for recurrent policies.")
             # Store symmetry configuration
             self.symmetry = symmetry_cfg
@@ -424,6 +425,90 @@ class PPO:
             loss_dict["symmetry"] = mean_symmetry_loss
 
         return loss_dict
+
+    def train_mode(self) -> None:
+        self.actor.train()
+        self.critic.train()
+        if self.rnd:
+            self.rnd.train()
+
+    def eval_mode(self) -> None:
+        self.actor.eval()
+        self.critic.eval()
+        if self.rnd:
+            self.rnd.eval()
+
+    def save(self) -> dict:
+        """Return a dict of all models for saving."""
+        saved_dict = {
+            "actor_state_dict": self.actor.state_dict(),
+            "critic_state_dict": self.critic.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+        }
+        if self.rnd:
+            saved_dict["rnd_state_dict"] = self.rnd.state_dict()
+            saved_dict["rnd_optimizer_state_dict"] = self.rnd_optimizer.state_dict()
+        return saved_dict
+
+    def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
+        """Load specified models from a saved dict."""
+        # If no load_cfg is provided, load all models and states
+        if load_cfg is None:
+            load_cfg = {
+                "actor": True,
+                "critic": True,
+                "optimizer": True,
+                "iteration": True,
+                "rnd": True,
+            }
+
+        # Load the specified models
+        if load_cfg.get("actor"):
+            self.actor.load_state_dict(loaded_dict["actor_state_dict"], strict=strict)
+        if load_cfg.get("critic"):
+            self.critic.load_state_dict(loaded_dict["critic_state_dict"], strict=strict)
+        if load_cfg.get("optimizer"):
+            self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+        if load_cfg.get("rnd") and self.rnd:
+            self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
+            self.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
+        return load_cfg.get("iteration", False)
+
+    def get_policy(self) -> MLPModel:
+        """Get the policy model."""
+        return self.actor
+
+    @staticmethod
+    def construct_algorithm(obs: TensorDict, env: VecEnv, cfg: dict, device: str) -> PPO:
+        """Construct the PPO algorithm."""
+        # Resolve class callables
+        alg_class: type[PPO] = resolve_callable(cfg["algorithm"].pop("class_name"))  # type: ignore
+        actor_class: type[MLPModel] = resolve_callable(cfg["actor"].pop("class_name"))  # type: ignore
+        critic_class: type[MLPModel] = resolve_callable(cfg["critic"].pop("class_name"))  # type: ignore
+
+        # Resolve observation groups
+        default_sets = ["actor", "critic"]
+        if "rnd_cfg" in cfg["algorithm"] and cfg["algorithm"]["rnd_cfg"] is not None:
+            default_sets.append("rnd_state")
+        cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], default_sets)
+
+        # Resolve RND config if used
+        cfg["algorithm"] = resolve_rnd_config(cfg["algorithm"], obs, cfg["obs_groups"], env)
+
+        # Resolve symmetry config if used
+        cfg["algorithm"] = resolve_symmetry_config(cfg["algorithm"], env)
+
+        # Initialize the policy
+        actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **cfg["actor"]).to(device)
+        critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **cfg["critic"]).to(device)
+
+        # Initialize the storage
+        storage = RolloutStorage("rl", env.num_envs, cfg["num_steps_per_env"], obs, [env.num_actions], device)
+
+        # Initialize the algorithm
+        alg: PPO = alg_class(actor, critic, storage, device=device, **cfg["algorithm"], multi_gpu_cfg=cfg["multi_gpu"])
+
+        return alg
 
     def broadcast_parameters(self) -> None:
         """Broadcast model parameters to all GPUs."""

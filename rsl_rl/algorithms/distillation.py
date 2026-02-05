@@ -9,9 +9,10 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
+from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import resolve_optimizer
+from rsl_rl.utils import resolve_callable, resolve_obs_groups, resolve_optimizer
 
 
 class Distillation:
@@ -119,7 +120,7 @@ class Distillation:
         for epoch in range(self.num_learning_epochs):
             self.student.reset(hidden_state=self.last_hidden_states[0])
             self.teacher.reset(hidden_state=self.last_hidden_states[1])
-            self.student.detach_hidden_state()  # TODO: Needed for teacher?
+            self.student.detach_hidden_state()
             for obs, _, privileged_actions, dones in self.storage.generator():
                 # Inference of the student for gradient computation
                 actions = self.student(obs)
@@ -141,23 +142,108 @@ class Distillation:
                     if self.max_grad_norm:
                         nn.utils.clip_grad_norm_(self.student.parameters(), self.max_grad_norm)
                     self.optimizer.step()
-                    self.student.detach_hidden_state()  # TODO: Needed for teacher?
+                    self.student.detach_hidden_state()
                     loss = 0
 
                 # Reset dones
                 self.student.reset(dones.view(-1))
                 self.teacher.reset(dones.view(-1))
-                self.student.detach_hidden_state(dones.view(-1))  # TODO: Needed for teacher?
+                self.student.detach_hidden_state(dones.view(-1))
 
         mean_behavior_loss /= cnt
         self.storage.clear()
-        self.last_hidden_states = [self.student.get_hidden_state(), self.teacher.get_hidden_state()]
-        self.student.detach_hidden_state()  # TODO: Needed for teacher?
+        self.last_hidden_states = (self.student.get_hidden_state(), self.teacher.get_hidden_state())
+        self.student.detach_hidden_state()
 
         # Construct the loss dictionary
         loss_dict = {"behavior": mean_behavior_loss}
 
         return loss_dict
+
+    def train_mode(self) -> None:
+        self.student.train()
+        # Teacher is always in eval mode
+        self.teacher.eval()
+
+    def eval_mode(self) -> None:
+        self.student.eval()
+        self.teacher.eval()
+
+    def save(self) -> dict:
+        """Return a dict of all models for saving."""
+        saved_dict = {
+            "student_state_dict": self.student.state_dict(),
+            "teacher_state_dict": self.teacher.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+        }
+        return saved_dict
+
+    def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
+        """Load specified models from a saved dict."""
+        # If no load_cfg is provided, determine what to load automatically
+        if load_cfg is None and any("actor_state_dict" in key for key in loaded_dict):  # Load from RL training
+            load_cfg = {"teacher": True, "iteration": False}  # Only load teacher by default
+        elif load_cfg is None:  # Load from distillation training
+            load_cfg = {
+                "student": True,
+                "teacher": True,
+                "optimizer": True,
+                "iteration": True,
+            }
+
+        # Load the specified models
+        if load_cfg.get("student"):
+            self.student.load_state_dict(loaded_dict["student_state_dict"], strict=strict)
+        if load_cfg.get("teacher"):
+            self.teacher.load_state_dict(
+                loaded_dict.get("teacher_state_dict") or loaded_dict["actor_state_dict"], strict=strict
+            )
+            self.teacher_loaded = True
+        if load_cfg.get("optimizer"):
+            self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+        return load_cfg.get("iteration", False)
+
+    def get_policy(self) -> MLPModel:
+        """Get the policy model."""
+        return self.student
+
+    @staticmethod
+    def construct_algorithm(obs: TensorDict, env: VecEnv, cfg: dict, device: str) -> Distillation:
+        """Construct the distillation algorithm."""
+        # Resolve class callables
+        alg_class: type[Distillation] = resolve_callable(cfg["algorithm"].pop("class_name"))  # type: ignore
+        student_class: type[MLPModel] = resolve_callable(cfg["student"].pop("class_name"))  # type: ignore
+        teacher_class: type[MLPModel] = resolve_callable(cfg["teacher"].pop("class_name"))  # type: ignore
+
+        # Resolve observation groups
+        default_sets = ["student", "teacher"]
+        cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], default_sets)
+
+        # Distillation is not compatible with RND and symmetry extensions
+        if cfg["algorithm"].get("rnd_cfg") is not None:
+            raise ValueError("The RND extension is not compatible with Distillation.")
+        cfg["algorithm"]["rnd_cfg"] = None
+        if cfg["algorithm"].get("symmetry_cfg") is not None:
+            raise ValueError("The symmetry extension is not compatible with Distillation.")
+        cfg["algorithm"]["symmetry_cfg"] = None
+
+        # Initialize the policy
+        student: MLPModel = student_class(obs, cfg["obs_groups"], "student", env.num_actions, **cfg["student"]).to(
+            device
+        )
+        teacher: MLPModel = teacher_class(obs, cfg["obs_groups"], "teacher", env.num_actions, **cfg["teacher"]).to(
+            device
+        )
+
+        # Initialize the storage
+        storage = RolloutStorage("distillation", env.num_envs, cfg["num_steps_per_env"], obs, [env.num_actions], device)
+
+        # Initialize the algorithm
+        alg: Distillation = alg_class(
+            student, teacher, storage, device=device, **cfg["algorithm"], multi_gpu_cfg=cfg["multi_gpu"]
+        )
+
+        return alg
 
     def broadcast_parameters(self) -> None:
         """Broadcast model parameters to all GPUs."""
