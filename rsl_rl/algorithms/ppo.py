@@ -216,61 +216,55 @@ class PPO:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
 
         # Iterate over batches
-        for (
-            obs_batch,
-            actions_batch,
-            target_values_batch,
-            advantages_batch,
-            returns_batch,
-            old_actions_log_prob_batch,
-            old_mu_batch,
-            old_sigma_batch,
-            hidden_states_batch,
-            masks_batch,
-        ) in generator:
+        for batch in generator:
             num_aug = 1  # Number of augmentations per sample. Starts at 1 for no augmentation.
-            original_batch_size = obs_batch.batch_size[0]
+            original_batch_size = batch.observations.batch_size[0]
 
             # Check if we should normalize advantages per mini batch
             if self.normalize_advantage_per_mini_batch:
                 with torch.no_grad():
-                    advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
+                    batch.advantages = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)
 
             # Perform symmetric augmentation
             if self.symmetry and self.symmetry["use_data_augmentation"]:
                 # Augmentation using symmetry
                 data_augmentation_func = self.symmetry["data_augmentation_func"]
                 # Returned shape: [batch_size * num_aug, ...]
-                obs_batch, actions_batch = data_augmentation_func(
+                batch.observations, batch.actions = data_augmentation_func(
                     env=self.symmetry["_env"],
-                    obs=obs_batch,
-                    actions=actions_batch,
+                    obs=batch.observations,
+                    actions=batch.actions,
                 )
                 # Compute number of augmentations per sample
-                num_aug = int(obs_batch.batch_size[0] / original_batch_size)
+                num_aug = int(batch.observations.batch_size[0] / original_batch_size)
                 # Repeat the rest of the batch
-                old_actions_log_prob_batch = old_actions_log_prob_batch.repeat(num_aug, 1)
-                target_values_batch = target_values_batch.repeat(num_aug, 1)
-                advantages_batch = advantages_batch.repeat(num_aug, 1)
-                returns_batch = returns_batch.repeat(num_aug, 1)
+                batch.old_actions_log_prob = batch.old_actions_log_prob.repeat(num_aug, 1)
+                batch.values = batch.values.repeat(num_aug, 1)
+                batch.advantages = batch.advantages.repeat(num_aug, 1)
+                batch.returns = batch.returns.repeat(num_aug, 1)
 
             # Recompute actions log prob and entropy for current batch of transitions
             # Note: We need to do this because we updated the policy with the new parameters
-            self.actor(obs_batch, masks=masks_batch, hidden_state=hidden_states_batch[0], stochastic_output=True)
-            actions_log_prob_batch = self.actor.get_output_log_prob(actions_batch)
-            value_batch = self.critic(obs_batch, masks=masks_batch, hidden_state=hidden_states_batch[1])
+            self.actor(
+                batch.observations,
+                masks=batch.masks,
+                hidden_state=batch.hidden_states[0],
+                stochastic_output=True,
+            )
+            actions_log_prob = self.actor.get_output_log_prob(batch.actions)
+            values = self.critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[1])
             # Note: We only keep the entropy of the first augmentation (the original one)
-            mu_batch = self.actor.output_mean[:original_batch_size]
-            sigma_batch = self.actor.output_std[:original_batch_size]
-            entropy_batch = self.actor.output_entropy[:original_batch_size]
+            mu = self.actor.output_mean[:original_batch_size]
+            sigma = self.actor.output_std[:original_batch_size]
+            entropy = self.actor.output_entropy[:original_batch_size]
 
             # Compute KL divergence and adapt the learning rate
             if self.desired_kl is not None and self.schedule == "adaptive":
                 with torch.inference_mode():
                     kl = torch.sum(
-                        torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
-                        + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch))
-                        / (2.0 * torch.square(sigma_batch))
+                        torch.log(sigma / batch.old_sigma + 1.0e-5)
+                        + (torch.square(batch.old_sigma) + torch.square(batch.old_mu - mu))
+                        / (2.0 * torch.square(sigma))
                         - 0.5,
                         dim=-1,
                     )
@@ -301,25 +295,23 @@ class PPO:
                         param_group["lr"] = self.learning_rate
 
             # Surrogate loss
-            ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
-            surrogate = -torch.squeeze(advantages_batch) * ratio
-            surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
+            ratio = torch.exp(actions_log_prob - torch.squeeze(batch.old_actions_log_prob))
+            surrogate = -torch.squeeze(batch.advantages) * ratio
+            surrogate_clipped = -torch.squeeze(batch.advantages) * torch.clamp(
                 ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
             )
             surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
             # Value function loss
             if self.use_clipped_value_loss:
-                value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(
-                    -self.clip_param, self.clip_param
-                )
-                value_losses = (value_batch - returns_batch).pow(2)
-                value_losses_clipped = (value_clipped - returns_batch).pow(2)
+                value_clipped = batch.values + (values - batch.values).clamp(-self.clip_param, self.clip_param)
+                value_losses = (values - batch.returns).pow(2)
+                value_losses_clipped = (value_clipped - batch.returns).pow(2)
                 value_loss = torch.max(value_losses, value_losses_clipped).mean()
             else:
-                value_loss = (returns_batch - value_batch).pow(2).mean()
+                value_loss = (batch.returns - values).pow(2).mean()
 
-            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
 
             # Symmetry loss
             if self.symmetry:
@@ -327,26 +319,28 @@ class PPO:
                 # Note: If we did augmentation before then we don't need to augment again
                 if not self.symmetry["use_data_augmentation"]:
                     data_augmentation_func = self.symmetry["data_augmentation_func"]
-                    obs_batch, _ = data_augmentation_func(obs=obs_batch, actions=None, env=self.symmetry["_env"])
+                    batch.observations, _ = data_augmentation_func(
+                        obs=batch.observations, actions=None, env=self.symmetry["_env"]
+                    )
                     # Compute number of augmentations per sample
-                    num_aug = int(obs_batch.shape[0] / original_batch_size)
+                    num_aug = int(batch.observations.shape[0] / original_batch_size)
 
                 # Actions predicted by the actor for symmetrically-augmented observations
-                mean_actions_batch = self.actor(obs_batch.detach().clone())
+                mean_actions = self.actor(batch.observations.detach().clone())
 
                 # Compute the symmetrically augmented actions
-                # Note: We are assuming the first augmentation is the original one. We do not use the action_batch from
+                # Note: We are assuming the first augmentation is the original one. We do not use the batch.actions from
                 # earlier since that action was sampled from the distribution. However, the symmetry loss is computed
                 # using the mean of the distribution.
-                action_mean_orig = mean_actions_batch[:original_batch_size]
-                _, actions_mean_symm_batch = data_augmentation_func(
+                action_mean_orig = mean_actions[:original_batch_size]
+                _, actions_mean_symm = data_augmentation_func(
                     obs=None, actions=action_mean_orig, env=self.symmetry["_env"]
                 )
 
                 # Compute the loss
                 mse_loss = torch.nn.MSELoss()
                 symmetry_loss = mse_loss(
-                    mean_actions_batch[original_batch_size:], actions_mean_symm_batch.detach()[original_batch_size:]
+                    mean_actions[original_batch_size:], actions_mean_symm.detach()[original_batch_size:]
                 )
                 # Add the loss to the total loss
                 if self.symmetry["use_mirror_loss"]:
@@ -360,11 +354,11 @@ class PPO:
                 # Extract the rnd_state
                 # TODO: Check if we still need torch no grad. It is just an affine transformation.
                 with torch.no_grad():
-                    rnd_state_batch = self.rnd.get_rnd_state(obs_batch[:original_batch_size])
-                    rnd_state_batch = self.rnd.state_normalizer(rnd_state_batch)
+                    rnd_state = self.rnd.get_rnd_state(batch.observations[:original_batch_size])
+                    rnd_state = self.rnd.state_normalizer(rnd_state)
                 # Predict the embedding and the target
-                predicted_embedding = self.rnd.predictor(rnd_state_batch)
-                target_embedding = self.rnd.target(rnd_state_batch).detach()
+                predicted_embedding = self.rnd.predictor(rnd_state)
+                target_embedding = self.rnd.target(rnd_state).detach()
                 # Compute the loss as the mean squared error
                 mseloss = torch.nn.MSELoss()
                 rnd_loss = mseloss(predicted_embedding, target_embedding)
@@ -392,7 +386,7 @@ class PPO:
             # Store the losses
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
-            mean_entropy += entropy_batch.mean().item()
+            mean_entropy += entropy.mean().item()
             # RND loss
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
