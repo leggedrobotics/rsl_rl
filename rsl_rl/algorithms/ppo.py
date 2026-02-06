@@ -217,7 +217,6 @@ class PPO:
 
         # Iterate over batches
         for batch in generator:
-            num_aug = 1  # Number of augmentations per sample. Starts at 1 for no augmentation.
             original_batch_size = batch.observations.batch_size[0]
 
             # Check if we should normalize advantages per mini batch
@@ -322,8 +321,6 @@ class PPO:
                     batch.observations, _ = data_augmentation_func(
                         obs=batch.observations, actions=None, env=self.symmetry["_env"]
                     )
-                    # Compute number of augmentations per sample
-                    num_aug = int(batch.observations.shape[0] / original_batch_size)
 
                 # Actions predicted by the actor for symmetrically-augmented observations
                 mean_actions = self.actor(batch.observations.detach().clone())

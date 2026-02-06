@@ -46,7 +46,7 @@ class RolloutStorage:
             self.values: torch.Tensor | None = None
             """Value estimates at the current step (RL only)."""
 
-            self.actions_log_prob: torch.Tensor
+            self.actions_log_prob: torch.Tensor | None = None
             """Log probability of the taken action (RL only)."""
 
             self.action_mean: torch.Tensor | None = None
