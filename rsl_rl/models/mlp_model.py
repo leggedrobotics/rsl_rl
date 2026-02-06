@@ -9,18 +9,17 @@ import copy
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
-from torch.distributions import Normal
 
-from rsl_rl.modules import MLP, EmpiricalNormalization, HiddenState
+from rsl_rl.modules import MLP, EmpiricalNormalization, GaussianDistribution, HiddenState
 from rsl_rl.utils import unpad_trajectories
 
 
 class MLPModel(nn.Module):
     """MLP-based neural model.
 
-    This model uses a simple multi-layer perceptron (MLP) to process 1D observation groups. Obsevations can be
+    This model uses a simple multi-layer perceptron (MLP) to process 1D observation groups. Observations can be
     normalized before being passed to the MLP. The output of the model can be either deterministic or
-    stochastic, in which case a Gaussian distribution is used to sample the outputs.
+    stochastic, in which case a distribution module is used to sample the outputs.
     """
 
     is_recurrent: bool = False
@@ -66,38 +65,21 @@ class MLPModel(nn.Module):
         else:
             self.obs_normalizer = torch.nn.Identity()
 
-        # MLP
-        self.state_dependent_std = state_dependent_std
-        if state_dependent_std and stochastic:
-            self.mlp = MLP(self._get_latent_dim(), [2, output_dim], hidden_dims, activation)
-        else:
-            self.mlp = MLP(self._get_latent_dim(), output_dim, hidden_dims, activation)
-
-        # Stochasticity
+        # Distribution
         self.stochastic = stochastic
-        self.noise_std_type = noise_std_type
-        if state_dependent_std and stochastic:
-            # Initialize weights and biases for the last layer of the std head
-            torch.nn.init.zeros_(self.mlp[-2].weight[output_dim:])  # type: ignore
-            if self.noise_std_type == "scalar":
-                torch.nn.init.constant_(self.mlp[-2].bias[output_dim:], init_noise_std)  # type: ignore
-            elif self.noise_std_type == "log":
-                init_noise_std_log = torch.log(torch.tensor(init_noise_std + 1e-7))
-                torch.nn.init.constant_(self.mlp[-2].bias[output_dim:], init_noise_std_log)  # type: ignore
-            else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
-        elif stochastic:
-            # Initialize parameters for state independent std
-            if self.noise_std_type == "scalar":
-                self.std = nn.Parameter(init_noise_std * torch.ones(output_dim))
-            elif self.noise_std_type == "log":
-                self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(output_dim)))
-            else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
-        # Note: Populated in update_distribution
-        self.distribution = None
-        # Disable args validation for speedup
-        Normal.set_default_validate_args(False)
+        if stochastic:
+            self.distribution = GaussianDistribution(output_dim, init_noise_std, noise_std_type, state_dependent_std)
+            mlp_output_dim = self.distribution.mlp_output_dim
+        else:
+            self.distribution = None
+            mlp_output_dim = output_dim
+
+        # MLP
+        self.mlp = MLP(self._get_latent_dim(), mlp_output_dim, hidden_dims, activation)
+
+        # Initialize distribution-specific MLP weights
+        if self.distribution is not None:
+            self.distribution.init_mlp_weights(self.mlp)
 
     def forward(
         self,
@@ -117,14 +99,15 @@ class MLPModel(nn.Module):
         # Get MLP input latent
         latent = self.get_latent(obs, masks, hidden_state)
         # MLP forward pass
+        mlp_output = self.mlp(latent)
+        # If stochastic output is requested, update the distribution and sample from it, otherwise return MLP output
         if self.stochastic and stochastic_output:
-            self._update_distribution(latent)
+            self.distribution.update(mlp_output)
             return self.distribution.sample()
+        elif self.stochastic:
+            return self.distribution.deterministic_output(mlp_output)
         else:
-            if self.state_dependent_std:
-                return self.mlp(latent)[..., 0, :]
-            else:
-                return self.mlp(latent)
+            return mlp_output
 
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
@@ -136,11 +119,11 @@ class MLPModel(nn.Module):
         latent = self.obs_normalizer(latent)
         return latent
 
-    def get_hidden_state(self) -> HiddenState:
-        return None
-
     def reset(self, dones: torch.Tensor | None = None, hidden_state: HiddenState = None) -> None:
         pass
+
+    def get_hidden_state(self) -> HiddenState:
+        return None
 
     def detach_hidden_state(self, dones: torch.Tensor | None = None) -> None:
         pass
@@ -151,14 +134,14 @@ class MLPModel(nn.Module):
 
     @property
     def output_std(self) -> torch.Tensor:
-        return self.distribution.stddev
+        return self.distribution.std
 
     @property
     def output_entropy(self) -> torch.Tensor:
-        return self.distribution.entropy().sum(dim=-1)
+        return self.distribution.entropy
 
     def get_output_log_prob(self, outputs: torch.Tensor) -> torch.Tensor:
-        return self.distribution.log_prob(outputs).sum(dim=-1)
+        return self.distribution.log_prob(outputs)
 
     def as_jit(self) -> nn.Module:
         """Return a version of the model compatible with Torch JIT export."""
@@ -175,30 +158,6 @@ class MLPModel(nn.Module):
             mlp_obs = torch.cat(obs_list, dim=-1)
             # Update the normalizer parameters
             self.obs_normalizer.update(mlp_obs)  # type: ignore
-
-    def _update_distribution(self, obs: torch.Tensor) -> None:
-        if self.state_dependent_std:
-            # Compute mean and standard deviation
-            mean_and_std = self.mlp(obs)
-            if self.noise_std_type == "scalar":
-                mean, std = torch.unbind(mean_and_std, dim=-2)
-            elif self.noise_std_type == "log":
-                mean, log_std = torch.unbind(mean_and_std, dim=-2)
-                std = torch.exp(log_std)
-            else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
-        else:
-            # Compute mean
-            mean = self.mlp(obs)
-            # Compute standard deviation
-            if self.noise_std_type == "scalar":
-                std = self.std.expand_as(mean)
-            elif self.noise_std_type == "log":
-                std = torch.exp(self.log_std).expand_as(mean)
-            else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
-        # Create distribution
-        self.distribution = Normal(mean, std)
 
     def _get_obs_dim(self, obs: TensorDict, obs_groups: dict[str, list[str]], obs_set: str) -> tuple[list[str], int]:
         """Select active observation groups and compute observation dimension."""
@@ -221,13 +180,13 @@ class _TorchMLPModel(nn.Module):
         super().__init__()
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.mlp = copy.deepcopy(model.mlp)
-        self.state_dependent_std = model.state_dependent_std
+        self.distribution = model.distribution
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.obs_normalizer(x)
         out = self.mlp(x)
-        if self.state_dependent_std:
-            return out[..., 0, :]
+        if self.distribution is not None:
+            return self.distribution.deterministic_output(out)
         return out
 
     @torch.jit.export
@@ -245,14 +204,14 @@ class _OnnxMLPModel(nn.Module):
         self.verbose = verbose
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.mlp = copy.deepcopy(model.mlp)
-        self.state_dependent_std = model.state_dependent_std
+        self.distribution = model.distribution
         self.input_size = model.obs_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.obs_normalizer(x)
         out = self.mlp(x)
-        if self.state_dependent_std:
-            return out[..., 0, :]
+        if self.distribution is not None:
+            return self.distribution.deterministic_output(out)
         return out
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor]:
