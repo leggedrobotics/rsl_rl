@@ -174,7 +174,7 @@ class _TorchCNNModel(nn.Module):
         # Convert ModuleDict to ModuleList for ordered iteration
         self.cnns = nn.ModuleList([model.cnns[g] for g in model.obs_groups_2d])
         self.mlp = copy.deepcopy(model.mlp)
-        self.state_dependent_std = model.state_dependent_std
+        self.distribution = model.distribution
 
     def forward(self, obs_1d: torch.Tensor, obs_2d: list[torch.Tensor]) -> torch.Tensor:
         latent_1d = self.obs_normalizer(obs_1d)
@@ -187,8 +187,8 @@ class _TorchCNNModel(nn.Module):
         latent = torch.cat([latent_1d, latent_cnn], dim=-1)
 
         out = self.mlp(latent)
-        if self.state_dependent_std:
-            return out[..., 0, :]
+        if self.distribution is not None:
+            return self.distribution.deterministic_output(out)
         return out
 
     @torch.jit.export
@@ -206,7 +206,7 @@ class _OnnxCNNModel(nn.Module):
         # Convert ModuleDict to ModuleList for ordered iteration
         self.cnns = nn.ModuleList([model.cnns[g] for g in model.obs_groups_2d])
         self.mlp = copy.deepcopy(model.mlp)
-        self.state_dependent_std = model.state_dependent_std
+        self.distribution = model.distribution
 
         self.obs_groups_2d = model.obs_groups_2d
         self.obs_dims_2d = model.obs_dims_2d
@@ -224,8 +224,8 @@ class _OnnxCNNModel(nn.Module):
         latent = torch.cat([latent_1d, latent_cnn], dim=-1)
 
         out = self.mlp(latent)
-        if self.state_dependent_std:
-            return out[..., 0, :]
+        if self.distribution is not None:
+            return self.distribution.deterministic_output(out)
         return out
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:
