@@ -61,13 +61,15 @@ class CNNModel(MLPModel):
         # Resolve observation groups and dimensions
         self._get_obs_dim(obs, obs_groups, obs_set)
 
-        # Create or assign CNN encoders
+        # Create or assign CNN encoders in a local variable. They cannot be
+        # assigned to ``self`` yet because ``nn.Module.__init__()`` has not
+        # been called (it runs inside ``super().__init__()`` below).
         if cnns is not None:
             # Check compatibility if CNNs are provided
             if set(cnns.keys()) != set(self.obs_groups_2d):
                 raise ValueError("The 2D observations must be identical for all models sharing CNN encoders.")
             print("Sharing CNN encoders between models, the CNN configurations of the receiving model are ignored.")
-            self.cnns = cnns
+            _cnns = cnns
         else:
             # Create a cnn config for each 2D observation group in case only one is provided
             if not all(isinstance(v, dict) for v in cnn_cfg.values()):
@@ -77,15 +79,26 @@ class CNNModel(MLPModel):
                 "The number of CNN configurations must match the number of 2D observation groups."
             )
             # Create CNNs for each 2D observation
-            self.cnns = nn.ModuleDict()
+            _cnns = {}
             for idx, obs_group in enumerate(self.obs_groups_2d):
-                self.cnns[obs_group] = CNN(
+                _cnns[obs_group] = CNN(
                     input_dim=self.obs_dims_2d[idx],
                     input_channels=self.obs_channels_2d[idx],
                     **cnn_cfg[obs_group],
                 )
 
-        # Initialize the parent MLP model
+        # Pre-compute CNN latent dimension so that ``_get_latent_dim()``
+        # (called during ``super().__init__()``) does not need ``self.cnns``.
+        self._cnn_latent_dim = 0
+        for cnn in _cnns.values():
+            if cnn.output_channels is not None:
+                raise ValueError(
+                    "The output of the CNN must be flattened "
+                    "before passing it to the MLP."
+                )
+            self._cnn_latent_dim += int(cnn.output_dim)
+
+        # Initialize the parent MLP model (calls nn.Module.__init__())
         super().__init__(
             obs,
             obs_groups,
@@ -99,6 +112,12 @@ class CNNModel(MLPModel):
             noise_std_type,
             state_dependent_std,
         )
+
+        # Register CNN encoders now that nn.Module is initialized
+        if isinstance(_cnns, nn.ModuleDict):
+            self.cnns = _cnns
+        else:
+            self.cnns = nn.ModuleDict(_cnns)
 
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
@@ -140,7 +159,7 @@ class CNNModel(MLPModel):
             else:
                 raise ValueError(f"Invalid observation shape for {obs_group}: {obs[obs_group].shape}")
 
-        assert self.obs_groups_2d, "No 2D observations are provided. If this is intentional, use the MLP model instead."
+        assert obs_groups_2d, "No 2D observations are provided. If this is intentional, use the MLP model instead."
 
         # Store active 2D observation groups and dimensions directly as attributes
         self.obs_dims_2d = obs_dims_2d
@@ -150,15 +169,7 @@ class CNNModel(MLPModel):
         return obs_groups_1d, obs_dim_1d
 
     def _get_latent_dim(self) -> int:
-        # 1D observations dimension
-        latent_dim = self.obs_dim
-        # Add the latent dimensions of the CNNs
-        for cnn in self.cnns.values():
-            if cnn.output_channels is None:
-                latent_dim += int(cnn.output_dim)  # type: ignore
-            else:
-                raise ValueError("The output of the CNN must be flattened before passing it to the MLP.")
-        return latent_dim
+        return self.obs_dim + self._cnn_latent_dim
 
 
 class _TorchCNNModel(nn.Module):
