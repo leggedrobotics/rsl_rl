@@ -140,7 +140,7 @@ class CNNModel(MLPModel):
             else:
                 raise ValueError(f"Invalid observation shape for {obs_group}: {obs[obs_group].shape}")
 
-        assert self.obs_groups_2d, "No 2D observations are provided. If this is intentional, use the MLP model instead."
+        assert obs_groups_2d, "No 2D observations are provided. If this is intentional, use the MLP model instead."
 
         # Store active 2D observation groups and dimensions directly as attributes
         self.obs_dims_2d = obs_dims_2d
