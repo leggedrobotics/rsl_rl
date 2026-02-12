@@ -58,14 +58,14 @@ class Logger:
         # Note: We only log from the process with rank 0 (main process)
         self.disable_logs = is_distributed and gpu_global_rank != 0
 
-        # Log code state
-        self.files_to_upload = self._store_code_state()
-
     def init_logging_writer(self) -> None:
         """Initialize the logging writer, which can be either Tensorboard, W&B or Neptune.
 
         If the writer is either W&B or Neptune, the configuration and code state are uploaded as well.
         """
+        # Log code state
+        self.files_to_upload = self._store_code_state()
+
         if self.log_dir is not None and not self.disable_logs:
             self.logger_type = self.cfg.get("logger", "tensorboard")
             self.logger_type = self.logger_type.lower()
