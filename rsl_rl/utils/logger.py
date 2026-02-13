@@ -101,10 +101,13 @@ class Logger:
     ) -> None:
         """Add metrics from the environment step to the buffers."""
         if self.log_dir is not None:
-            if "episode" in extras:
-                self.ep_extras.append(extras["episode"])
-            elif "log" in extras:
-                self.ep_extras.append(extras["log"])
+            # Multi-GPU: only accumulate episode extras on the logging rank to avoid
+            # unbounded GPU memory growth from holding tensor views on non-logging ranks.
+            if not self.disable_logs:
+                if "episode" in extras:
+                    self.ep_extras.append(extras["episode"])
+                elif "log" in extras:
+                    self.ep_extras.append(extras["log"])
 
             # Update rewards and episode length
             if intrinsic_rewards is not None:
