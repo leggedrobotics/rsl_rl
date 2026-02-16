@@ -100,7 +100,7 @@ class Logger:
         intrinsic_rewards: torch.Tensor | None = None,
     ) -> None:
         """Add metrics from the environment step to the buffers."""
-        if self.log_dir is not None:
+        if self.writer is not None:
             if "episode" in extras:
                 self.ep_extras.append(extras["episode"])
             elif "log" in extras:
@@ -146,7 +146,7 @@ class Logger:
 
         If videos are available, they are uploaded to the logging service (W&B) as well.
         """
-        if self.writer:
+        if self.writer is not None:
             collection_size = self.cfg["num_steps_per_env"] * self.num_envs * self.gpu_world_size
             iteration_time = collect_time + learn_time
             self.tot_timesteps += collection_size
