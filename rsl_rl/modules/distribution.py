@@ -31,33 +31,6 @@ class Distribution(nn.Module):
         super().__init__()
         self.output_dim = output_dim
 
-    @property
-    def input_dim(self) -> int | list[int]:
-        """Return the input dimension required by the distribution."""
-        raise NotImplementedError
-
-    def init_mlp_weights(self, mlp: nn.Module) -> None:
-        """Initialize distribution-specific weights in the MLP.
-
-        This is called after MLP creation to set up any special weight initialization
-        required by the distribution (e.g., initializing std head weights).
-
-        Args:
-            mlp: The MLP module whose weights may need initialization.
-        """
-        pass
-
-    def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
-        """Extract the deterministic (mean) output from the raw MLP output.
-
-        Args:
-            mlp_output: Raw output from the MLP.
-
-        Returns:
-            The deterministic output (typically the distribution mean).
-        """
-        raise NotImplementedError
-
     def update(self, mlp_output: torch.Tensor) -> None:
         """Update the distribution parameters given the MLP output.
 
@@ -72,6 +45,22 @@ class Distribution(nn.Module):
         Returns:
             Sampled values.
         """
+        raise NotImplementedError
+
+    def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        """Extract the deterministic (mean) output from the raw MLP output.
+
+        Args:
+            mlp_output: Raw output from the MLP.
+
+        Returns:
+            The deterministic output (typically the distribution mean).
+        """
+        raise NotImplementedError
+
+    @property
+    def input_dim(self) -> int | list[int]:
+        """Return the input dimension required by the distribution."""
         raise NotImplementedError
 
     @property
@@ -124,6 +113,17 @@ class Distribution(nn.Module):
         """
         raise NotImplementedError
 
+    def init_mlp_weights(self, mlp: nn.Module) -> None:
+        """Initialize distribution-specific weights in the MLP.
+
+        This is called after MLP creation to set up any special weight initialization
+        required by the distribution (e.g., initializing std head weights).
+
+        Args:
+            mlp: The MLP module whose weights may need initialization.
+        """
+        pass
+
 
 class GaussianDistribution(Distribution):
     """Gaussian (Normal) distribution module with state-independent standard deviation.
@@ -163,15 +163,6 @@ class GaussianDistribution(Distribution):
         # Disable args validation for speedup
         Normal.set_default_validate_args(False)
 
-    @property
-    def input_dim(self) -> int:
-        """Return the input dimension required by the distribution."""
-        return self.output_dim
-
-    def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
-        """Extract the mean from the MLP output."""
-        return mlp_output
-
     def update(self, mlp_output: torch.Tensor) -> None:
         """Update the Gaussian distribution from MLP output."""
         mean = mlp_output
@@ -184,6 +175,15 @@ class GaussianDistribution(Distribution):
     def sample(self) -> torch.Tensor:
         """Sample from the Gaussian distribution."""
         return self._distribution.sample()  # type: ignore
+
+    def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        """Extract the mean from the MLP output."""
+        return mlp_output
+
+    @property
+    def input_dim(self) -> int:
+        """Return the input dimension required by the distribution."""
+        return self.output_dim
 
     @property
     def mean(self) -> torch.Tensor:
@@ -253,6 +253,19 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
         # Disable args validation for speedup
         Normal.set_default_validate_args(False)
 
+    def update(self, mlp_output: torch.Tensor) -> None:
+        """Update the Gaussian distribution from MLP output."""
+        if self.noise_std_type == "scalar":
+            mean, std = torch.unbind(mlp_output, dim=-2)
+        elif self.noise_std_type == "log":
+            mean, log_std = torch.unbind(mlp_output, dim=-2)
+            std = torch.exp(log_std)
+        self._distribution = Normal(mean, std)
+
+    def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        """Extract the mean from the MLP output (first slice of the second-to-last dimension)."""
+        return mlp_output[..., 0, :]
+
     @property
     def input_dim(self) -> list[int]:
         """Return the input dimension required by the distribution.
@@ -271,16 +284,3 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
         elif self.noise_std_type == "log":
             init_noise_std_log = torch.log(torch.tensor(self.init_noise_std + 1e-7))
             torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], init_noise_std_log)  # type: ignore
-
-    def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
-        """Extract the mean from the MLP output (first slice of the second-to-last dimension)."""
-        return mlp_output[..., 0, :]
-
-    def update(self, mlp_output: torch.Tensor) -> None:
-        """Update the Gaussian distribution from MLP output."""
-        if self.noise_std_type == "scalar":
-            mean, std = torch.unbind(mlp_output, dim=-2)
-        elif self.noise_std_type == "log":
-            mean, log_std = torch.unbind(mlp_output, dim=-2)
-            std = torch.exp(log_std)
-        self._distribution = Normal(mean, std)
