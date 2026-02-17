@@ -121,12 +121,12 @@ class Distillation:
             self.student.reset(hidden_state=self.last_hidden_states[0])
             self.teacher.reset(hidden_state=self.last_hidden_states[1])
             self.student.detach_hidden_state()
-            for obs, _, privileged_actions, dones in self.storage.generator():
+            for batch in self.storage.generator():
                 # Inference of the student for gradient computation
-                actions = self.student(obs)
+                actions = self.student(batch.observations)
 
                 # Behavior cloning loss
-                behavior_loss = self.loss_fn(actions, privileged_actions)
+                behavior_loss = self.loss_fn(actions, batch.privileged_actions)
 
                 # Total loss
                 loss = loss + behavior_loss
@@ -146,9 +146,9 @@ class Distillation:
                     loss = 0
 
                 # Reset dones
-                self.student.reset(dones.view(-1))
-                self.teacher.reset(dones.view(-1))
-                self.student.detach_hidden_state(dones.view(-1))
+                self.student.reset(batch.dones.view(-1))
+                self.teacher.reset(batch.dones.view(-1))
+                self.student.detach_hidden_state(batch.dones.view(-1))
 
         mean_behavior_loss /= cnt
         self.storage.clear()
