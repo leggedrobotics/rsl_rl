@@ -126,11 +126,11 @@ class Distribution(nn.Module):
 
 
 class GaussianDistribution(Distribution):
-    """Gaussian (Normal) distribution module.
+    """Gaussian (Normal) distribution module with state-independent standard deviation.
 
     This distribution parameterizes actions using a multivariate Gaussian with diagonal covariance. The standard
-    deviation can be either state-independent (learnable parameter) or state-dependent (output by the MLP). It can be
-    parameterized in either "scalar" space (directly) or "log" space.
+    deviation is a learnable parameter that is independent of the model input. It can be parameterized in either
+    "scalar" space (directly) or "log" space.
     """
 
     def __init__(
@@ -138,7 +138,6 @@ class GaussianDistribution(Distribution):
         output_dim: int,
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
-        state_dependent_std: bool = False,
     ) -> None:
         """Initialize the Gaussian distribution module.
 
@@ -146,21 +145,17 @@ class GaussianDistribution(Distribution):
             output_dim: Dimension of the action/output space.
             init_noise_std: Initial standard deviation.
             noise_std_type: Parameterization of the standard deviation: "scalar" or "log".
-            state_dependent_std: Whether the standard deviation is state-dependent (output by the MLP).
         """
         super().__init__(output_dim)
         self.noise_std_type = noise_std_type
-        self.state_dependent_std = state_dependent_std
-        self.init_noise_std = init_noise_std
 
-        # State-independent std parameters
-        if not state_dependent_std:
-            if noise_std_type == "scalar":
-                self.std_param = nn.Parameter(init_noise_std * torch.ones(output_dim))
-            elif noise_std_type == "log":
-                self.log_std_param = nn.Parameter(torch.log(init_noise_std * torch.ones(output_dim)))
-            else:
-                raise ValueError(f"Unknown standard deviation type: {noise_std_type}. Should be 'scalar' or 'log'.")
+        # Learnable std parameters
+        if noise_std_type == "scalar":
+            self.std_param = nn.Parameter(init_noise_std * torch.ones(output_dim))
+        elif noise_std_type == "log":
+            self.log_std_param = nn.Parameter(torch.log(init_noise_std * torch.ones(output_dim)))
+        else:
+            raise ValueError(f"Unknown standard deviation type: {noise_std_type}. Should be 'scalar' or 'log'.")
 
         # Internal torch distribution (populated by update())
         self._distribution: Normal | None = None
@@ -169,55 +164,21 @@ class GaussianDistribution(Distribution):
         Normal.set_default_validate_args(False)
 
     @property
-    def input_dim(self) -> int | list[int]:
+    def input_dim(self) -> int:
         """Return the input dimension required by the distribution."""
-        if self.state_dependent_std:
-            return [2, self.output_dim]
         return self.output_dim
-
-    def init_mlp_weights(self, mlp: nn.Module) -> None:
-        """Initialize the std head weights in the MLP for state-dependent std."""
-        if self.state_dependent_std:
-            # Initialize weights and biases for the std portion of the last layer
-            torch.nn.init.zeros_(mlp[-2].weight[self.output_dim :])  # type: ignore
-            if self.noise_std_type == "scalar":
-                torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], self.init_noise_std)  # type: ignore
-            elif self.noise_std_type == "log":
-                init_noise_std_log = torch.log(torch.tensor(self.init_noise_std + 1e-7))
-                torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], init_noise_std_log)  # type: ignore
-            else:
-                raise ValueError(
-                    f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'."
-                )
 
     def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
         """Extract the mean from the MLP output."""
-        if self.state_dependent_std:
-            return mlp_output[..., 0, :]
         return mlp_output
 
     def update(self, mlp_output: torch.Tensor) -> None:
         """Update the Gaussian distribution from MLP output."""
-        if self.state_dependent_std:
-            if self.noise_std_type == "scalar":
-                mean, std = torch.unbind(mlp_output, dim=-2)
-            elif self.noise_std_type == "log":
-                mean, log_std = torch.unbind(mlp_output, dim=-2)
-                std = torch.exp(log_std)
-            else:
-                raise ValueError(
-                    f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'."
-                )
-        else:
-            mean = mlp_output
-            if self.noise_std_type == "scalar":
-                std = self.std_param.expand_as(mean)
-            elif self.noise_std_type == "log":
-                std = torch.exp(self.log_std_param).expand_as(mean)
-            else:
-                raise ValueError(
-                    f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'."
-                )
+        mean = mlp_output
+        if self.noise_std_type == "scalar":
+            std = self.std_param.expand_as(mean)
+        elif self.noise_std_type == "log":
+            std = torch.exp(self.log_std_param).expand_as(mean)
         self._distribution = Normal(mean, std)
 
     def sample(self) -> torch.Tensor:
@@ -255,3 +216,71 @@ class GaussianDistribution(Distribution):
         old_dist = Normal(old_mean, old_std)
         new_dist = Normal(new_mean, new_std)
         return torch.distributions.kl_divergence(old_dist, new_dist).sum(dim=-1)
+
+
+class HeteroscedasticGaussianDistribution(GaussianDistribution):
+    """Gaussian (Normal) distribution module with state-dependent standard deviation.
+
+    This distribution parameterizes actions using a multivariate Gaussian with diagonal covariance. The standard
+    deviation is output by the MLP alongside the mean, making it state-dependent (heteroscedastic). It can be
+    parameterized in either "scalar" space (directly) or "log" space.
+    """
+
+    def __init__(
+        self,
+        output_dim: int,
+        init_noise_std: float = 1.0,
+        noise_std_type: str = "scalar",
+    ) -> None:
+        """Initialize the heteroscedastic Gaussian distribution module.
+
+        Args:
+            output_dim: Dimension of the action/output space.
+            init_noise_std: Initial standard deviation (used to initialize MLP std head bias).
+            noise_std_type: Parameterization of the standard deviation: "scalar" or "log".
+        """
+        # Skip GaussianDistribution.__init__ to avoid creating unnecessary learnable std parameters.
+        Distribution.__init__(self, output_dim)
+        self.noise_std_type = noise_std_type
+        self.init_noise_std = init_noise_std
+
+        if noise_std_type not in ("scalar", "log"):
+            raise ValueError(f"Unknown standard deviation type: {noise_std_type}. Should be 'scalar' or 'log'.")
+
+        # Internal torch distribution (populated by update())
+        self._distribution: Normal | None = None
+
+        # Disable args validation for speedup
+        Normal.set_default_validate_args(False)
+
+    @property
+    def input_dim(self) -> list[int]:
+        """Return the input dimension required by the distribution.
+
+        The MLP must output a tensor of shape ``[..., 2, output_dim]`` where the first slice along the second-to-last
+        dimension is the mean and the second is the standard deviation (or log standard deviation).
+        """
+        return [2, self.output_dim]
+
+    def init_mlp_weights(self, mlp: nn.Module) -> None:
+        """Initialize the std head weights in the MLP."""
+        # Initialize weights and biases for the std portion of the last layer
+        torch.nn.init.zeros_(mlp[-2].weight[self.output_dim :])  # type: ignore
+        if self.noise_std_type == "scalar":
+            torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], self.init_noise_std)  # type: ignore
+        elif self.noise_std_type == "log":
+            init_noise_std_log = torch.log(torch.tensor(self.init_noise_std + 1e-7))
+            torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], init_noise_std_log)  # type: ignore
+
+    def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        """Extract the mean from the MLP output (first slice of the second-to-last dimension)."""
+        return mlp_output[..., 0, :]
+
+    def update(self, mlp_output: torch.Tensor) -> None:
+        """Update the Gaussian distribution from MLP output."""
+        if self.noise_std_type == "scalar":
+            mean, std = torch.unbind(mlp_output, dim=-2)
+        elif self.noise_std_type == "log":
+            mean, log_std = torch.unbind(mlp_output, dim=-2)
+            std = torch.exp(log_std)
+        self._distribution = Normal(mean, std)
