@@ -10,8 +10,9 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from rsl_rl.modules import MLP, EmpiricalNormalization, GaussianDistribution, HiddenState
-from rsl_rl.utils import unpad_trajectories
+from rsl_rl.modules import MLP, EmpiricalNormalization, HiddenState
+from rsl_rl.modules.distribution import Distribution
+from rsl_rl.utils import resolve_callable, unpad_trajectories
 
 
 class MLPModel(nn.Module):
@@ -33,10 +34,7 @@ class MLPModel(nn.Module):
         hidden_dims: tuple[int] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
-        stochastic: bool = False,
-        init_noise_std: float = 1.0,
-        noise_std_type: str = "scalar",
-        state_dependent_std: bool = False,
+        distribution_cfg: dict | None = None,
     ) -> None:
         """Initialize the MLP-based model.
 
@@ -48,10 +46,8 @@ class MLPModel(nn.Module):
             hidden_dims: Hidden dimensions of the MLP.
             activation: Activation function of the MLP.
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
-            stochastic: Whether the model outputs stochastic or deterministic values.
-            init_noise_std: Initial standard deviation of the stochatic output.
-            noise_std_type: Whether the standard deviation is defined as a "scalar" or in "log" space.
-            state_dependent_std: Whether the standard deviation is state dependent.
+            distribution_cfg: Configuration dictionary for the output distribution. If provided, the model outputs
+                stochastic values sampled from the distribution.
         """
         super().__init__()
 
@@ -66,10 +62,10 @@ class MLPModel(nn.Module):
             self.obs_normalizer = torch.nn.Identity()
 
         # Distribution
-        self.stochastic = stochastic
-        if stochastic:
-            self.distribution = GaussianDistribution(output_dim, init_noise_std, noise_std_type, state_dependent_std)
-            mlp_output_dim = self.distribution.mlp_output_dim
+        if distribution_cfg is not None:
+            dist_class: type[Distribution] = resolve_callable(distribution_cfg.pop("class_name"))  # type: ignore
+            self.distribution: Distribution | None = dist_class(output_dim, **distribution_cfg)
+            mlp_output_dim = self.distribution.input_dim
         else:
             self.distribution = None
             mlp_output_dim = output_dim
@@ -91,8 +87,9 @@ class MLPModel(nn.Module):
         """Forward pass of the MLP model.
 
         ..note::
-            The `stochastic_output` flag only has an effect if the model is initialized as stochastic and defaults to
-            `False`, meaning that even stochastic models will return deterministic outputs by default.
+            The `stochastic_output` flag only has an effect if the model has a distribution (i.e., ``distribution_cfg``
+            was provided) and defaults to ``False``, meaning that even stochastic models will return deterministic
+            outputs by default.
         """
         # If observations are padded for recurrent training but the model is non-recurrent, unpad the observations
         obs = unpad_trajectories(obs, masks) if masks is not None and not self.is_recurrent else obs
@@ -101,10 +98,10 @@ class MLPModel(nn.Module):
         # MLP forward pass
         mlp_output = self.mlp(latent)
         # If stochastic output is requested, update the distribution and sample from it, otherwise return MLP output
-        if self.stochastic and stochastic_output:
+        if self.distribution is not None and stochastic_output:
             self.distribution.update(mlp_output)
             return self.distribution.sample()
-        elif self.stochastic:
+        elif self.distribution is not None:
             return self.distribution.deterministic_output(mlp_output)
         else:
             return mlp_output

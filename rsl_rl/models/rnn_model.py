@@ -19,7 +19,7 @@ class RNNModel(MLPModel):
 
     This model uses a recurrent neural network (RNN) to process 1D observation groups before passing the resulting
     latent to an MLP. Available RNN types are "lstm" and "gru". Observations can be normalized before being passed to
-    the RNN. The output of the model can be either deterministic or stochastic, in which case a Gaussian distribution is
+    the RNN. The output of the model can be either deterministic or stochastic, in which case a distribution module is
     used to sample the outputs.
     """
 
@@ -34,10 +34,7 @@ class RNNModel(MLPModel):
         hidden_dims: tuple[int] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
-        stochastic: bool = False,
-        init_noise_std: float = 1.0,
-        noise_std_type: str = "scalar",
-        state_dependent_std: bool = False,
+        distribution_cfg: dict | None = None,
         rnn_type: str = "lstm",
         rnn_hidden_dim: int = 256,
         rnn_num_layers: int = 1,
@@ -52,10 +49,7 @@ class RNNModel(MLPModel):
             hidden_dims: Hidden dimensions of the MLP.
             activation: Activation function of the MLP.
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
-            stochastic: Whether the model outputs stochastic or deterministic values.
-            init_noise_std: Initial standard deviation of the stochatic output.
-            noise_std_type: Whether the standard deviation is defined as a "scalar" or in "log" space.
-            state_dependent_std: Whether the standard deviation is state dependent.
+            distribution_cfg: Configuration dictionary for the output distribution.
             rnn_type: Type of RNN to use ("lstm" or "gru").
             rnn_hidden_dim: Dimension of the RNN hidden state.
             rnn_num_layers: Number of RNN layers.
@@ -71,10 +65,7 @@ class RNNModel(MLPModel):
             hidden_dims,
             activation,
             obs_normalization,
-            stochastic,
-            init_noise_std,
-            noise_std_type,
-            state_dependent_std,
+            distribution_cfg,
         )
 
         # RNN

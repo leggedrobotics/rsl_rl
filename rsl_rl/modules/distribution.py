@@ -32,8 +32,8 @@ class Distribution(nn.Module):
         self.output_dim = output_dim
 
     @property
-    def mlp_output_dim(self) -> int | list[int]:
-        """Return the output dimension required from the MLP for this distribution."""
+    def input_dim(self) -> int | list[int]:
+        """Return the input dimension required by the distribution."""
         raise NotImplementedError
 
     def init_mlp_weights(self, mlp: nn.Module) -> None:
@@ -169,8 +169,8 @@ class GaussianDistribution(Distribution):
         Normal.set_default_validate_args(False)
 
     @property
-    def mlp_output_dim(self) -> int | list[int]:
-        """Return the MLP output dimension needed for this distribution."""
+    def input_dim(self) -> int | list[int]:
+        """Return the input dimension required by the distribution."""
         if self.state_dependent_std:
             return [2, self.output_dim]
         return self.output_dim

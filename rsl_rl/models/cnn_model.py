@@ -21,8 +21,7 @@ class CNNModel(MLPModel):
     This model uses one or more convolutional neural network (CNN) encoders to process one or more 2D observation groups
     before passing the resulting latent to an MLP. Any 1D observation groups are directly concatenated with the CNN
     latent and passed to the MLP. 1D observations can be normalized before being passed to the MLP. The output of the
-    model can be either deterministic or stochastic, in which case a Gaussian distribution is used to sample the
-    outputs.
+    model can be either deterministic or stochastic, in which case a distribution module is used to sample the outputs.
     """
 
     def __init__(
@@ -36,10 +35,7 @@ class CNNModel(MLPModel):
         hidden_dims: tuple[int] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
-        stochastic: bool = False,
-        init_noise_std: float = 1.0,
-        noise_std_type: str = "scalar",
-        state_dependent_std: bool = False,
+        distribution_cfg: dict | None = None,
     ) -> None:
         """Initialize the CNN-based model.
 
@@ -53,10 +49,7 @@ class CNNModel(MLPModel):
             cnns: CNN modules to use, e.g., for sharing CNNs between actor and critic. If None, new CNNs are created.
             activation: Activation function of the CNN and MLP.
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
-            stochastic: Whether the model outputs stochastic or deterministic values.
-            init_noise_std: Initial standard deviation of the stochatic output.
-            noise_std_type: Whether the standard deviation is defined as a "scalar" or in "log" space.
-            state_dependent_std: Whether the standard deviation is state dependent.
+            distribution_cfg: Configuration dictionary for the output distribution.
         """
         # Resolve observation groups and dimensions
         self._get_obs_dim(obs, obs_groups, obs_set)
@@ -99,10 +92,7 @@ class CNNModel(MLPModel):
             hidden_dims,
             activation,
             obs_normalization,
-            stochastic,
-            init_noise_std,
-            noise_std_type,
-            state_dependent_std,
+            distribution_cfg,
         )
 
         # Register CNN encoders
