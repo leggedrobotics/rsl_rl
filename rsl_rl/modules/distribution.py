@@ -136,26 +136,26 @@ class GaussianDistribution(Distribution):
     def __init__(
         self,
         output_dim: int,
-        init_noise_std: float = 1.0,
-        noise_std_type: str = "scalar",
+        init_std: float = 1.0,
+        std_type: str = "scalar",
     ) -> None:
         """Initialize the Gaussian distribution module.
 
         Args:
             output_dim: Dimension of the action/output space.
-            init_noise_std: Initial standard deviation.
-            noise_std_type: Parameterization of the standard deviation: "scalar" or "log".
+            init_std: Initial standard deviation.
+            std_type: Parameterization of the standard deviation: "scalar" or "log".
         """
         super().__init__(output_dim)
-        self.noise_std_type = noise_std_type
+        self.std_type = std_type
 
         # Learnable std parameters
-        if noise_std_type == "scalar":
-            self.std_param = nn.Parameter(init_noise_std * torch.ones(output_dim))
-        elif noise_std_type == "log":
-            self.log_std_param = nn.Parameter(torch.log(init_noise_std * torch.ones(output_dim)))
+        if std_type == "scalar":
+            self.std_param = nn.Parameter(init_std * torch.ones(output_dim))
+        elif std_type == "log":
+            self.log_std_param = nn.Parameter(torch.log(init_std * torch.ones(output_dim)))
         else:
-            raise ValueError(f"Unknown standard deviation type: {noise_std_type}. Should be 'scalar' or 'log'.")
+            raise ValueError(f"Unknown standard deviation type: {std_type}. Should be 'scalar' or 'log'.")
 
         # Internal torch distribution (populated by update())
         self._distribution: Normal | None = None
@@ -166,9 +166,9 @@ class GaussianDistribution(Distribution):
     def update(self, mlp_output: torch.Tensor) -> None:
         """Update the Gaussian distribution from MLP output."""
         mean = mlp_output
-        if self.noise_std_type == "scalar":
+        if self.std_type == "scalar":
             std = self.std_param.expand_as(mean)
-        elif self.noise_std_type == "log":
+        elif self.std_type == "log":
             std = torch.exp(self.log_std_param).expand_as(mean)
         self._distribution = Normal(mean, std)
 
@@ -229,23 +229,23 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
     def __init__(
         self,
         output_dim: int,
-        init_noise_std: float = 1.0,
-        noise_std_type: str = "scalar",
+        init_std: float = 1.0,
+        std_type: str = "scalar",
     ) -> None:
         """Initialize the heteroscedastic Gaussian distribution module.
 
         Args:
             output_dim: Dimension of the action/output space.
-            init_noise_std: Initial standard deviation (used to initialize MLP std head bias).
-            noise_std_type: Parameterization of the standard deviation: "scalar" or "log".
+            init_std: Initial standard deviation (used to initialize MLP std head bias).
+            std_type: Parameterization of the standard deviation: "scalar" or "log".
         """
         # Skip GaussianDistribution.__init__ to avoid creating unnecessary learnable std parameters.
         Distribution.__init__(self, output_dim)
-        self.noise_std_type = noise_std_type
-        self.init_noise_std = init_noise_std
+        self.std_type = std_type
+        self.init_std = init_std
 
-        if noise_std_type not in ("scalar", "log"):
-            raise ValueError(f"Unknown standard deviation type: {noise_std_type}. Should be 'scalar' or 'log'.")
+        if std_type not in ("scalar", "log"):
+            raise ValueError(f"Unknown standard deviation type: {std_type}. Should be 'scalar' or 'log'.")
 
         # Internal torch distribution (populated by update())
         self._distribution: Normal | None = None
@@ -255,9 +255,9 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
 
     def update(self, mlp_output: torch.Tensor) -> None:
         """Update the Gaussian distribution from MLP output."""
-        if self.noise_std_type == "scalar":
+        if self.std_type == "scalar":
             mean, std = torch.unbind(mlp_output, dim=-2)
-        elif self.noise_std_type == "log":
+        elif self.std_type == "log":
             mean, log_std = torch.unbind(mlp_output, dim=-2)
             std = torch.exp(log_std)
         self._distribution = Normal(mean, std)
@@ -279,8 +279,8 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
         """Initialize the std head weights in the MLP."""
         # Initialize weights and biases for the std portion of the last layer
         torch.nn.init.zeros_(mlp[-2].weight[self.output_dim :])  # type: ignore
-        if self.noise_std_type == "scalar":
-            torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], self.init_noise_std)  # type: ignore
-        elif self.noise_std_type == "log":
-            init_noise_std_log = torch.log(torch.tensor(self.init_noise_std + 1e-7))
-            torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], init_noise_std_log)  # type: ignore
+        if self.std_type == "scalar":
+            torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], self.init_std)  # type: ignore
+        elif self.std_type == "log":
+            init_std_log = torch.log(torch.tensor(self.init_std + 1e-7))
+            torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], init_std_log)  # type: ignore
