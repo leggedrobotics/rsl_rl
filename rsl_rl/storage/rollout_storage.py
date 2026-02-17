@@ -34,15 +34,13 @@ class RolloutStorage:
             self.actions: torch.Tensor | None = None
             """Actions taken at the current step."""
 
-            self.privileged_actions: torch.Tensor | None = None
-            """Privileged (teacher) actions (distillation only)."""
-
             self.rewards: torch.Tensor | None = None
             """Rewards received after the action."""
 
             self.dones: torch.Tensor | None = None
             """Done flags indicating episode termination."""
 
+            # For reinforcement learning
             self.values: torch.Tensor | None = None
             """Value estimates at the current step (RL only)."""
 
@@ -55,6 +53,11 @@ class RolloutStorage:
             self.action_sigma: torch.Tensor | None = None
             """Standard deviation of the action distribution (RL only)."""
 
+            # For distillation
+            self.privileged_actions: torch.Tensor | None = None
+            """Privileged (teacher) actions (distillation only)."""
+
+            # For recurrent networks
             self.hidden_states: tuple[HiddenState, HiddenState] = (None, None)
             """Hidden states for recurrent networks, e.g., (actor, critic)."""
 
@@ -86,10 +89,10 @@ class RolloutStorage:
             self.observations: TensorDict | None = observations
             """Batch of observations."""
 
+            # For reinforcement learning
             self.actions: torch.Tensor | None = actions
             """Batch of actions."""
 
-            # For reinforcement learning
             self.values: torch.Tensor | None = values
             """Batch of value estimates (RL only)."""
 
@@ -108,19 +111,19 @@ class RolloutStorage:
             self.old_sigma: torch.Tensor | None = old_sigma
             """Batch of action standard deviations from the old policy (RL only)."""
 
-            # For recurrent networks
-            self.hidden_states: tuple[HiddenState, HiddenState] = hidden_states
-            """Batch of hidden states for recurrent networks (RL recurrent only)."""
-
-            self.masks: torch.Tensor | None = masks
-            """Batch of trajectory masks for recurrent networks (RL recurrent only)."""
-
             # For distillation
             self.privileged_actions: torch.Tensor | None = privileged_actions
             """Batch of privileged (teacher) actions (distillation only)."""
 
             self.dones: torch.Tensor | None = dones
             """Batch of done flags (distillation only)."""
+
+            # For recurrent networks
+            self.hidden_states: tuple[HiddenState, HiddenState] = hidden_states
+            """Batch of hidden states for recurrent networks (RL recurrent only)."""
+
+            self.masks: torch.Tensor | None = masks
+            """Batch of trajectory masks for recurrent networks (RL recurrent only)."""
 
     def __init__(
         self,
