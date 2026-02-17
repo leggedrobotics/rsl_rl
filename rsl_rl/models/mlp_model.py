@@ -180,7 +180,7 @@ class _TorchMLPModel(nn.Module):
         super().__init__()
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.mlp = copy.deepcopy(model.mlp)
-        self.distribution = model.distribution
+        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.obs_normalizer(x)
@@ -204,7 +204,7 @@ class _OnnxMLPModel(nn.Module):
         self.verbose = verbose
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.mlp = copy.deepcopy(model.mlp)
-        self.distribution = model.distribution
+        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
         self.input_size = model.obs_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
