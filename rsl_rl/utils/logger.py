@@ -282,6 +282,7 @@ class Logger:
                 try:
                     repo = git.Repo(repository_file_path, search_parent_directories=True)
                     t = repo.head.commit.tree
+                    commit_hash = repo.head.commit.hexsha
                 except Exception:
                     print(f"Could not find git repository in {repository_file_path}. Skipping.")
                     continue
@@ -294,7 +295,11 @@ class Logger:
                 # Write the diff file
                 print(f"Storing git diff for '{repo_name}' in: {diff_file_name}")
                 with open(diff_file_name, "x", encoding="utf-8") as f:
-                    content = f"--- git status ---\n{repo.git.status()} \n\n\n--- git diff ---\n{repo.git.diff(t)}"
+                    content = (
+                        f"--- git commit ---\n{commit_hash}\n\n\n"
+                        f"--- git status ---\n{repo.git.status()} \n\n\n"
+                        f"--- git diff ---\n{repo.git.diff(t)}"
+                    )
                     f.write(content)
                 # Add the file path to the list of files to be uploaded
                 files_to_upload.append(diff_file_name)
