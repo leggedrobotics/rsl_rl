@@ -174,7 +174,7 @@ class _TorchCNNModel(nn.Module):
         # Convert ModuleDict to ModuleList for ordered iteration
         self.cnns = nn.ModuleList([model.cnns[g] for g in model.obs_groups_2d])
         self.mlp = copy.deepcopy(model.mlp)
-        self.distribution = model.distribution
+        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
 
     def forward(self, obs_1d: torch.Tensor, obs_2d: list[torch.Tensor]) -> torch.Tensor:
         latent_1d = self.obs_normalizer(obs_1d)
@@ -206,7 +206,7 @@ class _OnnxCNNModel(nn.Module):
         # Convert ModuleDict to ModuleList for ordered iteration
         self.cnns = nn.ModuleList([model.cnns[g] for g in model.obs_groups_2d])
         self.mlp = copy.deepcopy(model.mlp)
-        self.distribution = model.distribution
+        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
 
         self.obs_groups_2d = model.obs_groups_2d
         self.obs_dims_2d = model.obs_dims_2d
