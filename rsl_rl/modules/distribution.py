@@ -89,6 +89,15 @@ class Distribution(nn.Module):
         """Return the entropy of the distribution, summed over the last dimension."""
         raise NotImplementedError
 
+    @property
+    def params(self) -> tuple[torch.Tensor, ...]:
+        """Return the distribution parameters as a tuple of tensors.
+
+        These are the distribution-specific parameters needed to reconstruct the distribution (e.g., mean and std for
+        Gaussian, alpha and beta for Beta). They are stored during rollouts and used for KL divergence computation.
+        """
+        raise NotImplementedError
+
     def log_prob(self, outputs: torch.Tensor) -> torch.Tensor:
         """Compute the log probability of the given outputs, summed over the last dimension.
 
@@ -97,6 +106,21 @@ class Distribution(nn.Module):
 
         Returns:
             Log probability summed over the last dimension.
+        """
+        raise NotImplementedError
+
+    def kl_divergence(self, old_params: tuple[torch.Tensor, ...], new_params: tuple[torch.Tensor, ...]) -> torch.Tensor:
+        """Compute the KL divergence KL(old || new) between two distributions of this type.
+
+        The KL divergence measures how the old distribution diverges from the new distribution.
+        This is used for adaptive learning rate scheduling in policy optimization.
+
+        Args:
+            old_params: Parameters of the old distribution (as returned by :attr:`params`).
+            new_params: Parameters of the new distribution (as returned by :attr:`params`).
+
+        Returns:
+            KL divergence summed over the last dimension.
         """
         raise NotImplementedError
 
@@ -215,6 +239,19 @@ class GaussianDistribution(Distribution):
         """Return the entropy of the Gaussian distribution, summed over the last dimension."""
         return self._distribution.entropy().sum(dim=-1)  # type: ignore
 
+    @property
+    def params(self) -> tuple[torch.Tensor, ...]:
+        """Return (mean, std) of the current Gaussian distribution."""
+        return (self.mean, self.std)
+
     def log_prob(self, outputs: torch.Tensor) -> torch.Tensor:
         """Compute the log probability under the Gaussian, summed over the last dimension."""
         return self._distribution.log_prob(outputs).sum(dim=-1)  # type: ignore
+
+    def kl_divergence(self, old_params: tuple[torch.Tensor, ...], new_params: tuple[torch.Tensor, ...]) -> torch.Tensor:
+        """Compute KL(old || new) between two Gaussian distributions using torch.distributions."""
+        old_mean, old_std = old_params
+        new_mean, new_std = new_params
+        old_dist = Normal(old_mean, old_std)
+        new_dist = Normal(new_mean, new_std)
+        return torch.distributions.kl_divergence(old_dist, new_dist).sum(dim=-1)
