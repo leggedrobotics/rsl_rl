@@ -140,8 +140,17 @@ class MLPModel(nn.Module):
     def output_entropy(self) -> torch.Tensor:
         return self.distribution.entropy
 
+    @property
+    def output_distribution_params(self) -> tuple[torch.Tensor, ...]:
+        return self.distribution.params
+
     def get_output_log_prob(self, outputs: torch.Tensor) -> torch.Tensor:
         return self.distribution.log_prob(outputs)
+
+    def get_kl_divergence(
+        self, old_params: tuple[torch.Tensor, ...], new_params: tuple[torch.Tensor, ...]
+    ) -> torch.Tensor:
+        return self.distribution.kl_divergence(old_params, new_params)
 
     def as_jit(self) -> nn.Module:
         """Return a version of the model compatible with Torch JIT export."""
