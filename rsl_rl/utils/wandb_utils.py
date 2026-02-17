@@ -41,7 +41,7 @@ class WandbSummaryWriter(SummaryWriter):
             entity=entity,
             name=run_name,
             config={"log_dir": log_dir},
-            settings=wandb.Settings(start_method="thread"),  # TODO check performance impact
+            settings=wandb.Settings(start_method="thread"),
         )
 
         # Initialize set to keep track of logged videos

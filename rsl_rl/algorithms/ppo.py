@@ -282,8 +282,6 @@ class PPO:
                         kl_mean /= self.gpu_world_size
 
                     # Update the learning rate only on the main process
-                    # TODO: Is this needed? If KL-divergence is the "same" across all GPUs,
-                    #       then the learning rate should be the same across all GPUs.
                     if self.gpu_global_rank == 0:
                         if kl_mean > self.desired_kl * 2.0:
                             self.learning_rate = max(1e-5, self.learning_rate / 1.5)
@@ -355,10 +353,8 @@ class PPO:
                     symmetry_loss = symmetry_loss.detach()
 
             # RND loss
-            # TODO: Move this processing to inside RND module.
             if self.rnd:
                 # Extract the rnd_state
-                # TODO: Check if we still need torch no grad. It is just an affine transformation.
                 with torch.no_grad():
                     rnd_state_batch = self.rnd.get_rnd_state(obs_batch[:original_batch_size])
                     rnd_state_batch = self.rnd.state_normalizer(rnd_state_batch)
