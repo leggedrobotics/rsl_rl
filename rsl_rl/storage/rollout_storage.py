@@ -70,9 +70,8 @@ class RolloutStorage:
 
         def __init__(
             self,
-            observations: TensorDict,
-            actions: torch.Tensor,
-            *,
+            observations: TensorDict | None = None,
+            actions: torch.Tensor | None = None,
             values: torch.Tensor | None = None,
             advantages: torch.Tensor | None = None,
             returns: torch.Tensor | None = None,
@@ -84,10 +83,10 @@ class RolloutStorage:
             privileged_actions: torch.Tensor | None = None,
             dones: torch.Tensor | None = None,
         ) -> None:
-            self.observations: TensorDict = observations
+            self.observations: TensorDict | None = observations
             """Batch of observations."""
 
-            self.actions: torch.Tensor = actions
+            self.actions: torch.Tensor | None = actions
             """Batch of actions."""
 
             # For reinforcement learning
@@ -207,7 +206,6 @@ class RolloutStorage:
         for i in range(self.num_transitions_per_env):
             yield RolloutStorage.Batch(
                 observations=self.observations[i],
-                actions=self.actions[i],
                 privileged_actions=self.privileged_actions[i],
                 dones=self.dones[i],
             )
