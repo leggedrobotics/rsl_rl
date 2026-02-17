@@ -151,7 +151,6 @@ class _TorchLSTMModel(nn.Module):
         self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
         self.mlp = copy.deepcopy(model.mlp)
         self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
-        self.rnn.cpu()
         self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
         self.register_buffer("cell_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
 
