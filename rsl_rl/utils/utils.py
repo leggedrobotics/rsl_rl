@@ -93,12 +93,12 @@ def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
 def resolve_callable(callable_or_name: type | Callable | str) -> Callable:
     """Resolve a callable from a string, type, or return callable directly.
 
-    This function enables passing custom classes or functions directly or as strings. The following formats are
-    supported:
-        - Direct callable: Pass a type or function directly (e.g., MyClass, my_func)
-        - Qualified name with colon: "module.path:Attr.Nested" (explicit, recommended)
-        - Qualified name with dot: "module.path.ClassName" (implicit)
-        - Simple name: e.g. "PPO", "ActorCritic", ... (looks for callable in rsl_rl)
+    This function supports resolving callables from a direct callable input or from a string in one of these formats:
+
+    - Direct callable: pass a type or function directly (for example, ``MyClass`` or ``my_func``).
+    - Qualified name with colon: ``"module.path:Attr.Nested"`` (explicit, recommended).
+    - Qualified name with dot: ``"module.path.ClassName"`` (implicit).
+    - Simple name: for example ``"PPO"`` or ``"ActorCritic"`` (searched within ``rsl_rl``).
 
     Args:
         callable_or_name: A callable (type/function) or string name.
@@ -178,10 +178,11 @@ def resolve_obs_groups(
     The input is an observation dictionary `obs` containing observation groups and a configuration dictionary
     `obs_groups` where the keys are the observation sets and the values are lists of observation groups.
 
-    The configuration dictionary could for example look like:
+    The configuration dictionary could for example look like::
+
         {
             "actor": ["group_1", "group_2"],
-            "critic": ["group_1", "group_3"]
+            "critic": ["group_1", "group_3"],
         }
 
     This means that the 'actor' observation set will contain the observations "group_1" and "group_2" and the 'critic'
@@ -199,8 +200,8 @@ def resolve_obs_groups(
     Args:
         obs: Observations from the environment in the form of a dictionary.
         obs_groups: Dictionary mapping observation sets to lists of observation groups.
-        default_sets: Default observation set names used by the algorithm. If not provided in 'obs_groups', a default
-        behavior gets triggered.
+        default_sets: Default observation set names used by the algorithm. If not provided in ``obs_groups``, a
+            default behavior gets triggered.
 
     Returns:
         The resolved observation groups.

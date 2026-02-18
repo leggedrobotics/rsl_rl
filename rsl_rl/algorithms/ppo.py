@@ -21,7 +21,11 @@ from rsl_rl.utils import resolve_callable, resolve_obs_groups, resolve_optimizer
 
 
 class PPO:
-    """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
+    """Proximal Policy Optimization algorithm.
+
+    Reference:
+        Schulman et al. "Proximal policy optimization algorithms." arXiv preprint arXiv:1707.06347 (2017).
+    """
 
     actor: MLPModel
     """The actor model."""
