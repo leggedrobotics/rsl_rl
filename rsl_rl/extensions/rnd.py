@@ -16,11 +16,11 @@ from rsl_rl.modules import MLP, EmpiricalDiscountedVariationNormalization, Empir
 
 
 class RandomNetworkDistillation(nn.Module):
-    """Implementation of Random Network Distillation (RND) [1].
+    """Implementation of Random Network Distillation (RND).
 
     References:
-        Schwarke et al. "Curiosity-Driven Learning of Joint Locomotion and Manipulation Tasks." CoRL (2023).
-        Burda et al. "Exploration by Random Network Distillation." arXiv preprint arXiv:1810.12894 (2018).
+        - Schwarke et al. "Curiosity-Driven Learning of Joint Locomotion and Manipulation Tasks." CoRL (2023).
+        - Burda et al. "Exploration by Random Network Distillation." arXiv preprint arXiv:1810.12894 (2018).
     """
 
     def __init__(

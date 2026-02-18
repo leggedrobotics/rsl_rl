@@ -23,7 +23,7 @@ class PPO:
     """Proximal Policy Optimization algorithm.
 
     Reference:
-        Schulman et al. "Proximal policy optimization algorithms." arXiv preprint arXiv:1707.06347 (2017).
+        - Schulman et al. "Proximal policy optimization algorithms." arXiv preprint arXiv:1707.06347 (2017).
     """
 
     actor: MLPModel
