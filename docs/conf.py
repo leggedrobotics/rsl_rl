@@ -28,6 +28,7 @@ extensions = [
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 templates_path = ["_templates"]
 html_static_path = ["_static"]
+html_css_files = ["custom.css"]
 html_theme = "furo"
 
 autodoc_member_order = "bysource"

@@ -1,0 +1,10 @@
+/* Emphasize API signature lines for better scanability. */
+dl.py.class > dt.sig,
+dl.py.function > dt.sig,
+dl.py.method > dt.sig,
+dl.py.property > dt.sig {
+  text-indent: 0;
+  background: var(--color-code-background);
+  padding: 0.4rem 0.6rem;
+  margin-bottom: 0.4rem;
+}
