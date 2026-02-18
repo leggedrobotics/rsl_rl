@@ -5,10 +5,10 @@ API Reference
    :maxdepth: 1
 
    algorithms
+   env
    extensions
    models
    modules
    runners
    storage
    utils
-   env

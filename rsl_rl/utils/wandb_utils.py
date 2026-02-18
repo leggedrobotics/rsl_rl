@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Weights and Biases summary writer."""
 
 from __future__ import annotations
 

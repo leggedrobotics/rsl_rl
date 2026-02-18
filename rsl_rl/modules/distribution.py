@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Distribution modules for stochastic models."""
 
 from __future__ import annotations
 

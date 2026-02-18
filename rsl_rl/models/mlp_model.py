@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""MLP-based neural model and export wrappers."""
 
 from __future__ import annotations
 

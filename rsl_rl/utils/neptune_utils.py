@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Neptune summary writer."""
 
 from __future__ import annotations
 

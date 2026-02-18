@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""PPO algorithm for reinforcement learning."""
 
 from __future__ import annotations
 

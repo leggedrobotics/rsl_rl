@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Training runner for student-teacher policy distillation."""
 
 from __future__ import annotations
 

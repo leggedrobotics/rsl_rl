@@ -5,7 +5,6 @@
 
 # Copyright (c) 2020 Preferred Networks, Inc.
 
-"""Normalization modules for observations and rewards."""
 
 from __future__ import annotations
 

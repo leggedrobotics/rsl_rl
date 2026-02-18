@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Symmetry extension and configuration helpers."""
 
 from __future__ import annotations
 

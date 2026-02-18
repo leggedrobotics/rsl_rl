@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Utility helpers for configuration and tensor processing."""
 
 from __future__ import annotations
 

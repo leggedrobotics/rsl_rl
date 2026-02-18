@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Rollout storage for the learning algorithm."""
 
 from __future__ import annotations
 

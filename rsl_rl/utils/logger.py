@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Training logger with support for TensorBoard, W&B and Neptune."""
 
 from __future__ import annotations
 

@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Training runner for on-policy reinforcement learning algorithms."""
 
 from __future__ import annotations
 

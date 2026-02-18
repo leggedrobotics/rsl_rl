@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""RNN network module."""
 
 from __future__ import annotations
 
