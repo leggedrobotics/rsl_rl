@@ -26,6 +26,7 @@ class RNNModel(MLPModel):
     """
 
     is_recurrent: bool = True
+    """Whether the model contains a recurrent module."""
 
     def __init__(
         self,

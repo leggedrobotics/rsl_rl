@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "RSL-RL"
 author = "The RSL-RL Developers"
 copyright = "2021-2026, ETH Zurich and NVIDIA CORPORATION"
+html_title = "RSL-RL"
 
 extensions = [
     "sphinx.ext.autodoc",
@@ -31,6 +32,7 @@ html_theme = "furo"
 
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
+autodoc_class_signature = "separated"
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 
