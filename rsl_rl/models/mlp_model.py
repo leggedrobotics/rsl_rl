@@ -3,6 +3,8 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+"""MLP-based neural model and export wrappers."""
+
 from __future__ import annotations
 
 import copy
@@ -108,6 +110,7 @@ class MLPModel(nn.Module):
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
     ) -> torch.Tensor:
+        """Build the model latent by concatenating and normalizing selected observation groups."""
         # Select and concatenate observations
         obs_list = [obs[obs_group] for obs_group in self.obs_groups]
         latent = torch.cat(obs_list, dim=-1)
@@ -116,36 +119,45 @@ class MLPModel(nn.Module):
         return latent
 
     def reset(self, dones: torch.Tensor | None = None, hidden_state: HiddenState = None) -> None:
+        """Reset the internal state for recurrent models (no-op)."""
         pass
 
     def get_hidden_state(self) -> HiddenState:
+        """Return the recurrent hidden state (``None`` for MLP)."""
         return None
 
     def detach_hidden_state(self, dones: torch.Tensor | None = None) -> None:
+        """Detach therecurrent hidden state for truncated backpropagation (no-op)."""
         pass
 
     @property
     def output_mean(self) -> torch.Tensor:
+        """Return the mean of the current output distribution."""
         return self.distribution.mean
 
     @property
     def output_std(self) -> torch.Tensor:
+        """Return the standard deviation of the current output distribution."""
         return self.distribution.std
 
     @property
     def output_entropy(self) -> torch.Tensor:
+        """Return the entropy of the current output distribution."""
         return self.distribution.entropy
 
     @property
     def output_distribution_params(self) -> tuple[torch.Tensor, ...]:
+        """Return raw parameters of the current output distribution."""
         return self.distribution.params
 
     def get_output_log_prob(self, outputs: torch.Tensor) -> torch.Tensor:
+        """Compute log-probabilities of outputs under the current distribution."""
         return self.distribution.log_prob(outputs)
 
     def get_kl_divergence(
         self, old_params: tuple[torch.Tensor, ...], new_params: tuple[torch.Tensor, ...]
     ) -> torch.Tensor:
+        """Compute KL divergence between two parameterizations of the distribution."""
         return self.distribution.kl_divergence(old_params, new_params)
 
     def as_jit(self) -> nn.Module:
@@ -157,6 +169,7 @@ class MLPModel(nn.Module):
         return _OnnxMLPModel(self, verbose)
 
     def update_normalization(self, obs: TensorDict) -> None:
+        """Update observation-normalization statistics from a batch of observations."""
         if self.obs_normalization:
             # Select and concatenate observations
             obs_list = [obs[obs_group] for obs_group in self.obs_groups]
@@ -177,6 +190,7 @@ class MLPModel(nn.Module):
         return active_obs_groups, obs_dim
 
     def _get_latent_dim(self) -> int:
+        """Return the latent dimensionality consumed by the MLP head."""
         return self.obs_dim
 
 
@@ -184,6 +198,7 @@ class _TorchMLPModel(nn.Module):
     """Exportable MLP model for JIT."""
 
     def __init__(self, model: MLPModel) -> None:
+        """Create a TorchScript-friendly copy of an MLPModel."""
         super().__init__()
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.mlp = copy.deepcopy(model.mlp)
@@ -193,12 +208,14 @@ class _TorchMLPModel(nn.Module):
             self.deterministic_output = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run deterministic inference on pre-concatenated observations."""
         x = self.obs_normalizer(x)
         out = self.mlp(x)
         return self.deterministic_output(out)
 
     @torch.jit.export
     def reset(self) -> None:
+        """Reset recurrent export state (no-op for MLP exports)."""
         pass
 
 
@@ -208,6 +225,7 @@ class _OnnxMLPModel(nn.Module):
     is_recurrent: bool = False
 
     def __init__(self, model: MLPModel, verbose: bool) -> None:
+        """Create an ONNX-export wrapper around an MLPModel."""
         super().__init__()
         self.verbose = verbose
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
@@ -219,17 +237,21 @@ class _OnnxMLPModel(nn.Module):
         self.input_size = model.obs_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run deterministic inference for ONNX export."""
         x = self.obs_normalizer(x)
         out = self.mlp(x)
         return self.deterministic_output(out)
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor]:
+        """Return representative dummy inputs for ONNX tracing."""
         return (torch.zeros(1, self.input_size),)
 
     @property
     def input_names(self) -> list[str]:
+        """Return ONNX input tensor names."""
         return ["obs"]
 
     @property
     def output_names(self) -> list[str]:
+        """Return ONNX output tensor names."""
         return ["actions"]

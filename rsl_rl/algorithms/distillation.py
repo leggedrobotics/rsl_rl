@@ -3,6 +3,8 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+"""Student-teacher algorithm for policy distillation."""
+
 from __future__ import annotations
 
 import torch
@@ -43,6 +45,7 @@ class Distillation:
         multi_gpu_cfg: dict | None = None,
         **kwargs: dict,  # handle unused config parameters
     ) -> None:
+        """Initialize the algorithm with models, storage, and optimization settings."""
         # Device-related parameters
         self.device = device
         self.is_multi_gpu = multi_gpu_cfg is not None
@@ -86,6 +89,7 @@ class Distillation:
         self.num_updates = 0
 
     def act(self, obs: TensorDict) -> torch.Tensor:
+        """Sample actions and store transition data."""
         # Compute the actions
         self.transition.actions = self.student(obs, stochastic_output=True).detach()
         self.transition.privileged_actions = self.teacher(obs).detach()
@@ -96,6 +100,7 @@ class Distillation:
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
     ) -> None:
+        """Record one environment step and update the normalizers."""
         # Update the normalizers
         self.student.update_normalization(obs)
         # Record the rewards and dones
@@ -108,10 +113,12 @@ class Distillation:
         self.teacher.reset(dones)
 
     def compute_returns(self, obs: TensorDict) -> None:
+        """No-op since distillation does not use return targets."""
         # Not needed for distillation
         pass
 
     def update(self) -> dict[str, float]:
+        """Run optimization epochs over stored batches and return mean losses."""
         self.num_updates += 1
         mean_behavior_loss = 0
         loss = 0
@@ -161,11 +168,13 @@ class Distillation:
         return loss_dict
 
     def train_mode(self) -> None:
+        """Set train mode for the student and keep the teacher in eval mode."""
         self.student.train()
         # Teacher is always in eval mode
         self.teacher.eval()
 
     def eval_mode(self) -> None:
+        """Set evaluation mode for student and teacher models."""
         self.student.eval()
         self.teacher.eval()
 

@@ -21,6 +21,7 @@ class OuterClass:
 
     @staticmethod
     def static_method() -> str:
+        """Return a static marker string for callable resolution tests."""
         return "static"
 
 

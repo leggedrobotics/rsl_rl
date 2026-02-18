@@ -3,6 +3,8 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+"""MLP network module."""
+
 from __future__ import annotations
 
 import torch
@@ -13,7 +15,7 @@ from rsl_rl.utils import get_param, resolve_nn_activation
 
 
 class MLP(nn.Sequential):
-    """Multi-layer perceptron.
+    """Multi-Layer Perceptron.
 
     The MLP network is a sequence of linear layers and activation functions. The last layer is a linear layer that
     outputs the desired dimension unless the last activation function is specified.

@@ -3,6 +3,8 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+"""Abstract interface for vectorized RL environments."""
+
 from __future__ import annotations
 
 import torch

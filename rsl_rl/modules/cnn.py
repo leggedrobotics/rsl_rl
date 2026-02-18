@@ -3,6 +3,8 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+"""CNN network module."""
+
 from __future__ import annotations
 
 import math
@@ -13,7 +15,7 @@ from rsl_rl.utils import get_param, resolve_nn_activation
 
 
 class CNN(nn.Sequential):
-    """Convolutional Neural Network (CNN).
+    """Convolutional Neural Network.
 
     The CNN network is a sequence of convolutional layers, optional normalization layers, optional activation functions,
     and optional pooling. The final output can be flattened.
