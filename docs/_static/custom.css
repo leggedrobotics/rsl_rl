@@ -8,3 +8,9 @@ dl.py.property > dt.sig {
   padding: 0.4rem 0.6rem;
   margin-bottom: 0.4rem;
 }
+
+/* Sidebar top logo image */
+.sidebar-brand img {
+  max-height: 100px;
+  width: auto;
+}

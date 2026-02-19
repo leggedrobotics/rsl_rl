@@ -13,11 +13,13 @@ import sys
 # Make the package importable for autodoc.
 sys.path.insert(0, os.path.abspath(".."))
 
+# Project information
 project = "RSL-RL"
 author = "The RSL-RL Developers"
 copyright = "2021-2026, ETH Zurich and NVIDIA CORPORATION"
 html_title = "RSL-RL"
 
+# Extensions
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
@@ -25,12 +27,21 @@ extensions = [
     "sphinx.ext.mathjax",
 ]
 
+# Paths
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 templates_path = ["_templates"]
 html_static_path = ["_static"]
-html_css_files = ["custom.css"]
-html_theme = "furo"
 
+# Theme
+html_theme = "furo"
+html_css_files = ["custom.css"]
+html_theme_options = {
+    "sidebar_hide_name": True,
+    "light_logo": "rsl_logo.png",
+    "dark_logo": "rsl_logo.png",
+}
+
+# Autodoc
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
 autodoc_class_signature = "separated"
