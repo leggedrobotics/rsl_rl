@@ -21,8 +21,7 @@ class CNNModel(MLPModel):
     This model uses one or more convolutional neural network (CNN) encoders to process one or more 2D observation groups
     before passing the resulting latent to an MLP. Any 1D observation groups are directly concatenated with the CNN
     latent and passed to the MLP. 1D observations can be normalized before being passed to the MLP. The output of the
-    model can be either deterministic or stochastic, in which case a Gaussian distribution is used to sample the
-    outputs.
+    model can be either deterministic or stochastic, in which case a distribution module is used to sample the outputs.
     """
 
     def __init__(
@@ -31,15 +30,12 @@ class CNNModel(MLPModel):
         obs_groups: dict[str, list[str]],
         obs_set: str,
         output_dim: int,
-        cnn_cfg: dict[str, dict] | dict[str, Any],
-        cnns: nn.ModuleDict | dict[str, nn.Module] | None = None,
         hidden_dims: tuple[int] | list[int] = [256, 256, 256],
         activation: str = "elu",
         obs_normalization: bool = False,
-        stochastic: bool = False,
-        init_noise_std: float = 1.0,
-        noise_std_type: str = "scalar",
-        state_dependent_std: bool = False,
+        distribution_cfg: dict | None = None,
+        cnn_cfg: dict[str, dict] | dict[str, Any] | None = None,
+        cnns: nn.ModuleDict | dict[str, nn.Module] | None = None,
     ) -> None:
         """Initialize the CNN-based model.
 
@@ -49,14 +45,11 @@ class CNNModel(MLPModel):
             obs_set: Observation set to use for this model (e.g., "actor" or "critic").
             output_dim: Dimension of the output.
             hidden_dims: Hidden dimensions of the MLP.
-            cnn_cfg: Configuration of the CNN encoder(s).
-            cnns: CNN modules to use, e.g., for sharing CNNs between actor and critic. If None, new CNNs are created.
             activation: Activation function of the CNN and MLP.
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
-            stochastic: Whether the model outputs stochastic or deterministic values.
-            init_noise_std: Initial standard deviation of the stochatic output.
-            noise_std_type: Whether the standard deviation is defined as a "scalar" or in "log" space.
-            state_dependent_std: Whether the standard deviation is state dependent.
+            distribution_cfg: Configuration dictionary for the output distribution.
+            cnn_cfg: Configuration of the CNN encoder(s).
+            cnns: CNN modules to use, e.g., for sharing CNNs between actor and critic. If None, new CNNs are created.
         """
         # Resolve observation groups and dimensions
         self._get_obs_dim(obs, obs_groups, obs_set)
@@ -68,6 +61,7 @@ class CNNModel(MLPModel):
                 raise ValueError("The 2D observations must be identical for all models sharing CNN encoders.")
             print("Sharing CNN encoders between models, the CNN configurations of the receiving model are ignored.")
         else:
+            assert cnn_cfg is not None, "CNN configurations must be provided if CNNs are not shared."
             # Create a cnn config for each 2D observation group in case only one is provided
             if not all(isinstance(v, dict) for v in cnn_cfg.values()):
                 cnn_cfg = {group: cnn_cfg for group in self.obs_groups_2d}
@@ -100,10 +94,7 @@ class CNNModel(MLPModel):
             hidden_dims,
             activation,
             obs_normalization,
-            stochastic,
-            init_noise_std,
-            noise_std_type,
-            state_dependent_std,
+            distribution_cfg,
         )
 
         # Register CNN encoders
@@ -174,7 +165,7 @@ class _TorchCNNModel(nn.Module):
         # Convert ModuleDict to ModuleList for ordered iteration
         self.cnns = nn.ModuleList([model.cnns[g] for g in model.obs_groups_2d])
         self.mlp = copy.deepcopy(model.mlp)
-        self.state_dependent_std = model.state_dependent_std
+        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
 
     def forward(self, obs_1d: torch.Tensor, obs_2d: list[torch.Tensor]) -> torch.Tensor:
         latent_1d = self.obs_normalizer(obs_1d)
@@ -187,8 +178,8 @@ class _TorchCNNModel(nn.Module):
         latent = torch.cat([latent_1d, latent_cnn], dim=-1)
 
         out = self.mlp(latent)
-        if self.state_dependent_std:
-            return out[..., 0, :]
+        if self.distribution is not None:
+            return self.distribution.deterministic_output(out)
         return out
 
     @torch.jit.export
@@ -206,7 +197,7 @@ class _OnnxCNNModel(nn.Module):
         # Convert ModuleDict to ModuleList for ordered iteration
         self.cnns = nn.ModuleList([model.cnns[g] for g in model.obs_groups_2d])
         self.mlp = copy.deepcopy(model.mlp)
-        self.state_dependent_std = model.state_dependent_std
+        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
 
         self.obs_groups_2d = model.obs_groups_2d
         self.obs_dims_2d = model.obs_dims_2d
@@ -224,8 +215,8 @@ class _OnnxCNNModel(nn.Module):
         latent = torch.cat([latent_1d, latent_cnn], dim=-1)
 
         out = self.mlp(latent)
-        if self.state_dependent_std:
-            return out[..., 0, :]
+        if self.distribution is not None:
+            return self.distribution.deterministic_output(out)
         return out
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:

@@ -21,10 +21,10 @@ runner:
     hidden_dims: [256, 256, 256]
     activation: elu
     obs_normalization: false
-    stochastic: true
-    init_noise_std: 1.0
-    noise_std_type: "scalar"  # 'scalar' or 'log'
-    state_dependent_std: false
+    distribution_cfg:
+      class_name: GaussianDistribution
+      init_std: 1.0
+      std_type: "scalar"  # 'scalar' or 'log'
   
   # Critic
   critic:
@@ -32,7 +32,6 @@ runner:
     hidden_dims: [256, 256, 256]
     activation: elu
     obs_normalization: false
-    stochastic: false
 
   # Algorithm
   algorithm:

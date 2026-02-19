@@ -19,7 +19,7 @@ class RNNModel(MLPModel):
 
     This model uses a recurrent neural network (RNN) to process 1D observation groups before passing the resulting
     latent to an MLP. Available RNN types are "lstm" and "gru". Observations can be normalized before being passed to
-    the RNN. The output of the model can be either deterministic or stochastic, in which case a Gaussian distribution is
+    the RNN. The output of the model can be either deterministic or stochastic, in which case a distribution module is
     used to sample the outputs.
     """
 
@@ -34,10 +34,7 @@ class RNNModel(MLPModel):
         hidden_dims: tuple[int] | list[int] = [256, 256, 256],
         activation: str = "elu",
         obs_normalization: bool = False,
-        stochastic: bool = False,
-        init_noise_std: float = 1.0,
-        noise_std_type: str = "scalar",
-        state_dependent_std: bool = False,
+        distribution_cfg: dict | None = None,
         rnn_type: str = "lstm",
         rnn_hidden_dim: int = 256,
         rnn_num_layers: int = 1,
@@ -52,10 +49,7 @@ class RNNModel(MLPModel):
             hidden_dims: Hidden dimensions of the MLP.
             activation: Activation function of the MLP.
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
-            stochastic: Whether the model outputs stochastic or deterministic values.
-            init_noise_std: Initial standard deviation of the stochatic output.
-            noise_std_type: Whether the standard deviation is defined as a "scalar" or in "log" space.
-            state_dependent_std: Whether the standard deviation is state dependent.
+            distribution_cfg: Configuration dictionary for the output distribution.
             rnn_type: Type of RNN to use ("lstm" or "gru").
             rnn_hidden_dim: Dimension of the RNN hidden state.
             rnn_num_layers: Number of RNN layers.
@@ -71,10 +65,7 @@ class RNNModel(MLPModel):
             hidden_dims,
             activation,
             obs_normalization,
-            stochastic,
-            init_noise_std,
-            noise_std_type,
-            state_dependent_std,
+            distribution_cfg,
         )
 
         # RNN
@@ -89,11 +80,11 @@ class RNNModel(MLPModel):
         latent = self.rnn(latent, masks, hidden_state).squeeze(0)
         return latent
 
-    def get_hidden_state(self) -> HiddenState:
-        return self.rnn.hidden_state  # type: ignore
-
     def reset(self, dones: torch.Tensor | None = None, hidden_state: HiddenState = None) -> None:
         self.rnn.reset(dones, hidden_state)
+
+    def get_hidden_state(self) -> HiddenState:
+        return self.rnn.hidden_state  # type: ignore
 
     def detach_hidden_state(self, dones: torch.Tensor | None = None) -> None:
         self.rnn.detach_hidden_state(dones)
@@ -123,7 +114,7 @@ class _TorchGRUModel(nn.Module):
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
         self.mlp = copy.deepcopy(model.mlp)
-        self.state_dependent_std = model.state_dependent_std
+        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
         self.rnn.cpu()
         self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
 
@@ -133,8 +124,8 @@ class _TorchGRUModel(nn.Module):
         self.hidden_state[:] = h  # type: ignore
         x = x.squeeze(0)
         out = self.mlp(x)
-        if self.state_dependent_std:
-            return out[..., 0, :]
+        if self.distribution is not None:
+            return self.distribution.deterministic_output(out)
         return out
 
     @torch.jit.export
@@ -150,8 +141,7 @@ class _TorchLSTMModel(nn.Module):
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
         self.mlp = copy.deepcopy(model.mlp)
-        self.state_dependent_std = model.state_dependent_std
-        self.rnn.cpu()
+        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
         self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
         self.register_buffer("cell_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
 
@@ -162,8 +152,8 @@ class _TorchLSTMModel(nn.Module):
         self.cell_state[:] = c  # type: ignore
         x = x.squeeze(0)
         out = self.mlp(x)
-        if self.state_dependent_std:
-            return out[..., 0, :]
+        if self.distribution is not None:
+            return self.distribution.deterministic_output(out)
         return out
 
     @torch.jit.export
@@ -183,7 +173,7 @@ class _OnnxRNNModel(nn.Module):
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
         self.mlp = copy.deepcopy(model.mlp)
-        self.state_dependent_std = model.state_dependent_std
+        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
 
         # Detect RNN type
         if isinstance(self.rnn, nn.LSTM):
@@ -206,16 +196,15 @@ class _OnnxRNNModel(nn.Module):
             x, (h, c) = self.rnn(x.unsqueeze(0), (h_in, c_in))
             x = x.squeeze(0)
             out = self.mlp(x)
-            if self.state_dependent_std:
-                return out[..., 0, :], h, c
+            if self.distribution is not None:
+                out = self.distribution.deterministic_output(out)
             return out, h, c
         else:
             x, h = self.rnn(x.unsqueeze(0), h_in)
             x = x.squeeze(0)
             out = self.mlp(x)
-
-            if self.state_dependent_std:
-                return out[..., 0, :], h, None
+            if self.distribution is not None:
+                out = self.distribution.deterministic_output(out)
             return out, h, None
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:

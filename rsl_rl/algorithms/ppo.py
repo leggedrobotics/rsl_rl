@@ -137,8 +137,7 @@ class PPO:
         self.transition.actions = self.actor(obs, stochastic_output=True).detach()
         self.transition.values = self.critic(obs).detach()
         self.transition.actions_log_prob = self.actor.get_output_log_prob(self.transition.actions).detach()  # type: ignore
-        self.transition.action_mean = self.actor.output_mean.detach()
-        self.transition.action_sigma = self.actor.output_std.detach()
+        self.transition.distribution_params = tuple(p.detach() for p in self.actor.output_distribution_params)
         # Record observations before env.step()
         self.transition.observations = obs
         return self.transition.actions  # type: ignore
@@ -252,21 +251,14 @@ class PPO:
             )
             actions_log_prob = self.actor.get_output_log_prob(batch.actions)
             values = self.critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[1])
-            # Note: We only keep the entropy of the first augmentation (the original one)
-            mu = self.actor.output_mean[:original_batch_size]
-            sigma = self.actor.output_std[:original_batch_size]
+            # Note: We only keep the distribution parameters and entropy of the first augmentation (the original one)
+            distribution_params = tuple(p[:original_batch_size] for p in self.actor.output_distribution_params)
             entropy = self.actor.output_entropy[:original_batch_size]
 
             # Compute KL divergence and adapt the learning rate
             if self.desired_kl is not None and self.schedule == "adaptive":
                 with torch.inference_mode():
-                    kl = torch.sum(
-                        torch.log(sigma / batch.old_sigma + 1.0e-5)
-                        + (torch.square(batch.old_sigma) + torch.square(batch.old_mu - mu))
-                        / (2.0 * torch.square(sigma))
-                        - 0.5,
-                        dim=-1,
-                    )
+                    kl = self.actor.get_kl_divergence(batch.old_distribution_params, distribution_params)
                     kl_mean = torch.mean(kl)
 
                     # Reduce the KL divergence across all GPUs
@@ -347,7 +339,7 @@ class PPO:
             if self.rnd:
                 # Extract the rnd_state
                 with torch.no_grad():
-                    rnd_state = self.rnd.get_rnd_state(batch.observations[:original_batch_size])
+                    rnd_state = self.rnd.get_rnd_state(batch.observations[:original_batch_size])  # type: ignore
                     rnd_state = self.rnd.state_normalizer(rnd_state)
                 # Predict the embedding and the target
                 predicted_embedding = self.rnd.predictor(rnd_state)
