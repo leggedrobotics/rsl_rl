@@ -98,13 +98,12 @@ class MLPModel(nn.Module):
         # MLP forward pass
         mlp_output = self.mlp(latent)
         # If stochastic output is requested, update the distribution and sample from it, otherwise return MLP output
-        if self.distribution is not None and stochastic_output:
-            self.distribution.update(mlp_output)
-            return self.distribution.sample()
-        elif self.distribution is not None:
+        if self.distribution is not None:
+            if stochastic_output:
+                self.distribution.update(mlp_output)
+                return self.distribution.sample()
             return self.distribution.deterministic_output(mlp_output)
-        else:
-            return mlp_output
+        return mlp_output
 
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
