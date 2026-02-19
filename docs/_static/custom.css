@@ -14,3 +14,11 @@ dl.py.property > dt.sig {
   max-height: 100px;
   width: auto;
 }
+
+/* Set permalink/target highlight colors to rsl blue. */
+body {
+  --color-highlight-on-target: rgba(12, 121, 190, 0.5);
+}
+body[data-theme="dark"] {
+  --color-highlight-on-target: rgba(12, 121, 190, 0.5);
+}
