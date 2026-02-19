@@ -10,6 +10,7 @@ RSL-RL Documentation
    guide/installation
    guide/configuration
    guide/features
+   guide/contribution
 
 .. toctree::
    :maxdepth: 1
