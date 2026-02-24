@@ -15,6 +15,36 @@ dl.py.property > dt.sig {
   width: auto;
 }
 
+/* Show theme-specific figures in docs pages. */
+.light-only {
+  display: block;
+}
+.dark-only {
+  display: none;
+}
+body[data-theme="dark"] .light-only {
+  display: none;
+}
+body[data-theme="dark"] .dark-only {
+  display: block;
+}
+@media (prefers-color-scheme: dark) {
+  body[data-theme="auto"] .light-only {
+    display: none;
+  }
+  body[data-theme="auto"] .dark-only {
+    display: block;
+  }
+}
+@media (prefers-color-scheme: light) {
+  body[data-theme="auto"] .light-only {
+    display: block;
+  }
+  body[data-theme="auto"] .dark-only {
+    display: none;
+  }
+}
+
 /* Set permalink/target highlight colors to rsl blue. */
 body {
   --color-highlight-on-target: rgba(12, 121, 190, 0.5);
