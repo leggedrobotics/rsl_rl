@@ -32,6 +32,9 @@ def get_param(param: Any, idx: int) -> Any:
 def resolve_nn_activation(act_name: str) -> torch.nn.Module:
     """Resolve the activation function from the name.
 
+    Valid activation function names are: ``"elu"``, ``"selu"``, ``"relu"``, ``"crelu"``, ``"lrelu"``, ``"tanh"``,
+    ``"sigmoid"``, ``"softplus"``, ``"gelu"``, ``"swish"``, ``"mish"``, ``"identity"``.
+
     Args:
         act_name: Name of the activation function.
 
@@ -65,6 +68,8 @@ def resolve_nn_activation(act_name: str) -> torch.nn.Module:
 
 def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
     """Resolve the optimizer from the name.
+
+    Valid optimizer names are: ``"adam"``, ``"adamw"``, ``"sgd"``, ``"rmsprop"``.
 
     Args:
         optimizer_name: Name of the optimizer.

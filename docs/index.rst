@@ -9,7 +9,6 @@ RSL-RL Documentation
    guide/overview
    guide/installation
    guide/configuration
-   guide/features
    guide/contribution
 
 .. toctree::

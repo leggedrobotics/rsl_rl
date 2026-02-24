@@ -45,10 +45,7 @@ body[data-theme="dark"] .dark-only {
   }
 }
 
-/* Set permalink/target highlight colors to rsl blue. */
-body {
-  --color-highlight-on-target: rgba(12, 121, 190, 0.5);
-}
-body[data-theme="dark"] {
-  --color-highlight-on-target: rgba(12, 121, 190, 0.5);
+/* Keep type unions (e.g., "dict | None") on one line in config tables. */
+table.no-wrap-type-column td:nth-child(2) {
+  white-space: nowrap;
 }

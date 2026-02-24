@@ -39,6 +39,12 @@ html_theme_options = {
     "sidebar_hide_name": True,
     "light_logo": "rsl_logo.png",
     "dark_logo": "rsl_logo.png",
+    "light_css_variables": {
+        "color-highlight-on-target": "rgba(12, 121, 190, 0.5)",
+    },
+    "dark_css_variables": {
+        "color-highlight-on-target": "rgba(12, 121, 190, 0.5)",
+    },
 }
 
 # Autodoc
