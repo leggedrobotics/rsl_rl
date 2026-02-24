@@ -513,7 +513,7 @@ class PPO:
         self.actor.load_state_dict(model_params[0])
         self.critic.load_state_dict(model_params[1])
         if self.rnd:
-            self.rnd.predictor.load_state_dict(model_params[1])
+            self.rnd.predictor.load_state_dict(model_params[2])
 
     def reduce_parameters(self) -> None:
         """Collect gradients from all GPUs and average them.

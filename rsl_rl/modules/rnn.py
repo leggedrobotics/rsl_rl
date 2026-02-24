@@ -62,7 +62,7 @@ class RNN(nn.Module):
                 else:
                     self.hidden_state[..., dones == 1, :] = 0.0
             else:
-                NotImplementedError(
+                raise NotImplementedError(
                     "Resetting the hidden state of done environments with a custom hidden state is not implemented"
                 )
 
