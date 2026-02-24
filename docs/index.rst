@@ -59,7 +59,7 @@ RSL-RL is currently used by the following robot learning libraries:
 Citation
 --------
 
-If you use RSL-RL in your research, please cite the following paper:
+If you use RSL-RL in your research, please cite the `paper <https://arxiv.org/abs/2509.10771>`_:
 
 .. code-block:: text
 

@@ -23,9 +23,9 @@ RSL-RL is currently used by the following robot learning libraries:
 
 ## Installation
 
-Before installing, ensure that Python `3.9+` is available. It is recommended to install the library in a virtual
+Before installing RSL-RL, ensure that Python `3.9+` is available. It is recommended to install the library in a virtual
 environment (e.g. using `venv` or `conda`), which is often already created by the used environment library (e.g.
-`Isaac Lab`). If so, make sure to activate it before installing RSL-RL.
+Isaac Lab). If so, make sure to activate it before installing RSL-RL.
 
 ### Installing RSL-RL as a dependency
 
@@ -43,7 +43,7 @@ pip install -e .
 
 ## Citation
 
-If you use RSL-RL in your research, please cite the following paper:
+If you use RSL-RL in your research, please cite the [paper](https://arxiv.org/abs/2509.10771):
 
 ```text
 @article{schwarke2025rslrl,
