@@ -33,7 +33,7 @@ class CNNModel(MLPModel):
         output_dim: int,
         cnn_cfg: dict[str, dict] | dict[str, Any],
         cnns: nn.ModuleDict | dict[str, nn.Module] | None = None,
-        hidden_dims: tuple[int] | list[int] = [256, 256, 256],
+        hidden_dims: tuple[int] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
         stochastic: bool = False,
@@ -72,9 +72,8 @@ class CNNModel(MLPModel):
             if not all(isinstance(v, dict) for v in cnn_cfg.values()):
                 cnn_cfg = {group: cnn_cfg for group in self.obs_groups_2d}
             # Check that the number of configs matches the number of observation groups
-            assert len(cnn_cfg) == len(self.obs_groups_2d), (
-                "The number of CNN configurations must match the number of 2D observation groups."
-            )
+            if len(cnn_cfg) != len(self.obs_groups_2d):
+                raise ValueError("The number of CNN configurations must match the number of 2D observation groups.")
             # Create CNNs for each 2D observation
             cnns = {}
             for idx, obs_group in enumerate(self.obs_groups_2d):
@@ -152,7 +151,8 @@ class CNNModel(MLPModel):
             else:
                 raise ValueError(f"Invalid observation shape for {obs_group}: {obs[obs_group].shape}")
 
-        assert obs_groups_2d, "No 2D observations are provided. If this is intentional, use the MLP model instead."
+        if not obs_groups_2d:
+            raise ValueError("No 2D observations are provided. If this is intentional, use the MLP model instead.")
 
         # Store active 2D observation groups and dimensions directly as attributes
         self.obs_dims_2d = obs_dims_2d

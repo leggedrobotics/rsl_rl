@@ -31,7 +31,7 @@ class MLPModel(nn.Module):
         obs_groups: dict[str, list[str]],
         obs_set: str,
         output_dim: int,
-        hidden_dims: tuple[int] | list[int] = [256, 256, 256],
+        hidden_dims: tuple[int] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
         stochastic: bool = False,
@@ -205,7 +205,8 @@ class MLPModel(nn.Module):
         active_obs_groups = obs_groups[obs_set]
         obs_dim = 0
         for obs_group in active_obs_groups:
-            assert len(obs[obs_group].shape) == 2, "The MLP model only supports 1D observations."
+            if len(obs[obs_group].shape) != 2:
+                raise ValueError(f"The MLP model only supports 1D observations, got shape {obs[obs_group].shape} for '{obs_group}'.")
             obs_dim += obs[obs_group].shape[-1]
         return active_obs_groups, obs_dim
 
