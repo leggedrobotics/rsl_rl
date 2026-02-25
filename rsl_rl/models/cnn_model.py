@@ -119,9 +119,9 @@ class CNNModel(MLPModel):
         latent_1d = super().get_latent(obs)
         # Process 2D observation groups with CNNs
         latent_cnn_list = [self.cnns[obs_group](obs[obs_group]) for obs_group in self.obs_groups_2d]
-        latend_cnn = torch.cat(latent_cnn_list, dim=-1)
+        latent_cnn = torch.cat(latent_cnn_list, dim=-1)
         # Concatenate 1D and CNN latents
-        return torch.cat([latent_1d, latend_cnn], dim=-1)
+        return torch.cat([latent_1d, latent_cnn], dim=-1)
 
     def as_jit(self) -> nn.Module:
         """Return a version of the model compatible with Torch JIT export."""
