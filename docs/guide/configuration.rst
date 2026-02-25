@@ -6,13 +6,13 @@ usually read from a YAML file or constructed from Python dataclasses, such as in
 `Isaac Lab <https://github.com/isaac-sim/IsaacLab/blob/main/source/isaaclab_rl/isaaclab_rl/rsl_rl/rl_cfg.py>`__. 
 It is nested to reflect the structure of the library, and follows this pattern:
 
-.. figure:: ../_static/rsl_rl_config_light.png
+.. figure:: ../_static/rsl_rl_config_light.svg
    :width: 100%
    :align: center
    :class: light-only
 
 
-.. figure:: ../_static/rsl_rl_config_dark.png
+.. figure:: ../_static/rsl_rl_config_dark.svg
    :width: 100%
    :align: center
    :class: dark-only

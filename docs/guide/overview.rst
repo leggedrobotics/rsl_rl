@@ -104,6 +104,17 @@ and neural network architectures. In conjunction with the library's additional c
 :doc:`Environment <../api/env>`, :doc:`Storage <../api/storage>`, :doc:`Extensions <../api/extensions>`, and
 :doc:`Utils <../api/utils>`, described in the next section, they form a complete learning pipeline.
 
+.. figure:: ../_static/rsl_rl_structure_light.svg
+   :width: 100%
+   :align: center
+   :class: light-only
+
+
+.. figure:: ../_static/rsl_rl_structure_dark.svg
+   :width: 100%
+   :align: center
+   :class: dark-only
+
 .. note::
    In the following, functions are linked to implementations for a standard :class:`~rsl_rl.algorithms.ppo.PPO` training
    pipeline. Other learning pipelines may have different implementations of these functions.
