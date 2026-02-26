@@ -26,8 +26,8 @@ class RandomNetworkDistillation(nn.Module):
         num_states: int,
         obs_groups: dict,
         num_outputs: int,
-        predictor_hidden_dims: tuple[int] | list[int],
-        target_hidden_dims: tuple[int] | list[int],
+        predictor_hidden_dims: tuple[int, ...] | list[int],
+        target_hidden_dims: tuple[int, ...] | list[int],
         activation: str = "elu",
         weight: float = 0.0,
         state_normalization: bool = False,
@@ -201,7 +201,9 @@ def resolve_rnd_config(alg_cfg: dict, obs: TensorDict, obs_groups: dict[str, lis
         num_rnd_state = 0
         for obs_group in obs_groups["rnd_state"]:
             if len(obs[obs_group].shape) != 2:
-                raise ValueError(f"The RND module only supports 1D observations, got shape {obs[obs_group].shape} for '{obs_group}'.")
+                raise ValueError(
+                    f"The RND module only supports 1D observations, got shape {obs[obs_group].shape} for '{obs_group}'."
+                )
             num_rnd_state += obs[obs_group].shape[-1]
         # Add rnd gated state to config
         alg_cfg["rnd_cfg"]["num_states"] = num_rnd_state

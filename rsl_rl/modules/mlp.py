@@ -26,8 +26,8 @@ class MLP(nn.Sequential):
     def __init__(
         self,
         input_dim: int,
-        output_dim: int | tuple[int] | list[int],
-        hidden_dims: tuple[int] | list[int],
+        output_dim: int | tuple[int, ...] | list[int],
+        hidden_dims: tuple[int, ...] | list[int],
         activation: str = "elu",
         last_activation: str | None = None,
     ) -> None:

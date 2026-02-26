@@ -31,7 +31,7 @@ class RNNModel(MLPModel):
         obs_groups: dict[str, list[str]],
         obs_set: str,
         output_dim: int,
-        hidden_dims: tuple[int] | list[int] = (256, 256, 256),
+        hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
         distribution_cfg: dict | None = None,

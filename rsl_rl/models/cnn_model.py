@@ -30,7 +30,7 @@ class CNNModel(MLPModel):
         obs_groups: dict[str, list[str]],
         obs_set: str,
         output_dim: int,
-        hidden_dims: tuple[int] | list[int] = (256, 256, 256),
+        hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
         distribution_cfg: dict | None = None,
@@ -61,7 +61,8 @@ class CNNModel(MLPModel):
                 raise ValueError("The 2D observations must be identical for all models sharing CNN encoders.")
             print("Sharing CNN encoders between models, the CNN configurations of the receiving model are ignored.")
         else:
-            assert cnn_cfg is not None, "CNN configurations must be provided if CNNs are not shared."
+            if cnn_cfg is None:
+                raise ValueError("CNN configurations must be provided if CNNs are not shared.")
             # Create a cnn config for each 2D observation group in case only one is provided
             if not all(isinstance(v, dict) for v in cnn_cfg.values()):
                 cnn_cfg = {group: cnn_cfg for group in self.obs_groups_2d}

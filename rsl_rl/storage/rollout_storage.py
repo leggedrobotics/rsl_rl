@@ -124,7 +124,7 @@ class RolloutStorage:
         num_envs: int,
         num_transitions_per_env: int,
         obs: TensorDict,
-        actions_shape: tuple[int] | list[int],
+        actions_shape: tuple[int, ...] | list[int],
         device: str = "cpu",
     ) -> None:
         self.training_type = training_type
