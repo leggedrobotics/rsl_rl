@@ -200,7 +200,8 @@ def resolve_rnd_config(alg_cfg: dict, obs: TensorDict, obs_groups: dict[str, lis
         # Get dimension of rnd gated state
         num_rnd_state = 0
         for obs_group in obs_groups["rnd_state"]:
-            assert len(obs[obs_group].shape) == 2, "The RND module only supports 1D observations."
+            if len(obs[obs_group].shape) != 2:
+                raise ValueError(f"The RND module only supports 1D observations, got shape {obs[obs_group].shape} for '{obs_group}'.")
             num_rnd_state += obs[obs_group].shape[-1]
         # Add rnd gated state to config
         alg_cfg["rnd_cfg"]["num_states"] = num_rnd_state
