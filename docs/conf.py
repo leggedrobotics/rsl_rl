@@ -37,8 +37,8 @@ html_theme = "furo"
 html_css_files = ["custom.css"]
 html_theme_options = {
     "sidebar_hide_name": True,
-    "light_logo": "rsl_rl_logo.svg",
-    "dark_logo": "rsl_rl_logo.svg",
+    "light_logo": "rsl_rl_logo_light.svg",
+    "dark_logo": "rsl_rl_logo_dark.svg",
     "light_css_variables": {
         "color-highlight-on-target": "rgba(12, 121, 190, 0.5)",
     },
