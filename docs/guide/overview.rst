@@ -1,7 +1,7 @@
 Overview
 ========
 
-This guide provides an overview of the features and structure of RSL-RL. After introducing the library's
+This guide provides an overview of the features and structure of RSL-RL. After introducing the currently available
 :ref:`features <library-features>`, we explain the :ref:`core components <core-components>` and 
 :ref:`additional components <additional-components>` of the library. Finally, we provide a 
 :ref:`minimal example <example-integration>` of how to integrate RSL-RL into a project.
