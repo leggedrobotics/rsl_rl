@@ -1,6 +1,7 @@
 # Contribution
 
-We welcome contributions from the community. For new features, we recommend first opening an issue to discuss the proposed contribution before opening a pull request.
+We welcome contributions from the community. For new features, we recommend first opening an issue to discuss the
+proposed contribution before opening a pull request.
 
 ## Code Style
 
@@ -10,12 +11,13 @@ We welcome contributions from the community. For new features, we recommend firs
 
 ## Workflow
 
-1. Fork the repository and create a new branch.
-2. Make changes to the codebase.
-3. Run [pre-commit](https://pre-commit.com/) to format and lint code with:
+1. For new features, open an issue to discuss the proposed contribution.
+2. Fork the repository and implement the contribution.
+3. Add yourself to the [CONTRIBUTORS.md](https://github.com/leggedrobotics/rsl_rl/blob/main/CONTRIBUTORS.md) file.
+4. Run [pre-commit](https://pre-commit.com/) to format and lint code with:
 
 ```bash
 pre-commit run --all-files
 ```
 
-4. Open a pull request to the `main` branch.
+5. Open a pull request to the main branch.
