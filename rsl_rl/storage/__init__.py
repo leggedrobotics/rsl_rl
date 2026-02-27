@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Transitions storage for the learning algorithm."""
+"""Storage for the learning algorithms."""
 
 from .rollout_storage import RolloutStorage
 
