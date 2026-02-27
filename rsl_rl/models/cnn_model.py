@@ -166,7 +166,10 @@ class _TorchCNNModel(nn.Module):
         # Convert ModuleDict to ModuleList for ordered iteration
         self.cnns = nn.ModuleList([model.cnns[g] for g in model.obs_groups_2d])
         self.mlp = copy.deepcopy(model.mlp)
-        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
+        if model.distribution is not None:
+            self.deterministic_output = model.distribution.as_deterministic_output_module()
+        else:
+            self.deterministic_output = nn.Identity()
 
     def forward(self, obs_1d: torch.Tensor, obs_2d: list[torch.Tensor]) -> torch.Tensor:
         latent_1d = self.obs_normalizer(obs_1d)
@@ -179,9 +182,7 @@ class _TorchCNNModel(nn.Module):
         latent = torch.cat([latent_1d, latent_cnn], dim=-1)
 
         out = self.mlp(latent)
-        if self.distribution is not None:
-            return self.distribution.deterministic_output(out)
-        return out
+        return self.deterministic_output(out)
 
     @torch.jit.export
     def reset(self) -> None:
@@ -198,7 +199,10 @@ class _OnnxCNNModel(nn.Module):
         # Convert ModuleDict to ModuleList for ordered iteration
         self.cnns = nn.ModuleList([model.cnns[g] for g in model.obs_groups_2d])
         self.mlp = copy.deepcopy(model.mlp)
-        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
+        if model.distribution is not None:
+            self.deterministic_output = model.distribution.as_deterministic_output_module()
+        else:
+            self.deterministic_output = nn.Identity()
 
         self.obs_groups_2d = model.obs_groups_2d
         self.obs_dims_2d = model.obs_dims_2d
@@ -216,9 +220,7 @@ class _OnnxCNNModel(nn.Module):
         latent = torch.cat([latent_1d, latent_cnn], dim=-1)
 
         out = self.mlp(latent)
-        if self.distribution is not None:
-            return self.distribution.deterministic_output(out)
-        return out
+        return self.deterministic_output(out)
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:
         dummy_1d = torch.zeros(1, self.obs_dim_1d)

@@ -114,7 +114,10 @@ class _TorchGRUModel(nn.Module):
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
         self.mlp = copy.deepcopy(model.mlp)
-        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
+        if model.distribution is not None:
+            self.deterministic_output = model.distribution.as_deterministic_output_module()
+        else:
+            self.deterministic_output = nn.Identity()
         self.rnn.cpu()
         self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
 
@@ -124,9 +127,7 @@ class _TorchGRUModel(nn.Module):
         self.hidden_state[:] = h  # type: ignore
         x = x.squeeze(0)
         out = self.mlp(x)
-        if self.distribution is not None:
-            return self.distribution.deterministic_output(out)
-        return out
+        return self.deterministic_output(out)
 
     @torch.jit.export
     def reset(self) -> None:
@@ -141,7 +142,10 @@ class _TorchLSTMModel(nn.Module):
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
         self.mlp = copy.deepcopy(model.mlp)
-        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
+        if model.distribution is not None:
+            self.deterministic_output = model.distribution.as_deterministic_output_module()
+        else:
+            self.deterministic_output = nn.Identity()
         self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
         self.register_buffer("cell_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
 
@@ -152,9 +156,7 @@ class _TorchLSTMModel(nn.Module):
         self.cell_state[:] = c  # type: ignore
         x = x.squeeze(0)
         out = self.mlp(x)
-        if self.distribution is not None:
-            return self.distribution.deterministic_output(out)
-        return out
+        return self.deterministic_output(out)
 
     @torch.jit.export
     def reset(self) -> None:
@@ -173,7 +175,10 @@ class _OnnxRNNModel(nn.Module):
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
         self.mlp = copy.deepcopy(model.mlp)
-        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
+        if model.distribution is not None:
+            self.deterministic_output = model.distribution.as_deterministic_output_module()
+        else:
+            self.deterministic_output = nn.Identity()
 
         # Detect RNN type
         if isinstance(self.rnn, nn.LSTM):
@@ -196,15 +201,13 @@ class _OnnxRNNModel(nn.Module):
             x, (h, c) = self.rnn(x.unsqueeze(0), (h_in, c_in))
             x = x.squeeze(0)
             out = self.mlp(x)
-            if self.distribution is not None:
-                out = self.distribution.deterministic_output(out)
+            out = self.deterministic_output(out)
             return out, h, c
         else:
             x, h = self.rnn(x.unsqueeze(0), h_in)
             x = x.squeeze(0)
             out = self.mlp(x)
-            if self.distribution is not None:
-                out = self.distribution.deterministic_output(out)
+            out = self.deterministic_output(out)
             return out, h, None
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:

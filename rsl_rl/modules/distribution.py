@@ -58,6 +58,10 @@ class Distribution(nn.Module):
         """
         raise NotImplementedError
 
+    def as_deterministic_output_module(self) -> nn.Module:
+        """Return an export-friendly module that extracts the deterministic output from the MLP output."""
+        raise NotImplementedError
+
     @property
     def input_dim(self) -> int | list[int]:
         """Return the input dimension required by the distribution."""
@@ -180,6 +184,10 @@ class GaussianDistribution(Distribution):
         """Extract the mean from the MLP output."""
         return mlp_output
 
+    def as_deterministic_output_module(self) -> nn.Module:
+        """Return an export-friendly module that extracts the mean from the MLP output."""
+        return _IdentityDeterministicOutput()
+
     @property
     def input_dim(self) -> int:
         """Return the input dimension required by the distribution."""
@@ -266,6 +274,10 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
         """Extract the mean from the MLP output (first slice of the second-to-last dimension)."""
         return mlp_output[..., 0, :]
 
+    def as_deterministic_output_module(self) -> nn.Module:
+        """Return export-friendly module that extracts the mean from the MLP output."""
+        return _MeanSliceDeterministicOutput()
+
     @property
     def input_dim(self) -> list[int]:
         """Return the input dimension required by the distribution.
@@ -284,3 +296,17 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
         elif self.std_type == "log":
             init_std_log = torch.log(torch.tensor(self.init_std + 1e-7))
             torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], init_std_log)  # type: ignore
+
+
+class _IdentityDeterministicOutput(nn.Module):
+    """Exportable module that returns the MLP output as is."""
+
+    def forward(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        return mlp_output
+
+
+class _MeanSliceDeterministicOutput(nn.Module):
+    """Exportable module that extracts the mean from the MLP output (first slice of the second-to-last dimension)."""
+
+    def forward(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        return mlp_output[..., 0, :]

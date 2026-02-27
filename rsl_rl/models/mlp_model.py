@@ -187,14 +187,15 @@ class _TorchMLPModel(nn.Module):
         super().__init__()
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.mlp = copy.deepcopy(model.mlp)
-        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
+        if model.distribution is not None:
+            self.deterministic_output = model.distribution.as_deterministic_output_module()
+        else:
+            self.deterministic_output = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.obs_normalizer(x)
         out = self.mlp(x)
-        if self.distribution is not None:
-            return self.distribution.deterministic_output(out)
-        return out
+        return self.deterministic_output(out)
 
     @torch.jit.export
     def reset(self) -> None:
@@ -211,15 +212,16 @@ class _OnnxMLPModel(nn.Module):
         self.verbose = verbose
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.mlp = copy.deepcopy(model.mlp)
-        self.distribution = copy.deepcopy(model.distribution) if model.distribution is not None else None
+        if model.distribution is not None:
+            self.deterministic_output = model.distribution.as_deterministic_output_module()
+        else:
+            self.deterministic_output = nn.Identity()
         self.input_size = model.obs_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.obs_normalizer(x)
         out = self.mlp(x)
-        if self.distribution is not None:
-            return self.distribution.deterministic_output(out)
-        return out
+        return self.deterministic_output(out)
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor]:
         return (torch.zeros(1, self.input_size),)
