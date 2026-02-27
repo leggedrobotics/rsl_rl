@@ -7,8 +7,12 @@
 
 from __future__ import annotations
 
+import tempfile
 import torch
 from tensordict import TensorDict
+
+import onnx
+import pytest
 
 from rsl_rl.models import MLPModel
 from tests.conftest import make_obs
@@ -168,3 +172,62 @@ class TestMLPModelExport:
         jit_output = jit_model(obs_concat)
 
         assert torch.allclose(original_output, jit_output, atol=1e-5)
+
+    @pytest.mark.filterwarnings("ignore:.*legacy TorchScript.*:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore:.*will be removed.*:DeprecationWarning")
+    def test_onnx_export_model(self) -> None:
+        """ONNX-exported MLP model should be a valid ONNX graph with correct I/O names."""
+        actor, _obs = _make_mlp_model(stochastic=True)
+        actor.eval()
+
+        onnx_model = actor.as_onnx(verbose=False)
+        onnx_model.eval()
+
+        with tempfile.NamedTemporaryFile(suffix=".onnx") as f:
+            torch.onnx.export(
+                onnx_model,
+                onnx_model.get_dummy_inputs(),
+                f.name,
+                export_params=True,
+                opset_version=18,
+                input_names=onnx_model.input_names,
+                output_names=onnx_model.output_names,
+                dynamic_axes={},
+            )
+            loaded = onnx.load(f.name)
+            onnx.checker.check_model(loaded)
+
+            assert [i.name for i in loaded.graph.input] == ["obs"]
+            assert [o.name for o in loaded.graph.output] == ["actions"]
+
+    @pytest.mark.filterwarnings("ignore:.*legacy TorchScript.*:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore:.*will be removed.*:DeprecationWarning")
+    def test_onnx_export_with_normalization(self) -> None:
+        """ONNX export should produce a valid graph when obs normalization is enabled."""
+        model, _obs = _make_mlp_model(stochastic=True, obs_normalization=True)
+        model.train()
+
+        for _ in range(50):
+            shifted_obs = TensorDict(
+                {"policy": torch.randn(NUM_ENVS, OBS_DIM) + 5.0},
+                batch_size=[NUM_ENVS],
+            )
+            model.update_normalization(shifted_obs)
+
+        model.eval()
+        onnx_model = model.as_onnx(verbose=False)
+        onnx_model.eval()
+
+        with tempfile.NamedTemporaryFile(suffix=".onnx") as f:
+            torch.onnx.export(
+                onnx_model,
+                onnx_model.get_dummy_inputs(),
+                f.name,
+                export_params=True,
+                opset_version=18,
+                input_names=onnx_model.input_names,
+                output_names=onnx_model.output_names,
+                dynamic_axes={},
+            )
+            loaded = onnx.load(f.name)
+            onnx.checker.check_model(loaded)

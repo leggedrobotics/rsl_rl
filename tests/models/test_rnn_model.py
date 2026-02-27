@@ -7,9 +7,11 @@
 
 from __future__ import annotations
 
+import tempfile
 import torch
 from tensordict import TensorDict
 
+import onnx
 import pytest
 
 from rsl_rl.models import RNNModel
@@ -224,3 +226,49 @@ class TestRNNModelJITExport:
             jit_out = jit_model(obs_concat)
 
         assert torch.allclose(original_out, jit_out, atol=1e-5), f"JIT sequential mismatch for {rnn_type}"
+
+
+@pytest.mark.filterwarnings("ignore:.*legacy TorchScript.*:DeprecationWarning")
+@pytest.mark.filterwarnings("ignore:.*will be removed.*:DeprecationWarning")
+@pytest.mark.filterwarnings("ignore::torch.jit.TracerWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning:torch.onnx")
+class TestRNNModelONNXExport:
+    """Tests for ONNX export fidelity of RNN models."""
+
+    @pytest.mark.parametrize("rnn_type", ["gru", "lstm"])
+    def test_onnx_export_model(self, rnn_type: str) -> None:
+        """ONNX-exported RNN model should be a valid ONNX graph with correct I/O names."""
+        obs = make_obs(1, OBS_DIM)
+        model = RNNModel(
+            obs,
+            {"actor": ["policy"]},
+            "actor",
+            NUM_ACTIONS,
+            hidden_dims=[32, 32],
+            activation="elu",
+            rnn_type=rnn_type,
+            rnn_hidden_dim=16,
+            rnn_num_layers=1,
+            distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0, "std_type": "scalar"},
+        )
+        model.eval()
+
+        onnx_model = model.as_onnx(verbose=False)
+        onnx_model.eval()
+
+        with tempfile.NamedTemporaryFile(suffix=".onnx") as f:
+            torch.onnx.export(
+                onnx_model,
+                onnx_model.get_dummy_inputs(),
+                f.name,
+                export_params=True,
+                opset_version=18,
+                input_names=onnx_model.input_names,
+                output_names=onnx_model.output_names,
+                dynamic_axes={},
+            )
+            loaded = onnx.load(f.name)
+            onnx.checker.check_model(loaded)
+
+            assert [i.name for i in loaded.graph.input] == onnx_model.input_names
+            assert [o.name for o in loaded.graph.output] == onnx_model.output_names

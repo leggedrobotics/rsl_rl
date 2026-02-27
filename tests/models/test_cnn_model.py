@@ -7,8 +7,12 @@
 
 from __future__ import annotations
 
+import tempfile
 import torch
 from tensordict import TensorDict
+
+import onnx
+import pytest
 
 from rsl_rl.models import CNNModel
 from rsl_rl.modules.cnn import _compute_output_dim, _compute_padding
@@ -188,3 +192,36 @@ class TestCNNModelJITExport:
         jit_output = jit_model(obs_1d, obs_2d)
 
         assert torch.allclose(original_output, jit_output, atol=1e-5), "JIT stochastic CNN export should match original"
+
+
+@pytest.mark.filterwarnings("ignore:.*legacy TorchScript.*:DeprecationWarning")
+@pytest.mark.filterwarnings("ignore:.*will be removed.*:DeprecationWarning")
+class TestCNNModelONNXExport:
+    """Tests for ONNX export fidelity of CNN models."""
+
+    def test_onnx_export_model(self) -> None:
+        """ONNX-exported CNN model should be a valid ONNX graph with correct I/O names."""
+        model, _obs = _make_cnn_model(
+            distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0, "std_type": "scalar"},
+        )
+        model.eval()
+
+        onnx_model = model.as_onnx(verbose=False)
+        onnx_model.eval()
+
+        with tempfile.NamedTemporaryFile(suffix=".onnx") as f:
+            torch.onnx.export(
+                onnx_model,
+                onnx_model.get_dummy_inputs(),
+                f.name,
+                export_params=True,
+                opset_version=18,
+                input_names=onnx_model.input_names,
+                output_names=onnx_model.output_names,
+                dynamic_axes={},
+            )
+            loaded = onnx.load(f.name)
+            onnx.checker.check_model(loaded)
+
+            assert [i.name for i in loaded.graph.input] == ["obs", "image"]
+            assert [o.name for o in loaded.graph.output] == ["actions"]
