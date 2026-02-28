@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+
 from __future__ import annotations
 
 import git
@@ -30,6 +31,7 @@ class Logger:
         gpu_global_rank: int,
         device: str,
     ) -> None:
+        """Initialize buffers and logging state for a training run."""
         self.log_dir = log_dir
         self.cfg = cfg
         self.env_cfg = env_cfg

@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+
 from __future__ import annotations
 
 import os
@@ -19,6 +20,7 @@ class NeptuneSummaryWriter(SummaryWriter):
     """Summary writer for Neptune."""
 
     def __init__(self, log_dir: str, flush_secs: int, cfg: dict) -> None:
+        """Initialize a Neptune run for logging."""
         super().__init__(log_dir, flush_secs=flush_secs)
 
         # Get the run name
@@ -54,6 +56,7 @@ class NeptuneSummaryWriter(SummaryWriter):
         }
 
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
+        """Upload environment and training configuration to Neptune."""
         self.run["train_cfg"] = train_cfg
         try:
             self.run["env_cfg"] = env_cfg.to_dict()  # type: ignore
@@ -68,6 +71,7 @@ class NeptuneSummaryWriter(SummaryWriter):
         walltime: float | None = None,
         new_style: bool = False,
     ) -> None:
+        """Log a scalar to both TensorBoard and Neptune."""
         super().add_scalar(
             tag,
             scalar_value,
@@ -78,16 +82,20 @@ class NeptuneSummaryWriter(SummaryWriter):
         self.run[self._map_path(tag)].log(scalar_value, step=global_step)
 
     def stop(self) -> None:
+        """Finish the active Neptune run."""
         self.run.stop()
 
     def save_model(self, model_path: str, it: int) -> None:
+        """Upload a model checkpoint artifact to Neptune."""
         self.run["model/saved_model_" + str(it)].upload(model_path)
 
     def save_file(self, path: str) -> None:
+        """Upload an arbitrary file artifact to Neptune."""
         name = path.rsplit("/", 1)[-1].split(".")[0]
         self.run["git_diff/" + name].upload(path)
 
     def _map_path(self, path: str) -> str:
+        """Map metric names to Neptune-compatible keys."""
         if path in self.name_map:
             return self.name_map[path]
         else:

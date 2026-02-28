@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+
 from __future__ import annotations
 
 from rsl_rl.algorithms import Distillation
@@ -10,12 +11,13 @@ from rsl_rl.runners import OnPolicyRunner
 
 
 class DistillationRunner(OnPolicyRunner):
-    """Distillation runner for training and evaluation of teacher-student methods."""
+    """Distillation runner for student-teacher algorithms."""
 
     alg: Distillation
     """The distillation algorithm."""
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
+        """Run the learning loop after validating that the teacher model is loaded."""
         # Check if teacher is loaded
         if not self.alg.teacher_loaded:
             raise ValueError("Teacher model parameters not loaded. Please load a teacher model to distill.")

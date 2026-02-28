@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+
 from __future__ import annotations
 
 import torch
@@ -19,7 +20,11 @@ from rsl_rl.utils import resolve_callable, resolve_obs_groups, resolve_optimizer
 
 
 class PPO:
-    """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
+    """Proximal Policy Optimization algorithm.
+
+    Reference:
+        - Schulman et al. "Proximal policy optimization algorithms." arXiv preprint arXiv:1707.06347 (2017).
+    """
 
     actor: MLPModel
     """The actor model."""
@@ -54,6 +59,7 @@ class PPO:
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
     ) -> None:
+        """Initialize the algorithm with models, storage, and optimization settings."""
         # Device-related parameters
         self.device = device
         self.is_multi_gpu = multi_gpu_cfg is not None
@@ -131,6 +137,7 @@ class PPO:
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
 
     def act(self, obs: TensorDict) -> torch.Tensor:
+        """Sample actions and store transition data."""
         # Record the hidden states for recurrent policies
         self.transition.hidden_states = (self.actor.get_hidden_state(), self.critic.get_hidden_state())
         # Compute the actions and values
@@ -145,6 +152,7 @@ class PPO:
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
     ) -> None:
+        """Record one environment step and update the normalizers."""
         # Update the normalizers
         self.actor.update_normalization(obs)
         self.critic.update_normalization(obs)
@@ -177,6 +185,7 @@ class PPO:
         self.critic.reset(dones)
 
     def compute_returns(self, obs: TensorDict) -> None:
+        """Compute return and advantage targets from stored transitions."""
         st = self.storage
         # Compute value for the last step
         last_values = self.critic(obs).detach()
@@ -200,6 +209,7 @@ class PPO:
             st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
 
     def update(self) -> dict[str, float]:
+        """Run optimization epochs over stored batches and return mean losses."""
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
@@ -406,12 +416,14 @@ class PPO:
         return loss_dict
 
     def train_mode(self) -> None:
+        """Set train mode for learnable models."""
         self.actor.train()
         self.critic.train()
         if self.rnd:
             self.rnd.train()
 
     def eval_mode(self) -> None:
+        """Set evaluation mode for learnable models."""
         self.actor.eval()
         self.critic.eval()
         if self.rnd:

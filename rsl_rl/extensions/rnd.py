@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+
 from __future__ import annotations
 
 import torch
@@ -15,10 +16,11 @@ from rsl_rl.modules import MLP, EmpiricalDiscountedVariationNormalization, Empir
 
 
 class RandomNetworkDistillation(nn.Module):
-    """Implementation of Random Network Distillation (RND) [1].
+    """Implementation of Random Network Distillation (RND).
 
     References:
-        .. [1] Burda, Yuri, et al. "Exploration by Random Network Distillation." arXiv preprint arXiv:1810.12894 (2018).
+        - Schwarke et al. "Curiosity-Driven Learning of Joint Locomotion and Manipulation Tasks." CoRL (2023).
+        - Burda et al. "Exploration by Random Network Distillation." arXiv preprint arXiv:1810.12894 (2018).
     """
 
     def __init__(
@@ -117,6 +119,7 @@ class RandomNetworkDistillation(nn.Module):
         self.target.eval()
 
     def get_intrinsic_reward(self, obs: TensorDict) -> torch.Tensor:
+        """Compute weighted intrinsic rewards from prediction error in embedding space."""
         # Note: The counter is updated number of env steps per learning iteration
         self.update_counter += 1
         # Extract the rnd state from the observation
@@ -140,9 +143,11 @@ class RandomNetworkDistillation(nn.Module):
         return intrinsic_reward
 
     def forward(self, *args: Any, **kwargs: dict[str, Any]) -> NoReturn:
+        """Disallow generic forward calls for this module."""
         raise RuntimeError("Forward method is not implemented. Use get_intrinsic_reward instead.")
 
     def train(self, mode: bool = True) -> RandomNetworkDistillation:
+        """Set training mode for predictor and optional normalizers."""
         # Set module into training mode
         self.predictor.train(mode)
         if self.state_normalization:
@@ -152,27 +157,33 @@ class RandomNetworkDistillation(nn.Module):
         return self
 
     def eval(self) -> RandomNetworkDistillation:
+        """Set the module to evaluation mode."""
         return self.train(False)
 
     def get_rnd_state(self, obs: TensorDict) -> torch.Tensor:
+        """Extract and concatenate observation groups used as theRND state."""
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["rnd_state"]]
         return torch.cat(obs_list, dim=-1)
 
     def update_normalization(self, obs: TensorDict) -> None:
+        """Update state-normalization statistics from observations."""
         # Normalize the state
         if self.state_normalization:
             rnd_state = self.get_rnd_state(obs)
             self.state_normalizer.update(rnd_state)  # type: ignore
 
     def _constant_weight_schedule(self, step: int, **kwargs: dict[str, Any]) -> float:
+        """Keep the intrinsic reward weight constant."""
         return self.initial_weight
 
     def _step_weight_schedule(self, step: int, final_step: int, final_value: float, **kwargs: dict[str, Any]) -> float:
+        """Switch the intrinsic reward weight at a configured step."""
         return self.initial_weight if step < final_step else final_value
 
     def _linear_weight_schedule(
         self, step: int, initial_step: int, final_step: int, final_value: float, **kwargs: dict[str, Any]
     ) -> float:
+        """Linearly interpolate the intrinsic reward weight over a step interval."""
         if step < initial_step:
             return self.initial_weight
         elif step > final_step:

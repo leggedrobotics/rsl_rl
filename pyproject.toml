@@ -42,8 +42,11 @@ Issues = "https://github.com/leggedrobotics/rsl_rl/issues"
 where = ["."]
 include = ["rsl_rl*"]
 
-[tool.setuptools.package-data]
-"rsl_rl" = ["config/*", "licenses/*"]
+[tool.setuptools]
+license-files = [
+    "LICENSE*",
+    "licenses/dependencies/*.txt",
+]
 
 [tool.pyright]
 include = ["rsl_rl"]

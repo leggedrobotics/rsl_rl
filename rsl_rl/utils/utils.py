@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+
 from __future__ import annotations
 
 import importlib
@@ -30,6 +31,9 @@ def get_param(param: Any, idx: int) -> Any:
 
 def resolve_nn_activation(act_name: str) -> torch.nn.Module:
     """Resolve the activation function from the name.
+
+    Valid activation function names are: ``"elu"``, ``"selu"``, ``"relu"``, ``"crelu"``, ``"lrelu"``, ``"tanh"``,
+    ``"sigmoid"``, ``"softplus"``, ``"gelu"``, ``"swish"``, ``"mish"``, ``"identity"``.
 
     Args:
         act_name: Name of the activation function.
@@ -65,6 +69,8 @@ def resolve_nn_activation(act_name: str) -> torch.nn.Module:
 def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
     """Resolve the optimizer from the name.
 
+    Valid optimizer names are: ``"adam"``, ``"adamw"``, ``"sgd"``, ``"rmsprop"``.
+
     Args:
         optimizer_name: Name of the optimizer.
 
@@ -88,86 +94,15 @@ def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
         raise ValueError(f"Invalid optimizer '{optimizer_name}'. Valid optimizers are: {list(optimizer_dict.keys())}")
 
 
-def split_and_pad_trajectories(
-    tensor: torch.Tensor | TensorDict, dones: torch.Tensor
-) -> tuple[torch.Tensor | TensorDict, torch.Tensor]:
-    """Split trajectories at done indices.
-
-    Split trajectories, concatenate them and pad with zeros up to the length of the longest trajectory. Return masks
-    corresponding to valid parts of the trajectories.
-
-    Example (transposed for readability):
-        Input: [[a1, a2, a3, a4 | a5, a6],
-                [b1, b2 | b3, b4, b5 | b6]]
-
-        Output:[[a1, a2, a3, a4], | [[True, True, True, True],
-                [a5, a6, 0, 0],   |  [True, True, False, False],
-                [b1, b2, 0, 0],   |  [True, True, False, False],
-                [b3, b4, b5, 0],  |  [True, True, True, False],
-                [b6, 0, 0, 0]]    |  [True, False, False, False]]
-
-    Assumes that the input has the following order of dimensions: [time, number of envs, additional dimensions]
-    """
-    dones = dones.clone()
-    dones[-1] = 1
-    # Permute the buffers to have the order (num_envs, num_transitions_per_env, ...) for correct reshaping
-    flat_dones = dones.transpose(1, 0).reshape(-1, 1)
-    # Get length of trajectory by counting the number of successive not done elements
-    done_indices = torch.cat((flat_dones.new_tensor([-1], dtype=torch.int64), flat_dones.nonzero()[:, 0]))
-    trajectory_lengths = done_indices[1:] - done_indices[:-1]
-    trajectory_lengths_list = trajectory_lengths.tolist()
-    # Extract the individual trajectories
-    if isinstance(tensor, TensorDict):
-        padded_trajectories = {}
-        for k, v in tensor.items():
-            # Split the tensor into trajectories
-            trajectories = torch.split(v.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
-            # Add at least one full length trajectory
-            trajectories = (*trajectories, torch.zeros(v.shape[0], *v.shape[2:], device=v.device))
-            # Pad the trajectories to the length of the longest trajectory
-            padded_trajectories[k] = torch.nn.utils.rnn.pad_sequence(trajectories)  # type: ignore
-            # Remove the added trajectory
-            padded_trajectories[k] = padded_trajectories[k][:, :-1]
-        padded_trajectories = TensorDict(
-            padded_trajectories, batch_size=[tensor.batch_size[0], len(trajectory_lengths_list)], device=tensor.device
-        )
-    else:
-        # Split the tensor into trajectories
-        trajectories = torch.split(tensor.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
-        # Add at least one full length trajectory
-        trajectories = (*trajectories, torch.zeros(tensor.shape[0], *tensor.shape[2:], device=tensor.device))
-        # Pad the trajectories to the length of the longest trajectory
-        padded_trajectories = torch.nn.utils.rnn.pad_sequence(trajectories)  # type: ignore
-        # Remove the added trajectory
-        padded_trajectories = padded_trajectories[:, :-1]
-    # Create masks for the valid parts of the trajectories
-    trajectory_masks = trajectory_lengths > torch.arange(0, tensor.shape[0], device=tensor.device).unsqueeze(1)
-    return padded_trajectories, trajectory_masks
-
-
-def unpad_trajectories(trajectories: torch.Tensor | TensorDict, masks: torch.Tensor) -> torch.Tensor | TensorDict:
-    """Do the inverse operation of `split_and_pad_trajectories()`."""
-    # Select valid steps and flatten to sequence of valid steps
-    valid_steps = trajectories.transpose(1, 0)[masks.transpose(1, 0)]
-    # Reshape back to original dimensions
-    if isinstance(trajectories, TensorDict):
-        # TensorDict.view() only modifies the batch size.
-        # We reshape [valid_steps] -> [number of envs, time] and then transpose back to [time, number of envs]
-        return valid_steps.view(-1, trajectories.shape[0]).transpose(1, 0)
-    else:
-        # For standard Tensors, we must explicitly handle feature dimensions in view()
-        return valid_steps.view(-1, trajectories.shape[0], *trajectories.shape[2:]).transpose(1, 0)
-
-
 def resolve_callable(callable_or_name: type | Callable | str) -> Callable:
     """Resolve a callable from a string, type, or return callable directly.
 
-    This function enables passing custom classes or functions directly or as strings. The following formats are
-    supported:
-        - Direct callable: Pass a type or function directly (e.g., MyClass, my_func)
-        - Qualified name with colon: "module.path:Attr.Nested" (explicit, recommended)
-        - Qualified name with dot: "module.path.ClassName" (implicit)
-        - Simple name: e.g. "PPO", "ActorCritic", ... (looks for callable in rsl_rl)
+    This function supports resolving callables from a direct callable input or from a string in one of these formats:
+
+    - Direct callable: pass a type or function directly (for example, ``MyClass`` or ``my_func``).
+    - Qualified name with colon: ``"module.path:Attr.Nested"`` (explicit, recommended).
+    - Qualified name with dot: ``"module.path.ClassName"`` (implicit).
+    - Simple name: for example ``"PPO"`` or ``"ActorCritic"`` (searched within ``rsl_rl``).
 
     Args:
         callable_or_name: A callable (type/function) or string name.
@@ -247,10 +182,11 @@ def resolve_obs_groups(
     The input is an observation dictionary `obs` containing observation groups and a configuration dictionary
     `obs_groups` where the keys are the observation sets and the values are lists of observation groups.
 
-    The configuration dictionary could for example look like:
+    The configuration dictionary could for example look like::
+
         {
             "actor": ["group_1", "group_2"],
-            "critic": ["group_1", "group_3"]
+            "critic": ["group_1", "group_3"],
         }
 
     This means that the 'actor' observation set will contain the observations "group_1" and "group_2" and the 'critic'
@@ -268,8 +204,8 @@ def resolve_obs_groups(
     Args:
         obs: Observations from the environment in the form of a dictionary.
         obs_groups: Dictionary mapping observation sets to lists of observation groups.
-        default_sets: Default observation set names used by the algorithm. If not provided in 'obs_groups', a default
-        behavior gets triggered.
+        default_sets: Default observation set names used by the algorithm. If not provided in ``obs_groups``, a
+            default behavior gets triggered.
 
     Returns:
         The resolved observation groups.
@@ -334,3 +270,74 @@ def resolve_obs_groups(
     print("-" * 80)
 
     return obs_groups
+
+
+def split_and_pad_trajectories(
+    tensor: torch.Tensor | TensorDict, dones: torch.Tensor
+) -> tuple[torch.Tensor | TensorDict, torch.Tensor]:
+    """Split trajectories at done indices.
+
+    Split trajectories, concatenate them and pad with zeros up to the length of the longest trajectory. Return masks
+    corresponding to valid parts of the trajectories.
+
+    Example (transposed for readability):
+        Input: [[a1, a2, a3, a4 | a5, a6],
+                [b1, b2 | b3, b4, b5 | b6]]
+
+        Output:[[a1, a2, a3, a4], | [[True, True, True, True],
+                [a5, a6, 0, 0],   |  [True, True, False, False],
+                [b1, b2, 0, 0],   |  [True, True, False, False],
+                [b3, b4, b5, 0],  |  [True, True, True, False],
+                [b6, 0, 0, 0]]    |  [True, False, False, False]]
+
+    Assumes that the input has the following order of dimensions: [time, number of envs, additional dimensions]
+    """
+    dones = dones.clone()
+    dones[-1] = 1
+    # Permute the buffers to have the order (num_envs, num_transitions_per_env, ...) for correct reshaping
+    flat_dones = dones.transpose(1, 0).reshape(-1, 1)
+    # Get length of trajectory by counting the number of successive not done elements
+    done_indices = torch.cat((flat_dones.new_tensor([-1], dtype=torch.int64), flat_dones.nonzero()[:, 0]))
+    trajectory_lengths = done_indices[1:] - done_indices[:-1]
+    trajectory_lengths_list = trajectory_lengths.tolist()
+    # Extract the individual trajectories
+    if isinstance(tensor, TensorDict):
+        padded_trajectories = {}
+        for k, v in tensor.items():
+            # Split the tensor into trajectories
+            trajectories = torch.split(v.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
+            # Add at least one full length trajectory
+            trajectories = (*trajectories, torch.zeros(v.shape[0], *v.shape[2:], device=v.device))
+            # Pad the trajectories to the length of the longest trajectory
+            padded_trajectories[k] = torch.nn.utils.rnn.pad_sequence(trajectories)  # type: ignore
+            # Remove the added trajectory
+            padded_trajectories[k] = padded_trajectories[k][:, :-1]
+        padded_trajectories = TensorDict(
+            padded_trajectories, batch_size=[tensor.batch_size[0], len(trajectory_lengths_list)], device=tensor.device
+        )
+    else:
+        # Split the tensor into trajectories
+        trajectories = torch.split(tensor.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
+        # Add at least one full length trajectory
+        trajectories = (*trajectories, torch.zeros(tensor.shape[0], *tensor.shape[2:], device=tensor.device))
+        # Pad the trajectories to the length of the longest trajectory
+        padded_trajectories = torch.nn.utils.rnn.pad_sequence(trajectories)  # type: ignore
+        # Remove the added trajectory
+        padded_trajectories = padded_trajectories[:, :-1]
+    # Create masks for the valid parts of the trajectories
+    trajectory_masks = trajectory_lengths > torch.arange(0, tensor.shape[0], device=tensor.device).unsqueeze(1)
+    return padded_trajectories, trajectory_masks
+
+
+def unpad_trajectories(trajectories: torch.Tensor | TensorDict, masks: torch.Tensor) -> torch.Tensor | TensorDict:
+    """Do the inverse operation of `split_and_pad_trajectories()`."""
+    # Select valid steps and flatten to sequence of valid steps
+    valid_steps = trajectories.transpose(1, 0)[masks.transpose(1, 0)]
+    # Reshape back to original dimensions
+    if isinstance(trajectories, TensorDict):
+        # TensorDict.view() only modifies the batch size.
+        # We reshape [valid_steps] -> [number of envs, time] and then transpose back to [time, number of envs]
+        return valid_steps.view(-1, trajectories.shape[0]).transpose(1, 0)
+    else:
+        # For standard Tensors, we must explicitly handle feature dimensions in view()
+        return valid_steps.view(-1, trajectories.shape[0], *trajectories.shape[2:]).transpose(1, 0)

@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+
 from __future__ import annotations
 
 import torch
@@ -28,6 +29,7 @@ class RolloutStorage:
         """
 
         def __init__(self) -> None:
+            """Initialize an empty transition container."""
             self.observations: TensorDict | None = None
             """Observations at the current step."""
 
@@ -59,6 +61,7 @@ class RolloutStorage:
             """Hidden states for recurrent networks, e.g., (actor, critic)."""
 
         def clear(self) -> None:
+            """Reset all transition fields to None."""
             self.__init__()
 
     class Batch:
@@ -82,6 +85,7 @@ class RolloutStorage:
             privileged_actions: torch.Tensor | None = None,
             dones: torch.Tensor | None = None,
         ) -> None:
+            """Initialize a batch container over rollout data."""
             self.observations: TensorDict | None = observations
             """Batch of observations."""
 
@@ -127,6 +131,7 @@ class RolloutStorage:
         actions_shape: tuple[int, ...] | list[int],
         device: str = "cpu",
     ) -> None:
+        """Allocate rollout buffers for a specific training mode and batch shape."""
         self.training_type = training_type
         self.device = device
         self.num_transitions_per_env = num_transitions_per_env
@@ -163,6 +168,7 @@ class RolloutStorage:
         self.step = 0
 
     def add_transition(self, transition: Transition) -> None:
+        """Add one transition to the storage at the current step index."""
         # Check if the transition is valid
         if self.step >= self.num_transitions_per_env:
             raise OverflowError("Rollout buffer overflow! You should call clear() before adding new transitions.")
@@ -196,10 +202,12 @@ class RolloutStorage:
         self.step += 1
 
     def clear(self) -> None:
+        """Reset the write cursor for the next rollout."""
         self.step = 0
 
     # For distillation
     def generator(self) -> Generator[Batch, None, None]:
+        """Yield per-timestep batches for distillation training."""
         if self.training_type != "distillation":
             raise ValueError("This function is only available for distillation training.")
 
@@ -212,6 +220,7 @@ class RolloutStorage:
 
     # For reinforcement learning with feedforward networks
     def mini_batch_generator(self, num_mini_batches: int, num_epochs: int = 8) -> Generator[Batch, None, None]:
+        """Yield shuffled flat mini-batches for feedforward RL updates."""
         if self.training_type != "rl":
             raise ValueError("This function is only available for reinforcement learning training.")
         batch_size = self.num_envs * self.num_transitions_per_env
@@ -249,6 +258,7 @@ class RolloutStorage:
     def recurrent_mini_batch_generator(
         self, num_mini_batches: int, num_epochs: int = 8
     ) -> Generator[Batch, None, None]:
+        """Yield trajectory mini-batches with masks and recurrent hidden states."""
         if self.training_type != "rl":
             raise ValueError("This function is only available for reinforcement learning training.")
         padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.observations, self.dones)
@@ -316,6 +326,7 @@ class RolloutStorage:
                 first_traj = last_traj
 
     def _save_hidden_states(self, hidden_states: tuple[HiddenState, HiddenState]) -> None:
+        """Save recurrent hidden states to the rollout storage."""
         if hidden_states == (None, None):
             return
         # Make a tuple out of GRU hidden states to match the LSTM format

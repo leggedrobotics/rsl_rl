@@ -12,6 +12,8 @@ from rsl_rl.utils import split_and_pad_trajectories, unpad_trajectories
 
 
 class TestSplitAndPad:
+    """Tests for ``split_and_pad_trajectories``."""
+
     def test_split_and_pad_tensor_simple(self) -> None:
         """Test basic functionality with a standard Tensor.
 
@@ -117,6 +119,8 @@ class TestSplitAndPad:
 
 
 class TestUnpad:
+    """Tests for ``unpad_trajectories``."""
+
     def test_unpad_tensor_identity(self) -> None:
         """Test unpad with no padding (Masks all True)."""
         n_steps, n_traj, feature_dim = 5, 2, 3

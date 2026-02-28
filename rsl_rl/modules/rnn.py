@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+
 from __future__ import annotations
 
 import torch
@@ -19,12 +20,13 @@ For GRUs, this is a single tensor while for LSTMs, this is a tuple of two tensor
 
 
 class RNN(nn.Module):
-    """Network for recurrent architectures.
+    """Recurrent Neural Network.
 
     This network is used to store the hidden state of the policy. It currently supports GRU and LSTM.
     """
 
     def __init__(self, input_size: int, hidden_dim: int = 256, num_layers: int = 1, type: str = "lstm") -> None:
+        """Initialize a GRU or LSTM module with internal hidden-state storage."""
         super().__init__()
         rnn_cls = nn.GRU if type.lower() == "gru" else nn.LSTM
         self.rnn = rnn_cls(input_size=input_size, hidden_size=hidden_dim, num_layers=num_layers)
@@ -36,6 +38,7 @@ class RNN(nn.Module):
         masks: torch.Tensor | None = None,
         hidden_state: HiddenState = None,
     ) -> torch.Tensor:
+        """Run recurrent inference in rollout mode or batched update mode."""
         batch_mode = masks is not None
         if batch_mode:
             # Batch mode needs saved hidden states
@@ -49,6 +52,7 @@ class RNN(nn.Module):
         return out
 
     def reset(self, dones: torch.Tensor | None = None, hidden_state: HiddenState = None) -> None:
+        """Reset hidden states for all or done environments."""
         if dones is None:  # Reset hidden state
             if hidden_state is None:
                 self.hidden_state = None
@@ -58,7 +62,7 @@ class RNN(nn.Module):
             if hidden_state is None:
                 if isinstance(self.hidden_state, tuple):  # Tuple in case of LSTM
                     for hidden_state in self.hidden_state:
-                        hidden_state[..., dones == 1, :] = 0.0
+                        hidden_state[..., dones == 1, :] = 0.0  # type: ignore
                 else:
                     self.hidden_state[..., dones == 1, :] = 0.0
             else:
@@ -67,6 +71,7 @@ class RNN(nn.Module):
                 )
 
     def detach_hidden_state(self, dones: torch.Tensor | None = None) -> None:
+        """Detach hidden states for all or done environments from the computation graph."""
         if self.hidden_state is not None:
             if dones is None:  # Detach hidden state
                 if isinstance(self.hidden_state, tuple):  # Tuple in case of LSTM

@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+
 from __future__ import annotations
 
 import copy
@@ -106,6 +107,7 @@ class CNNModel(MLPModel):
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
     ) -> torch.Tensor:
+        """Build the model latent by combining normalized 1D and CNN-encoded 2D observation groups."""
         # Concatenate 1D observation groups and normalize
         latent_1d = super().get_latent(obs)
         # Process 2D observation groups with CNNs
@@ -154,6 +156,7 @@ class CNNModel(MLPModel):
         return obs_groups_1d, obs_dim_1d
 
     def _get_latent_dim(self) -> int:
+        """Return the latent dimensionality consumed by the MLP head."""
         return self.obs_dim + self.cnn_latent_dim
 
 
@@ -161,6 +164,7 @@ class _TorchCNNModel(nn.Module):
     """Exportable CNN model for JIT."""
 
     def __init__(self, model: CNNModel) -> None:
+        """Create a TorchScript-friendly copy of a CNNModel."""
         super().__init__()
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         # Convert ModuleDict to ModuleList for ordered iteration
@@ -172,6 +176,7 @@ class _TorchCNNModel(nn.Module):
             self.deterministic_output = nn.Identity()
 
     def forward(self, obs_1d: torch.Tensor, obs_2d: list[torch.Tensor]) -> torch.Tensor:
+        """Run deterministic inference from separated 1D and 2D inputs."""
         latent_1d = self.obs_normalizer(obs_1d)
 
         latent_cnn_list = []
@@ -186,6 +191,7 @@ class _TorchCNNModel(nn.Module):
 
     @torch.jit.export
     def reset(self) -> None:
+        """Reset recurrent export state (no-op for CNN exports)."""
         pass
 
 
@@ -193,6 +199,7 @@ class _OnnxCNNModel(nn.Module):
     """Exportable CNN model for ONNX."""
 
     def __init__(self, model: CNNModel, verbose: bool) -> None:
+        """Create an ONNX-export wrapper around a CNNModel."""
         super().__init__()
         self.verbose = verbose
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
@@ -210,6 +217,7 @@ class _OnnxCNNModel(nn.Module):
         self.obs_dim_1d = model.obs_dim
 
     def forward(self, obs_1d: torch.Tensor, *obs_2d: torch.Tensor) -> torch.Tensor:
+        """Run deterministic inference for ONNX export."""
         latent_1d = self.obs_normalizer(obs_1d)
 
         latent_cnn_list = []
@@ -223,6 +231,7 @@ class _OnnxCNNModel(nn.Module):
         return self.deterministic_output(out)
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:
+        """Return representative dummy inputs for ONNX tracing."""
         dummy_1d = torch.zeros(1, self.obs_dim_1d)
         dummy_2d = []
         for i in range(len(self.obs_groups_2d)):
@@ -233,8 +242,10 @@ class _OnnxCNNModel(nn.Module):
 
     @property
     def input_names(self) -> list[str]:
+        """Return ONNX input tensor names."""
         return ["obs", *self.obs_groups_2d]
 
     @property
     def output_names(self) -> list[str]:
+        """Return ONNX output tensor names."""
         return ["actions"]

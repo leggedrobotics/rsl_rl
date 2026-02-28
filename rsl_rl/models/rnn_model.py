@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+
 from __future__ import annotations
 
 import copy
@@ -24,6 +25,7 @@ class RNNModel(MLPModel):
     """
 
     is_recurrent: bool = True
+    """Whether the model contains a recurrent module."""
 
     def __init__(
         self,
@@ -74,6 +76,7 @@ class RNNModel(MLPModel):
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
     ) -> torch.Tensor:
+        """Build the model latent by passing normalized observation groups through the RNN."""
         # Extract and concatenate observation groups and normalize
         latent = super().get_latent(obs)
         # Pass through the RNN
@@ -81,12 +84,15 @@ class RNNModel(MLPModel):
         return latent
 
     def reset(self, dones: torch.Tensor | None = None, hidden_state: HiddenState = None) -> None:
+        """Reset the recurrent hidden state of the RNN."""
         self.rnn.reset(dones, hidden_state)
 
     def get_hidden_state(self) -> HiddenState:
+        """Return the recurrent hidden state of the RNN."""
         return self.rnn.hidden_state  # type: ignore
 
     def detach_hidden_state(self, dones: torch.Tensor | None = None) -> None:
+        """Detach the recurrent hidden state for truncated backpropagation."""
         self.rnn.detach_hidden_state(dones)
 
     def as_jit(self) -> nn.Module:
@@ -103,6 +109,7 @@ class RNNModel(MLPModel):
         return _OnnxRNNModel(self, verbose)
 
     def _get_latent_dim(self) -> int:
+        """Return the latent dimensionality consumed by the MLP head."""
         return self.latent_dim
 
 
@@ -110,6 +117,7 @@ class _TorchGRUModel(nn.Module):
     """Exportable GRU model for JIT."""
 
     def __init__(self, model: RNNModel) -> None:
+        """Create a TorchScript-friendly copy of a GRU-based RNNModel."""
         super().__init__()
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
@@ -122,6 +130,7 @@ class _TorchGRUModel(nn.Module):
         self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run one GRU inference step and update hidden states."""
         x = self.obs_normalizer(x)
         x, h = self.rnn(x.unsqueeze(0), self.hidden_state)
         self.hidden_state[:] = h  # type: ignore
@@ -131,6 +140,7 @@ class _TorchGRUModel(nn.Module):
 
     @torch.jit.export
     def reset(self) -> None:
+        """Reset exported GRU hidden states to zeros."""
         self.hidden_state[:] = 0.0  # type: ignore
 
 
@@ -138,6 +148,7 @@ class _TorchLSTMModel(nn.Module):
     """Exportable LSTM model for JIT."""
 
     def __init__(self, model: RNNModel) -> None:
+        """Create a TorchScript-friendly copy of an LSTM-based RNNModel."""
         super().__init__()
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
@@ -150,6 +161,7 @@ class _TorchLSTMModel(nn.Module):
         self.register_buffer("cell_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run one LSTM inference step and update hidden and cell states."""
         x = self.obs_normalizer(x)
         x, (h, c) = self.rnn(x.unsqueeze(0), (self.hidden_state, self.cell_state))
         self.hidden_state[:] = h  # type: ignore
@@ -160,6 +172,7 @@ class _TorchLSTMModel(nn.Module):
 
     @torch.jit.export
     def reset(self) -> None:
+        """Reset exported LSTM hidden and cell states to zeros."""
         self.hidden_state[:] = 0.0  # type: ignore
         self.cell_state[:] = 0.0  # type: ignore
 
@@ -170,6 +183,7 @@ class _OnnxRNNModel(nn.Module):
     is_recurrent: bool = True
 
     def __init__(self, model: RNNModel, verbose: bool) -> None:
+        """Create an ONNX-export wrapper around an RNNModel."""
         super().__init__()
         self.verbose = verbose
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
@@ -195,6 +209,7 @@ class _OnnxRNNModel(nn.Module):
     def forward(
         self, obs: torch.Tensor, h_in: torch.Tensor, c_in: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """Run deterministic inference for ONNX export."""
         x = self.obs_normalizer(obs)
 
         if self.rnn_type == "lstm":
@@ -211,6 +226,7 @@ class _OnnxRNNModel(nn.Module):
             return out, h, None
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:
+        """Return representative dummy inputs for ONNX tracing."""
         obs = torch.zeros(1, self.input_size)
         h_in = torch.zeros(self.num_layers, 1, self.hidden_size)
         if self.rnn_type == "lstm":
@@ -220,12 +236,14 @@ class _OnnxRNNModel(nn.Module):
 
     @property
     def input_names(self) -> list[str]:
+        """Return ONNX input tensor names."""
         if self.rnn_type == "lstm":
             return ["obs", "h_in", "c_in"]
         return ["obs", "h_in"]
 
     @property
     def output_names(self) -> list[str]:
+        """Return ONNX output tensor names."""
         if self.rnn_type == "lstm":
             return ["actions", "h_out", "c_out"]
         return ["actions", "h_out"]

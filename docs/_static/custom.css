@@ -1,0 +1,51 @@
+/* Emphasize API signature lines for better scanability. */
+dl.py.class > dt.sig,
+dl.py.function > dt.sig,
+dl.py.method > dt.sig,
+dl.py.property > dt.sig {
+  text-indent: 0;
+  background: var(--color-code-background);
+  padding: 0.4rem 0.6rem;
+  margin-bottom: 0.4rem;
+}
+
+/* Sidebar top logo image */
+.sidebar-brand img {
+  max-height: 100px;
+  width: auto;
+}
+
+/* Show theme-specific figures in docs pages. */
+.light-only {
+  display: block;
+}
+.dark-only {
+  display: none;
+}
+body[data-theme="dark"] .light-only {
+  display: none;
+}
+body[data-theme="dark"] .dark-only {
+  display: block;
+}
+@media (prefers-color-scheme: dark) {
+  body[data-theme="auto"] .light-only {
+    display: none;
+  }
+  body[data-theme="auto"] .dark-only {
+    display: block;
+  }
+}
+@media (prefers-color-scheme: light) {
+  body[data-theme="auto"] .light-only {
+    display: block;
+  }
+  body[data-theme="auto"] .dark-only {
+    display: none;
+  }
+}
+
+/* Keep type unions (e.g., "dict | None") on one line in config tables. */
+table.no-wrap-type-column td:nth-child(2) {
+  white-space: nowrap;
+}
