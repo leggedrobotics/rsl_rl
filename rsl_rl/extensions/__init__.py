@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Features for the learning algorithm."""
+"""Extensions for the learning algorithms."""
 
 from .rnd import RandomNetworkDistillation, resolve_rnd_config
 from .symmetry import resolve_symmetry_config
