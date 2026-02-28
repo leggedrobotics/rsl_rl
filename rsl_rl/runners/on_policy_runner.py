@@ -85,8 +85,9 @@ class OnPolicyRunner:
                     actions = self.alg.act(obs)
                     # Step the environment
                     obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
-                    # Check for NaNs from the environment
-                    check_nan(obs, rewards, dones)
+                    # Check for NaN values from the environment
+                    if self.cfg.get("check_for_nan", True):
+                        check_nan(obs, rewards, dones)
                     # Move to device
                     obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                     # Process the step
