@@ -69,14 +69,15 @@ Extensions
    predictor network and a fixed target network. The implementation supports selecting dedicated observation groups for
    curiosity, optional state and reward normalization, and configurable weight schedules for annealing the intrinsic
    reward contribution over the training. This extension is compatible with the :class:`~rsl_rl.algorithms.ppo.PPO`
-   algorithm.
+   algorithm. For more details, please check `this paper <https://proceedings.mlr.press/v229/schwarke23a.html>`_.
 
 Symmetry
    Symmetry augments the collected environment interaction data with mirrored data using a user-provided symmetry 
    function that defines how observations and actions are transformed. This can improve sample efficiency and promote
    symmetric behaviors for robots with structured morphology. Additionally, a mirror-loss regularization term can be
    added to the loss function to actively encourage symmetry in the policy. This extension is compatible with the
-   :class:`~rsl_rl.algorithms.ppo.PPO` algorithm.
+   :class:`~rsl_rl.algorithms.ppo.PPO` algorithm. For more details, please check
+   `this paper <https://arxiv.org/abs/2403.04359>`_.
 
 Loggers
 ^^^^^^^
