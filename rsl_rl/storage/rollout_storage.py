@@ -213,7 +213,7 @@ class RolloutStorage:
 
         for i in range(self.num_transitions_per_env):
             yield RolloutStorage.Batch(
-                observations=self.observations[i],
+                observations=self.observations[i],  # type: ignore
                 privileged_actions=self.privileged_actions[i],
                 dones=self.dones[i],
             )
@@ -312,14 +312,14 @@ class RolloutStorage:
 
                 # Yield the mini-batch
                 yield RolloutStorage.Batch(
-                    observations=padded_obs_trajectories[:, first_traj:last_traj],
+                    observations=padded_obs_trajectories[:, first_traj:last_traj],  # type: ignore
                     actions=self.actions[:, start:stop],
                     values=self.values[:, start:stop],
                     advantages=self.advantages[:, start:stop],
                     returns=self.returns[:, start:stop],
                     old_actions_log_prob=self.actions_log_prob[:, start:stop],
                     old_distribution_params=tuple(p[:, start:stop] for p in self.distribution_params),  # type: ignore
-                    hidden_states=(hidden_state_a_batch, hidden_state_c_batch),
+                    hidden_states=(hidden_state_a_batch, hidden_state_c_batch),  # type: ignore
                     masks=trajectory_masks[:, first_traj:last_traj],
                 )
 

@@ -272,6 +272,26 @@ def resolve_obs_groups(
     return obs_groups
 
 
+def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor) -> None:
+    """Raise ``ValueError`` if any environment output contains NaN."""
+    for key, tensor in obs.items():
+        if torch.isnan(tensor).any():
+            raise ValueError(
+                f"The observation group '{key}' returned by the environment contains NaN values. This usually indicates"
+                " a bug in the environment's step() or reset() function."
+            )
+    if torch.isnan(rewards).any():
+        raise ValueError(
+            "The rewards returned by the environment contain NaN values. This usually indicates a bug in the"
+            " environment's reward computation."
+        )
+    if torch.isnan(dones).any():
+        raise ValueError(
+            "The dones returned by the environment contain NaN values. This usually indicates a bug in the"
+            " environment's termination logic."
+        )
+
+
 def split_and_pad_trajectories(
     tensor: torch.Tensor | TensorDict, dones: torch.Tensor
 ) -> tuple[torch.Tensor | TensorDict, torch.Tensor]:

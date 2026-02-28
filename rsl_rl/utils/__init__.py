@@ -6,6 +6,7 @@
 """Helper functions."""
 
 from .utils import (
+    check_nan,
     get_param,
     resolve_callable,
     resolve_nn_activation,
@@ -16,6 +17,7 @@ from .utils import (
 )
 
 __all__ = [
+    "check_nan",
     "get_param",
     "resolve_callable",
     "resolve_nn_activation",

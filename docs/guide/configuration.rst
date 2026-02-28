@@ -52,11 +52,7 @@ Currently, RSL-RL implements two runner classes:
    * - ``obs_groups``
      - dict[str, list[str]]
      - required
-     - Mapping from observation sets to observation tensors coming from the environment.
-   * - ``run_name``
-     - str
-     - missing
-     - Optional run label shown in the console output.
+     - Mapping from observation sets to observation groups coming from the environment. See :ref:`here <observation-configuration>` for more details.
    * - ``save_interval``
      - int
      - required
@@ -73,6 +69,14 @@ Currently, RSL-RL implements two runner classes:
      - str
      - required for Neptune
      - Neptune project name used by the Neptune writer.
+   * - ``run_name``
+     - str
+     - missing
+     - Optional run label shown in the console output.
+   * - ``check_for_nan``
+     - bool
+     - ``True``
+     - Whether to check for NaN values coming from the environment.
    * - ``algorithm``
      - dict
      - required
