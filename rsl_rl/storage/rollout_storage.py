@@ -45,13 +45,10 @@ class RolloutStorage:
             """Value estimates at the current step (RL only)."""
 
             self.actions_log_prob: torch.Tensor | None = None
-            """Log probability of the taken action (RL only)."""
+            """Log probability of the taken actions (RL only)."""
 
-            self.action_mean: torch.Tensor | None = None
-            """Mean of the action distribution (RL only)."""
-
-            self.action_sigma: torch.Tensor | None = None
-            """Standard deviation of the action distribution (RL only)."""
+            self.distribution_params: tuple[torch.Tensor, ...] | None = None
+            """Parameters of the action distribution (RL only)."""
 
             # For distillation
             self.privileged_actions: torch.Tensor | None = None
@@ -79,8 +76,7 @@ class RolloutStorage:
             advantages: torch.Tensor | None = None,
             returns: torch.Tensor | None = None,
             old_actions_log_prob: torch.Tensor | None = None,
-            old_mu: torch.Tensor | None = None,
-            old_sigma: torch.Tensor | None = None,
+            old_distribution_params: tuple[torch.Tensor, ...] | None = None,
             hidden_states: tuple[HiddenState, HiddenState] = (None, None),
             masks: torch.Tensor | None = None,
             privileged_actions: torch.Tensor | None = None,
@@ -103,13 +99,10 @@ class RolloutStorage:
             """Batch of return targets (RL only)."""
 
             self.old_actions_log_prob: torch.Tensor | None = old_actions_log_prob
-            """Batch of log probabilities from the old policy (RL only)."""
+            """Batch of log probabilities of the old actions (RL only)."""
 
-            self.old_mu: torch.Tensor | None = old_mu
-            """Batch of action means from the old policy (RL only)."""
-
-            self.old_sigma: torch.Tensor | None = old_sigma
-            """Batch of action standard deviations from the old policy (RL only)."""
+            self.old_distribution_params: tuple[torch.Tensor, ...] | None = old_distribution_params
+            """Batch of parameters of the old action distribution (RL only)."""
 
             # For distillation
             self.privileged_actions: torch.Tensor | None = privileged_actions
@@ -131,7 +124,7 @@ class RolloutStorage:
         num_envs: int,
         num_transitions_per_env: int,
         obs: TensorDict,
-        actions_shape: tuple[int] | list[int],
+        actions_shape: tuple[int, ...] | list[int],
         device: str = "cpu",
     ) -> None:
         self.training_type = training_type
@@ -158,8 +151,7 @@ class RolloutStorage:
         if training_type == "rl":
             self.values = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
             self.actions_log_prob = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
-            self.mu = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
-            self.sigma = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
+            self.distribution_params: tuple[torch.Tensor, ...] | None = None  # Lazily initialized on first transition
             self.returns = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
             self.advantages = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
 
@@ -189,8 +181,13 @@ class RolloutStorage:
         if self.training_type == "rl":
             self.values[self.step].copy_(transition.values)  # type: ignore
             self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
-            self.mu[self.step].copy_(transition.action_mean)  # type: ignore
-            self.sigma[self.step].copy_(transition.action_sigma)  # type: ignore
+            if self.distribution_params is None:  # Initialize the distribution parameters
+                self.distribution_params = tuple(
+                    torch.zeros(self.num_transitions_per_env, *p.shape, device=self.device)
+                    for p in transition.distribution_params  # type: ignore
+                )
+            for i, p in enumerate(transition.distribution_params):  # type: ignore
+                self.distribution_params[i][self.step].copy_(p)
 
         # For RNN networks
         self._save_hidden_states(transition.hidden_states)
@@ -228,8 +225,7 @@ class RolloutStorage:
         returns = self.returns.flatten(0, 1)
         old_actions_log_prob = self.actions_log_prob.flatten(0, 1)
         advantages = self.advantages.flatten(0, 1)
-        old_mu = self.mu.flatten(0, 1)
-        old_sigma = self.sigma.flatten(0, 1)
+        old_distribution_params = tuple(p.flatten(0, 1) for p in self.distribution_params)  # type: ignore
 
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
@@ -246,8 +242,7 @@ class RolloutStorage:
                     advantages=advantages[batch_idx],
                     returns=returns[batch_idx],
                     old_actions_log_prob=old_actions_log_prob[batch_idx],
-                    old_mu=old_mu[batch_idx],
-                    old_sigma=old_sigma[batch_idx],
+                    old_distribution_params=tuple(p[batch_idx] for p in old_distribution_params),
                 )
 
     # For reinforcement learning with recurrent networks
@@ -313,8 +308,7 @@ class RolloutStorage:
                     advantages=self.advantages[:, start:stop],
                     returns=self.returns[:, start:stop],
                     old_actions_log_prob=self.actions_log_prob[:, start:stop],
-                    old_mu=self.mu[:, start:stop],
-                    old_sigma=self.sigma[:, start:stop],
+                    old_distribution_params=tuple(p[:, start:stop] for p in self.distribution_params),  # type: ignore
                     hidden_states=(hidden_state_a_batch, hidden_state_c_batch),
                     masks=trajectory_masks[:, first_traj:last_traj],
                 )
