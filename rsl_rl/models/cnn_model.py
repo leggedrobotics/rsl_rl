@@ -216,7 +216,7 @@ class _OnnxCNNModel(nn.Module):
         self.obs_channels_2d = model.obs_channels_2d
         self.obs_dim_1d = model.obs_dim
 
-    def forward(self, obs_1d: torch.Tensor, obs_2d: list[torch.Tensor]) -> torch.Tensor:
+    def forward(self, obs_1d: torch.Tensor, *obs_2d: torch.Tensor) -> torch.Tensor:
         """Run deterministic inference for ONNX export."""
         latent_1d = self.obs_normalizer(obs_1d)
 
@@ -230,7 +230,7 @@ class _OnnxCNNModel(nn.Module):
         out = self.mlp(latent)
         return self.deterministic_output(out)
 
-    def get_dummy_inputs(self) -> tuple[torch.Tensor, list[torch.Tensor]]:
+    def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:
         """Return representative dummy inputs for ONNX tracing."""
         dummy_1d = torch.zeros(1, self.obs_dim_1d)
         dummy_2d = []
@@ -238,7 +238,7 @@ class _OnnxCNNModel(nn.Module):
             h, w = self.obs_dims_2d[i]
             c = self.obs_channels_2d[i]
             dummy_2d.append(torch.zeros(1, c, h, w))
-        return (dummy_1d, dummy_2d)
+        return (dummy_1d, *dummy_2d)
 
     @property
     def input_names(self) -> list[str]:
