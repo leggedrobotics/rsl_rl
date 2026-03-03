@@ -168,7 +168,7 @@ class _TorchCNNModel(nn.Module):
         super().__init__()
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         # Convert ModuleDict to ModuleList for ordered iteration
-        self.cnns = nn.ModuleList([model.cnns[g] for g in model.obs_groups_2d])
+        self.cnns = nn.ModuleList([copy.deepcopy(model.cnns[g]) for g in model.obs_groups_2d])
         self.mlp = copy.deepcopy(model.mlp)
         if model.distribution is not None:
             self.deterministic_output = model.distribution.as_deterministic_output_module()
@@ -204,7 +204,7 @@ class _OnnxCNNModel(nn.Module):
         self.verbose = verbose
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         # Convert ModuleDict to ModuleList for ordered iteration
-        self.cnns = nn.ModuleList([model.cnns[g] for g in model.obs_groups_2d])
+        self.cnns = nn.ModuleList([copy.deepcopy(model.cnns[g]) for g in model.obs_groups_2d])
         self.mlp = copy.deepcopy(model.mlp)
         if model.distribution is not None:
             self.deterministic_output = model.distribution.as_deterministic_output_module()
