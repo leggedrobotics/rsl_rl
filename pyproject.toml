@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "rsl-rl-lib"
@@ -38,12 +38,12 @@ dependencies = [
 Homepage = "https://github.com/leggedrobotics/rsl_rl"
 Issues = "https://github.com/leggedrobotics/rsl_rl/issues"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["rsl_rl*"]
+[tool.hatch.build.targets.wheel]
+packages = ["rsl_rl"]
 
-[tool.setuptools.package-data]
-"rsl_rl" = ["config/*", "licenses/*"]
+[tool.hatch.build.targets.wheel.shared-data]
+"rsl_rl/config" = "config"
+"rsl_rl/licenses" = "licenses"
 
 [tool.pyright]
 include = ["rsl_rl"]
