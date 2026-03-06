@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
@@ -134,6 +135,10 @@ class GaussianDistribution(Distribution):
     This distribution parameterizes actions using a multivariate Gaussian with diagonal covariance. The standard
     deviation is a learnable parameter that is independent of the model input. It can be parameterized in either
     "scalar" space (directly) or "log" space.
+
+    The ``"log"`` parameterization is recommended as it guarantees positive standard deviations by construction.
+    Both parameterizations support optional ``log_std_min`` / ``log_std_max`` bounds (applied in log-space) to
+    prevent numerical instability from extremely small or large standard deviations.
     """
 
     def __init__(
@@ -141,6 +146,8 @@ class GaussianDistribution(Distribution):
         output_dim: int,
         init_std: float = 1.0,
         std_type: str = "scalar",
+        log_std_min: float = -20.0,
+        log_std_max: float = float("inf"),
     ) -> None:
         """Initialize the Gaussian distribution module.
 
@@ -148,9 +155,15 @@ class GaussianDistribution(Distribution):
             output_dim: Dimension of the action/output space.
             init_std: Initial standard deviation.
             std_type: Parameterization of the standard deviation: "scalar" or "log".
+            log_std_min: Minimum log standard deviation (clamp floor). Default: -20.0 (std ≈ 2e-9).
+            log_std_max: Maximum log standard deviation (clamp ceiling). Default: inf (no upper bound).
         """
         super().__init__(output_dim)
         self.std_type = std_type
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+        self.std_min = math.exp(log_std_min)
+        self.std_max = math.exp(log_std_max) if math.isfinite(log_std_max) else float("inf")
 
         # Learnable std parameters
         if std_type == "scalar":
@@ -170,9 +183,10 @@ class GaussianDistribution(Distribution):
         """Update the Gaussian distribution from MLP output."""
         mean = mlp_output
         if self.std_type == "scalar":
-            std = self.std_param.expand_as(mean)
+            std = self.std_param.clamp(min=self.std_min, max=self.std_max).expand_as(mean)
         elif self.std_type == "log":
-            std = torch.exp(self.log_std_param).expand_as(mean)
+            log_std = self.log_std_param.clamp(min=self.log_std_min, max=self.log_std_max)
+            std = torch.exp(log_std).expand_as(mean)
         self._distribution = Normal(mean, std)
 
     def sample(self) -> torch.Tensor:
@@ -238,6 +252,8 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
         output_dim: int,
         init_std: float = 1.0,
         std_type: str = "scalar",
+        log_std_min: float = -20.0,
+        log_std_max: float = float("inf"),
     ) -> None:
         """Initialize the heteroscedastic Gaussian distribution module.
 
@@ -245,11 +261,17 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
             output_dim: Dimension of the action/output space.
             init_std: Initial standard deviation (used to initialize MLP std head bias).
             std_type: Parameterization of the standard deviation: "scalar" or "log".
+            log_std_min: Minimum log standard deviation (clamp floor). Default: -20.0 (std ≈ 2e-9).
+            log_std_max: Maximum log standard deviation (clamp ceiling). Default: inf (no upper bound).
         """
         # Skip GaussianDistribution.__init__ to avoid creating unnecessary learnable std parameters.
         Distribution.__init__(self, output_dim)
         self.std_type = std_type
         self.init_std = init_std
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+        self.std_min = math.exp(log_std_min)
+        self.std_max = math.exp(log_std_max) if math.isfinite(log_std_max) else float("inf")
 
         if std_type not in ("scalar", "log"):
             raise ValueError(f"Unknown standard deviation type: {std_type}. Should be 'scalar' or 'log'.")
@@ -264,8 +286,10 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
         """Update the Gaussian distribution from MLP output."""
         if self.std_type == "scalar":
             mean, std = torch.unbind(mlp_output, dim=-2)
+            std = std.clamp(min=self.std_min, max=self.std_max)
         elif self.std_type == "log":
             mean, log_std = torch.unbind(mlp_output, dim=-2)
+            log_std = log_std.clamp(min=self.log_std_min, max=self.log_std_max)
             std = torch.exp(log_std)
         self._distribution = Normal(mean, std)
 
