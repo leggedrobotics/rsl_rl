@@ -12,3 +12,5 @@ __pycache__
 
 # vs code
 .vscode
+
+COLCON_IGNORE
