@@ -51,11 +51,11 @@ class WandbSummaryWriter(SummaryWriter):
 
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
         """Upload environment and training configuration to W&B."""
-        wandb.config.update({"train_cfg": train_cfg})
+        wandb.config.update({"train_cfg": train_cfg}, allow_val_change=True)
         try:
-            wandb.config.update({"env_cfg": env_cfg.to_dict()})  # type: ignore
+            wandb.config.update({"env_cfg": env_cfg.to_dict()}, allow_val_change=True)  # type: ignore
         except Exception:
-            wandb.config.update({"env_cfg": asdict(env_cfg)})  # type: ignore
+            wandb.config.update({"env_cfg": asdict(env_cfg)}, allow_val_change=True)  # type: ignore
 
     def add_scalar(
         self,
