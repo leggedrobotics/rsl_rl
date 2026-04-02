@@ -77,6 +77,12 @@ Currently, RSL-RL implements two runner classes:
      - bool
      - ``True``
      - Whether to check for NaN values coming from the environment.
+   * - ``torch_compile_mode``
+     - str | None
+     - ``"default"``
+     - ``torch.compile`` mode for the actor model. Set to ``None`` to disable.
+       Valid values: ``"default"``, ``"reduce-overhead"``, ``"max-autotune"``.
+       Expert users can fine-tune via ``torch._inductor.config``.
    * - ``algorithm``
      - dict
      - required

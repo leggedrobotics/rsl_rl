@@ -39,6 +39,15 @@ class OnPolicyRunner:
         alg_class: type[PPO] = resolve_callable(self.cfg["algorithm"]["class_name"])  # type: ignore
         self.alg = alg_class.construct_algorithm(obs, self.env, self.cfg, self.device)
 
+        # Compile the actor model if requested
+        torch_compile_mode = self.cfg.get("torch_compile_mode", "default")
+        if torch_compile_mode is not None:
+            print(f"[OnPolicyRunner] Compiling actor with torch.compile(mode='{torch_compile_mode}')")
+            self._uncompiled_actor = self.alg.actor
+            self.alg.actor = torch.compile(self.alg.actor, mode=torch_compile_mode)
+        else:
+            self._uncompiled_actor = None
+
         # Create the logger
         self.logger = Logger(
             log_dir=log_dir,
@@ -124,6 +133,9 @@ class OnPolicyRunner:
                 rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"]["rnd_cfg"] else None,
             )
 
+            if it == start_it and self._uncompiled_actor is not None:
+                print("[OnPolicyRunner] First iteration included torch.compile overhead; subsequent iterations will be faster.")
+
             # Save model
             if self.logger.writer is not None and it % self.cfg["save_interval"] == 0:
                 self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore
@@ -163,11 +175,13 @@ class OnPolicyRunner:
     def get_inference_policy(self, device: str | None = None) -> MLPModel:
         """Return the policy on the requested device for inference."""
         self.alg.eval_mode()  # Switch to evaluation mode (e.g. for dropout)
-        return self.alg.get_policy().to(device)  # type: ignore
+        policy = self._uncompiled_actor if self._uncompiled_actor is not None else self.alg.get_policy()
+        return policy.to(device)  # type: ignore
 
     def export_policy_to_jit(self, path: str, filename: str = "policy.pt") -> None:
         """Export the model to a Torch JIT file."""
-        jit_model = self.alg.get_policy().as_jit()
+        policy = self._uncompiled_actor if self._uncompiled_actor is not None else self.alg.get_policy()
+        jit_model = policy.as_jit()
         jit_model.to("cpu")
 
         if not os.path.exists(path):
@@ -180,7 +194,8 @@ class OnPolicyRunner:
 
     def export_policy_to_onnx(self, path: str, filename: str = "policy.onnx", verbose: bool = False) -> None:
         """Export the model into an ONNX file."""
-        onnx_model = self.alg.get_policy().as_onnx(verbose=verbose)
+        policy = self._uncompiled_actor if self._uncompiled_actor is not None else self.alg.get_policy()
+        onnx_model = policy.as_onnx(verbose=verbose)
         onnx_model.to("cpu")
         onnx_model.eval()
 
