@@ -204,3 +204,36 @@ def build_ppo_train_cfg(num_steps_per_env: int, run_name: str | None = None) -> 
         },
     }
     return cfg
+
+
+def build_sac_train_cfg(num_steps_per_env: int, run_name: str | None = None) -> dict:
+    """Create a compact SAC training config suitable for Gymnasium examples."""
+    cfg = {
+        "run_name": run_name,
+        "num_steps_per_env": num_steps_per_env,
+        "save_interval": 1000,
+        "obs_groups": {"actor": ["policy"], "critic": ["policy"]},
+        "algorithm": {
+            "class_name": "SAC",
+            "gamma": 0.99,
+            "tau": 0.005,
+            "learning_rate": 3e-4,
+            "auto_entropy_tuning": True,
+            "replay_buffer_size": 100000,
+            "batch_size": 256,
+            "gradient_steps": 1,
+            "learning_starts": 1000,
+            "optimizer": "adam",
+        },
+        "actor": {
+            "class_name": "MLPModel",
+            "hidden_dims": [256, 256],
+            "activation": "elu",
+        },
+        "critic": {
+            "class_name": "MLPModel",
+            "hidden_dims": [256, 256],
+            "activation": "elu",
+        },
+    }
+    return cfg

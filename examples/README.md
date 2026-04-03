@@ -23,6 +23,9 @@ pip install gymnasium[classic-control]
 - `train_ppo_gymnasium.py`
   - PPO on a Gymnasium environment (default: `Pendulum-v1`).
 
+- `train_sac_gymnasium.py`
+  - SAC on a Gymnasium environment (default: `Pendulum-v1`).
+
 - `train_dagger_ppo_gymnasium.py`
   - DaggerPPO with a PPO teacher.
   - If `--teacher-checkpoint` is not provided, a teacher is pre-trained automatically.
@@ -43,6 +46,12 @@ Run PPO on MountainCarContinuous:
 
 ```bash
 python examples/train_ppo_gymnasium.py --env-id MountainCarContinuous-v0 --device cpu
+```
+
+Run SAC on Pendulum:
+
+```bash
+python examples/train_sac_gymnasium.py --env-id Pendulum-v1 --device cpu
 ```
 
 Run DaggerPPO (with auto teacher pre-training):
