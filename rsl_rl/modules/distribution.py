@@ -297,6 +297,116 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
             torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], init_std_log)  # type: ignore
 
 
+class SquashedGaussianDistribution(Distribution):
+    """Tanh-squashed Gaussian distribution for bounded continuous actions."""
+
+    def __init__(
+        self,
+        output_dim: int,
+        init_std: float = 1.0,
+        std_type: str = "log",
+        min_log_std: float = -20.0,
+        max_log_std: float = 2.0,
+    ) -> None:
+        super().__init__(output_dim)
+        self.std_type = std_type
+        self.init_std = init_std
+        self.min_log_std = min_log_std
+        self.max_log_std = max_log_std
+        if std_type not in ("scalar", "log"):
+            raise ValueError(f"Unknown standard deviation type: {std_type}. Should be 'scalar' or 'log'.")
+
+        self._distribution: Normal | None = None
+        self._mean: torch.Tensor | None = None
+        self._log_std: torch.Tensor | None = None
+        self._std: torch.Tensor | None = None
+        Normal.set_default_validate_args(False)
+
+    def update(self, mlp_output: torch.Tensor) -> None:
+        if self.std_type == "scalar":
+            mean, std = torch.unbind(mlp_output, dim=-2)
+            std = torch.clamp(std, min=1e-6)
+            log_std = torch.log(std)
+        else:
+            mean, log_std = torch.unbind(mlp_output, dim=-2)
+            log_std = torch.clamp(log_std, self.min_log_std, self.max_log_std)
+            std = torch.exp(log_std)
+
+        self._mean = mean
+        self._log_std = log_std
+        self._std = std
+        self._distribution = Normal(mean, std)
+
+    def sample(self) -> torch.Tensor:
+        pre_tanh = self._distribution.sample()  # type: ignore
+        return torch.tanh(pre_tanh)
+
+    def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        mean = mlp_output[..., 0, :]
+        return torch.tanh(mean)
+
+    def as_deterministic_output_module(self) -> nn.Module:
+        return _TanhMeanDeterministicOutput()
+
+    @property
+    def input_dim(self) -> list[int]:
+        return [2, self.output_dim]
+
+    @property
+    def mean(self) -> torch.Tensor:
+        return torch.tanh(self._mean)  # type: ignore[arg-type]
+
+    @property
+    def std(self) -> torch.Tensor:
+        return self._std  # type: ignore[return-value]
+
+    @property
+    def entropy(self) -> torch.Tensor:
+        return self._distribution.entropy().sum(dim=-1)  # type: ignore[union-attr]
+
+    @property
+    def params(self) -> tuple[torch.Tensor, ...]:
+        return (self._mean, self._log_std)  # type: ignore[return-value]
+
+    def sample_with_log_prob(self, reparameterize: bool = True) -> tuple[torch.Tensor, torch.Tensor]:
+        if reparameterize:
+            pre_tanh = self._distribution.rsample()  # type: ignore[union-attr]
+        else:
+            pre_tanh = self._distribution.sample()  # type: ignore[union-attr]
+        actions = torch.tanh(pre_tanh)
+        log_prob = self._distribution.log_prob(pre_tanh)  # type: ignore[union-attr]
+        log_prob -= torch.log(1.0 - actions.pow(2) + 1e-6)
+        return actions, log_prob.sum(dim=-1, keepdim=True)
+
+    def log_prob(self, outputs: torch.Tensor) -> torch.Tensor:
+        outputs = torch.clamp(outputs, -1.0 + 1e-6, 1.0 - 1e-6)
+        pre_tanh = self._atanh(outputs)
+        log_prob = self._distribution.log_prob(pre_tanh)  # type: ignore[union-attr]
+        log_prob -= torch.log(1.0 - outputs.pow(2) + 1e-6)
+        return log_prob.sum(dim=-1)
+
+    def kl_divergence(self, old_params: tuple[torch.Tensor, ...], new_params: tuple[torch.Tensor, ...]) -> torch.Tensor:
+        old_mean, old_log_std = old_params
+        new_mean, new_log_std = new_params
+        old_std = torch.exp(old_log_std)
+        new_std = torch.exp(new_log_std)
+        old_dist = Normal(old_mean, old_std)
+        new_dist = Normal(new_mean, new_std)
+        return torch.distributions.kl_divergence(old_dist, new_dist).sum(dim=-1)
+
+    def init_mlp_weights(self, mlp: nn.Module) -> None:
+        torch.nn.init.zeros_(mlp[-2].weight[self.output_dim :])  # type: ignore
+        if self.std_type == "scalar":
+            torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], self.init_std)  # type: ignore
+        elif self.std_type == "log":
+            init_std_log = torch.log(torch.tensor(self.init_std + 1e-7))
+            torch.nn.init.constant_(mlp[-2].bias[self.output_dim :], init_std_log)  # type: ignore
+
+    @staticmethod
+    def _atanh(x: torch.Tensor) -> torch.Tensor:
+        return 0.5 * (torch.log1p(x) - torch.log1p(-x))
+
+
 class _IdentityDeterministicOutput(nn.Module):
     """Exportable module that returns the MLP output as is."""
 
@@ -309,3 +419,10 @@ class _MeanSliceDeterministicOutput(nn.Module):
 
     def forward(self, mlp_output: torch.Tensor) -> torch.Tensor:
         return mlp_output[..., 0, :]
+
+
+class _TanhMeanDeterministicOutput(nn.Module):
+    """Exportable module that applies tanh to the mean slice of MLP outputs."""
+
+    def forward(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        return torch.tanh(mlp_output[..., 0, :])

@@ -8,124 +8,13 @@ from __future__ import annotations
 
 import copy
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from tensordict import TensorDict
 
 from rsl_rl.env import VecEnv
-from rsl_rl.modules import MLP
+from rsl_rl.models import MLPModel
+from rsl_rl.storage import ReplayBuffer
 from rsl_rl.utils import resolve_callable, resolve_obs_groups, resolve_optimizer
-
-
-class _ReplayBuffer:
-    """Simple replay buffer for vectorized environment transitions."""
-
-    def __init__(
-        self,
-        capacity: int,
-        actor_obs_dim: int,
-        critic_obs_dim: int,
-        action_dim: int,
-        device: str,
-    ) -> None:
-        self.capacity = capacity
-        self.device = device
-        self.ptr = 0
-        self.size = 0
-
-        self.actor_obs = torch.zeros(capacity, actor_obs_dim, device=device)
-        self.critic_obs = torch.zeros(capacity, critic_obs_dim, device=device)
-        self.next_actor_obs = torch.zeros(capacity, actor_obs_dim, device=device)
-        self.next_critic_obs = torch.zeros(capacity, critic_obs_dim, device=device)
-        self.actions = torch.zeros(capacity, action_dim, device=device)
-        self.rewards = torch.zeros(capacity, 1, device=device)
-        self.dones = torch.zeros(capacity, 1, device=device)
-
-    def add(
-        self,
-        actor_obs: torch.Tensor,
-        critic_obs: torch.Tensor,
-        actions: torch.Tensor,
-        rewards: torch.Tensor,
-        dones: torch.Tensor,
-        next_actor_obs: torch.Tensor,
-        next_critic_obs: torch.Tensor,
-    ) -> None:
-        batch_size = actor_obs.shape[0]
-        for i in range(batch_size):
-            idx = self.ptr
-            self.actor_obs[idx] = actor_obs[i]
-            self.critic_obs[idx] = critic_obs[i]
-            self.actions[idx] = actions[i]
-            self.rewards[idx] = rewards[i]
-            self.dones[idx] = dones[i]
-            self.next_actor_obs[idx] = next_actor_obs[i]
-            self.next_critic_obs[idx] = next_critic_obs[i]
-
-            self.ptr = (self.ptr + 1) % self.capacity
-            self.size = min(self.size + 1, self.capacity)
-
-    def sample(self, batch_size: int) -> tuple[torch.Tensor, ...]:
-        idx = torch.randint(0, self.size, (batch_size,), device=self.device)
-        return (
-            self.actor_obs[idx],
-            self.critic_obs[idx],
-            self.actions[idx],
-            self.rewards[idx],
-            self.dones[idx],
-            self.next_actor_obs[idx],
-            self.next_critic_obs[idx],
-        )
-
-
-class _SACActor(nn.Module):
-    """Gaussian actor with tanh squashing."""
-
-    def __init__(
-        self,
-        obs_dim: int,
-        action_dim: int,
-        hidden_dims: tuple[int, ...] | list[int],
-        activation: str,
-    ) -> None:
-        super().__init__()
-        self.net = MLP(obs_dim, [2, action_dim], hidden_dims, activation)
-
-    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        mean, log_std = torch.unbind(self.net(obs), dim=-2)
-        log_std = torch.clamp(log_std, -20.0, 2.0)
-        return mean, log_std
-
-
-class _SACCritic(nn.Module):
-    """Q-network for state-action values."""
-
-    def __init__(
-        self,
-        obs_dim: int,
-        action_dim: int,
-        hidden_dims: tuple[int, ...] | list[int],
-        activation: str,
-    ) -> None:
-        super().__init__()
-        self.net = MLP(obs_dim + action_dim, 1, hidden_dims, activation)
-
-    def forward(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        return self.net(torch.cat((obs, actions), dim=-1))
-
-
-class _SACInferencePolicy(nn.Module):
-    """Inference wrapper for deterministic SAC actions."""
-
-    def __init__(self, algorithm: SAC) -> None:
-        super().__init__()
-        self.algorithm = algorithm
-
-    def forward(self, obs: TensorDict) -> torch.Tensor:
-        with torch.no_grad():
-            actor_obs = self.algorithm.cat_obs(obs, self.algorithm.actor_obs_groups)
-            mean, _ = self.algorithm.actor(actor_obs)
-            return torch.tanh(mean)
 
 
 class SAC:
@@ -154,6 +43,9 @@ class SAC:
         learning_starts: int = 1_000,
         optimizer: str = "adam",
         device: str = "cpu",
+        actor: MLPModel | None = None,
+        critic_1: MLPModel | None = None,
+        critic_2: MLPModel | None = None,
         **kwargs: dict,
     ) -> None:
         del kwargs
@@ -170,9 +62,24 @@ class SAC:
         self.learning_starts = learning_starts
         self.learning_rate = learning_rate
 
-        self.actor = _SACActor(actor_obs_dim, action_dim, actor_hidden_dims, actor_activation).to(device)
-        self.critic_1 = _SACCritic(critic_obs_dim, action_dim, critic_hidden_dims, critic_activation).to(device)
-        self.critic_2 = _SACCritic(critic_obs_dim, action_dim, critic_hidden_dims, critic_activation).to(device)
+        if actor is None or critic_1 is None or critic_2 is None:
+            actor, critic_1, critic_2 = self._build_legacy_models(
+                actor_obs_dim=actor_obs_dim,
+                critic_obs_dim=critic_obs_dim,
+                action_dim=action_dim,
+                actor_hidden_dims=actor_hidden_dims,
+                critic_hidden_dims=critic_hidden_dims,
+                actor_activation=actor_activation,
+                critic_activation=critic_activation,
+            )
+
+        self.actor = actor.to(device)
+        self.critic_1 = critic_1.to(device)
+        self.critic_2 = critic_2.to(device)
+
+        if self.actor.distribution is None:
+            raise ValueError("SAC actor requires a stochastic output distribution.")
+
         self.target_critic_1 = copy.deepcopy(self.critic_1).to(device)
         self.target_critic_2 = copy.deepcopy(self.critic_2).to(device)
 
@@ -198,7 +105,7 @@ class SAC:
             self.alpha_optimizer = None
             self._alpha = torch.tensor([alpha], device=device)
 
-        self.replay_buffer = _ReplayBuffer(
+        self.replay_buffer = ReplayBuffer(
             capacity=replay_buffer_size,
             actor_obs_dim=actor_obs_dim,
             critic_obs_dim=critic_obs_dim,
@@ -220,19 +127,32 @@ class SAC:
     def cat_obs(self, obs: TensorDict, groups: list[str]) -> torch.Tensor:
         return torch.cat([obs[g] for g in groups], dim=-1)
 
-    def _sample_action_and_log_prob(self, actor_obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        mean, log_std = self.actor(actor_obs)
-        std = log_std.exp()
-        self._last_action_std = std.detach().mean(dim=0)
+    def _build_actor_mlp_output(self, actor_obs: torch.Tensor) -> torch.Tensor:
+        latent = self.actor.obs_normalizer(actor_obs)
+        return self.actor.mlp(latent)
 
-        normal = torch.distributions.Normal(mean, std)
-        pre_tanh_action = normal.rsample()
-        action = torch.tanh(pre_tanh_action)
+    def _critic_forward(self, critic: MLPModel, critic_obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        critic_input = torch.cat((critic_obs, actions), dim=-1)
+        critic_input = critic.obs_normalizer(critic_input)
+        return critic.mlp(critic_input)
 
-        log_prob = normal.log_prob(pre_tanh_action)
-        log_prob -= torch.log(torch.ones_like(action) - action.pow(2) + 1e-6)
-        log_prob = log_prob.sum(dim=-1, keepdim=True)
-        return action, log_prob
+    def _sample_action_and_log_prob(
+        self, actor_obs: torch.Tensor, reparameterize: bool
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        mlp_output = self._build_actor_mlp_output(actor_obs)
+        self.actor.distribution.update(mlp_output)
+        self._last_action_std = self.actor.distribution.std.detach().mean(dim=0)
+
+        if hasattr(self.actor.distribution, "sample_with_log_prob"):
+            actions, log_prob = self.actor.distribution.sample_with_log_prob(reparameterize=reparameterize)  # type: ignore[attr-defined]
+            return actions, log_prob
+
+        if reparameterize and hasattr(self.actor.distribution, "rsample"):
+            actions = self.actor.distribution.rsample()  # type: ignore[attr-defined]
+        else:
+            actions = self.actor.distribution.sample()
+        log_prob = self.actor.distribution.log_prob(actions).unsqueeze(-1)
+        return actions, log_prob
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         actor_obs = self.cat_obs(obs, self.actor_obs_groups)
@@ -243,7 +163,7 @@ class SAC:
                 actions = torch.empty(actor_obs.shape[0], self.action_dim, device=self.device).uniform_(-1.0, 1.0)
                 self._last_action_std = torch.ones(self.action_dim, device=self.device)
             else:
-                actions, _ = self._sample_action_and_log_prob(actor_obs)
+                actions, _ = self._sample_action_and_log_prob(actor_obs, reparameterize=False)
 
         self._last_actor_obs = actor_obs.detach()
         self._last_critic_obs = critic_obs.detach()
@@ -263,6 +183,16 @@ class SAC:
 
         next_actor_obs = self.cat_obs(obs, self.actor_obs_groups).detach()
         next_critic_obs = self.cat_obs(obs, self.critic_obs_groups).detach()
+
+        # Keep running normalizer statistics in sync with streamed environment data.
+        if self.actor.obs_normalization:
+            self.actor.obs_normalizer.update(next_actor_obs)  # type: ignore[attr-defined]
+        if self.critic_1.obs_normalization:
+            critic_input_1 = torch.cat((self._last_critic_obs, self._last_actions), dim=-1)
+            self.critic_1.obs_normalizer.update(critic_input_1)  # type: ignore[attr-defined]
+        if self.critic_2.obs_normalization:
+            critic_input_2 = torch.cat((self._last_critic_obs, self._last_actions), dim=-1)
+            self.critic_2.obs_normalizer.update(critic_input_2)  # type: ignore[attr-defined]
 
         rewards = rewards.view(-1, 1).detach()
         dones = dones.view(-1, 1).detach()
@@ -296,23 +226,23 @@ class SAC:
             )
 
             with torch.no_grad():
-                next_actions, next_log_prob = self._sample_action_and_log_prob(next_actor_obs)
-                next_q1 = self.target_critic_1(next_critic_obs, next_actions)
-                next_q2 = self.target_critic_2(next_critic_obs, next_actions)
+                next_actions, next_log_prob = self._sample_action_and_log_prob(next_actor_obs, reparameterize=False)
+                next_q1 = self._critic_forward(self.target_critic_1, next_critic_obs, next_actions)
+                next_q2 = self._critic_forward(self.target_critic_2, next_critic_obs, next_actions)
                 next_q = torch.min(next_q1, next_q2) - self.alpha.detach() * next_log_prob
                 target_q = rewards + (torch.ones_like(dones) - dones) * self.gamma * next_q
 
-            current_q1 = self.critic_1(critic_obs, actions)
-            current_q2 = self.critic_2(critic_obs, actions)
+            current_q1 = self._critic_forward(self.critic_1, critic_obs, actions)
+            current_q2 = self._critic_forward(self.critic_2, critic_obs, actions)
             critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
 
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
             self.critic_optimizer.step()
 
-            new_actions, log_prob = self._sample_action_and_log_prob(actor_obs)
-            q1_pi = self.critic_1(critic_obs, new_actions)
-            q2_pi = self.critic_2(critic_obs, new_actions)
+            new_actions, log_prob = self._sample_action_and_log_prob(actor_obs, reparameterize=True)
+            q1_pi = self._critic_forward(self.critic_1, critic_obs, new_actions)
+            q2_pi = self._critic_forward(self.critic_2, critic_obs, new_actions)
             q_pi = torch.min(q1_pi, q2_pi)
             actor_loss = (self.alpha.detach() * log_prob - q_pi).mean()
 
@@ -408,8 +338,9 @@ class SAC:
 
         return load_cfg.get("iteration", False)
 
-    def get_policy(self) -> nn.Module:
-        return _SACInferencePolicy(self)
+    def get_policy(self) -> MLPModel:
+        """Get the policy model."""
+        return self.actor
 
     def get_action_std(self) -> torch.Tensor:
         return self._last_action_std
@@ -431,15 +362,40 @@ class SAC:
         if critic_class_name not in ("MLPModel", "rsl_rl.models:MLPModel", "rsl_rl.models.mlp_model:MLPModel"):
             raise ValueError("SAC currently supports only MLP-style critic configuration.")
 
+        actor_cfg = dict(actor_cfg)
+        critic_cfg = dict(critic_cfg)
+        actor_cfg.pop("class_name", None)
+        critic_cfg.pop("class_name", None)
+
+        # Use a tanh-squashed Gaussian policy by default for SAC.
+        actor_cfg.setdefault(
+            "distribution_cfg",
+            {
+                "class_name": "SquashedGaussianDistribution",
+                "init_std": 1.0,
+                "std_type": "log",
+            },
+        )
+
         actor_obs_groups = cfg["obs_groups"]["actor"]
         critic_obs_groups = cfg["obs_groups"]["critic"]
         actor_obs_dim = sum(obs[group].shape[-1] for group in actor_obs_groups)
         critic_obs_dim = sum(obs[group].shape[-1] for group in critic_obs_groups)
 
-        actor_hidden_dims = actor_cfg.get("hidden_dims", [256, 256])
-        critic_hidden_dims = critic_cfg.get("hidden_dims", [256, 256])
-        actor_activation = actor_cfg.get("activation", "elu")
-        critic_activation = critic_cfg.get("activation", "elu")
+        actor_class: type[MLPModel] = resolve_callable(actor_class_name)  # type: ignore
+        critic_class: type[MLPModel] = resolve_callable(critic_class_name)  # type: ignore
+
+        actor = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **actor_cfg)
+
+        # Critic input is [critic_obs, actions]. Build a small template obs for model construction.
+        critic_obs_template = TensorDict(
+            {"critic_input": torch.zeros(obs.batch_size[0], critic_obs_dim + env.num_actions, device=device)},
+            batch_size=obs.batch_size,
+            device=device,
+        )
+        critic_obs_groups_cfg = {"critic": ["critic_input"]}
+        critic_1 = critic_class(critic_obs_template, critic_obs_groups_cfg, "critic", 1, **critic_cfg)
+        critic_2 = critic_class(critic_obs_template, critic_obs_groups_cfg, "critic", 1, **critic_cfg)
 
         alg: SAC = alg_class(
             actor_obs_groups=actor_obs_groups,
@@ -447,11 +403,57 @@ class SAC:
             actor_obs_dim=actor_obs_dim,
             critic_obs_dim=critic_obs_dim,
             action_dim=env.num_actions,
-            actor_hidden_dims=actor_hidden_dims,
-            critic_hidden_dims=critic_hidden_dims,
-            actor_activation=actor_activation,
-            critic_activation=critic_activation,
+            actor=actor,
+            critic_1=critic_1,
+            critic_2=critic_2,
             device=device,
             **cfg["algorithm"],
         )
         return alg
+
+    @staticmethod
+    def _build_legacy_models(
+        actor_obs_dim: int,
+        critic_obs_dim: int,
+        action_dim: int,
+        actor_hidden_dims: tuple[int, ...] | list[int],
+        critic_hidden_dims: tuple[int, ...] | list[int],
+        actor_activation: str,
+        critic_activation: str,
+    ) -> tuple[MLPModel, MLPModel, MLPModel]:
+        """Build default MLP models for backward-compatible SAC construction."""
+        actor_obs = TensorDict({"actor_obs": torch.zeros(1, actor_obs_dim)}, batch_size=[1])
+        actor_groups = {"actor": ["actor_obs"]}
+        actor = MLPModel(
+            actor_obs,
+            actor_groups,
+            "actor",
+            action_dim,
+            hidden_dims=actor_hidden_dims,
+            activation=actor_activation,
+            distribution_cfg={
+                "class_name": "SquashedGaussianDistribution",
+                "init_std": 1.0,
+                "std_type": "log",
+            },
+        )
+
+        critic_obs = TensorDict({"critic_input": torch.zeros(1, critic_obs_dim + action_dim)}, batch_size=[1])
+        critic_groups = {"critic": ["critic_input"]}
+        critic_1 = MLPModel(
+            critic_obs,
+            critic_groups,
+            "critic",
+            1,
+            hidden_dims=critic_hidden_dims,
+            activation=critic_activation,
+        )
+        critic_2 = MLPModel(
+            critic_obs,
+            critic_groups,
+            "critic",
+            1,
+            hidden_dims=critic_hidden_dims,
+            activation=critic_activation,
+        )
+        return actor, critic_1, critic_2
