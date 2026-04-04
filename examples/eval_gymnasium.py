@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -40,9 +41,15 @@ def resolve_checkpoint(cfg: DictConfig) -> str:
     if log_dir is None:
         raise ValueError("No checkpoint specified and train.log_dir is null, cannot auto-discover checkpoint.")
 
-    run_dir = Path(str(log_dir)).expanduser() / str(cfg.algorithm.run_name)
+    logs_root = Path(str(log_dir)).expanduser()
+    run_dir = logs_root / str(cfg.algorithm.run_name)
     if not run_dir.exists():
-        raise FileNotFoundError(f"Run directory does not exist: {run_dir}")
+        # Fallback to timestamped run directories, e.g. ppo_20260404_070000
+        pattern = f"{cfg.algorithm.run_name}_*"
+        matched_dirs = [p for p in logs_root.glob(pattern) if p.is_dir()]
+        if not matched_dirs:
+            raise FileNotFoundError(f"Run directory does not exist: {run_dir}")
+        run_dir = max(matched_dirs, key=lambda p: p.stat().st_mtime)
 
     candidates = list(run_dir.glob("model_*.pt"))
     if not candidates:
@@ -57,6 +64,47 @@ def resolve_checkpoint(cfg: DictConfig) -> str:
     return str(best)
 
 
+def extract_checkpoint_iter(checkpoint_path: str) -> str:
+    """Extract iteration suffix from checkpoint names like model_4000.pt."""
+    stem = Path(checkpoint_path).stem
+    if stem.startswith("model_"):
+        suffix = stem.split("model_", maxsplit=1)[-1]
+        if suffix.isdigit():
+            return suffix
+    return "unknown"
+
+
+def resolve_render_output_paths(cfg: DictConfig, checkpoint_path: str) -> tuple[Path, Path]:
+    """Resolve default output paths under run_dir/{rendering,exported}/ckpt_<iter>."""
+    checkpoint_iter = extract_checkpoint_iter(checkpoint_path)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    checkpoint = Path(checkpoint_path).expanduser()
+    run_dir = checkpoint.parent
+    checkpoint_stem = checkpoint.stem
+
+    rendering_root = run_dir / str(cfg.eval.rendering_subdir) / f"ckpt_{checkpoint_iter}"
+    exported_root = run_dir / str(cfg.eval.exported_subdir) / f"ckpt_{checkpoint_iter}"
+    rendering_root.mkdir(parents=True, exist_ok=True)
+    exported_root.mkdir(parents=True, exist_ok=True)
+
+    video_cfg = cfg.eval.video_path
+    if video_cfg is None:
+        video_path = rendering_root / f"{timestamp}.mp4"
+    else:
+        video_path = Path(str(video_cfg)).expanduser()
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+
+    onnx_cfg = cfg.eval.onnx_path
+    if onnx_cfg is None:
+        onnx_path = exported_root / "policy.onnx"
+    else:
+        onnx_path = Path(str(onnx_cfg)).expanduser()
+        onnx_path.parent.mkdir(parents=True, exist_ok=True)
+
+    return video_path, onnx_path
+
+
 def build_runner(cfg: DictConfig, env: GymnasiumVecEnv) -> OnPolicyRunner | OffPolicyRunner:
     """Construct the right runner for evaluation based on algorithm selection."""
     train_cfg = build_train_cfg(cfg)
@@ -68,6 +116,7 @@ def build_runner(cfg: DictConfig, env: GymnasiumVecEnv) -> OnPolicyRunner | OffP
 def evaluate(cfg: DictConfig) -> None:
     """Evaluate a trained policy on vectorized Gymnasium environments."""
     save_video = bool(cfg.eval.save_video)
+    export_onnx = bool(cfg.eval.export_onnx)
     render_enabled = bool(cfg.eval.render) or save_video
     render_mode = "rgb_array" if save_video else (str(cfg.eval.render_mode) if render_enabled else None)
 
@@ -85,10 +134,17 @@ def evaluate(cfg: DictConfig) -> None:
         render_mode=render_mode,
     )
     checkpoint = resolve_checkpoint(cfg)
+    video_path, onnx_path = resolve_render_output_paths(cfg, checkpoint)
 
     runner = build_runner(cfg, env)
     runner.load(checkpoint, load_cfg=None, strict=True, map_location=cfg.device)
     policy = runner.get_inference_policy(device=cfg.device)
+
+    if export_onnx:
+        onnx_sidecar_path = Path(f"{onnx_path}.data")
+        if onnx_sidecar_path.exists():
+            onnx_sidecar_path.unlink()
+        runner.export_policy_to_onnx(path=str(onnx_path.parent), filename=onnx_path.name)
 
     target_episodes = int(cfg.eval.num_episodes)
     max_steps = int(cfg.eval.max_steps_per_episode)
@@ -96,15 +152,12 @@ def evaluate(cfg: DictConfig) -> None:
     print_episode_details = bool(cfg.eval.print_episode_details)
 
     video_writer = None
-    video_path: Path | None = None
     if save_video:
         try:
             import imageio.v2 as imageio
         except ImportError as exc:
             raise ImportError("imageio is required for eval.save_video=true. Install with `pip install imageio`.") from exc
 
-        video_path = Path(str(cfg.eval.video_path)).expanduser()
-        video_path.parent.mkdir(parents=True, exist_ok=True)
         video_writer = imageio.get_writer(str(video_path), fps=int(cfg.eval.video_fps))
         first_frame = env.render()
         if first_frame is not None:
@@ -169,7 +222,9 @@ def evaluate(cfg: DictConfig) -> None:
     print(f"Min Return:  {returns_t.min().item():.4f}")
     print(f"Max Return:  {returns_t.max().item():.4f}")
     print(f"Mean Length: {lengths_t.mean().item():.2f}")
-    if video_path is not None:
+    if export_onnx:
+        print(f"ONNX: {onnx_path}")
+    if save_video:
         print(f"Video: {video_path}")
 
 

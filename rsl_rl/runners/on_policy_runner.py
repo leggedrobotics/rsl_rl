@@ -195,6 +195,7 @@ class OnPolicyRunner:
             save_path,
             export_params=True,
             opset_version=18,
+            external_data=False,
             verbose=verbose,
             input_names=onnx_model.input_names,  # type: ignore
             output_names=onnx_model.output_names,  # type: ignore

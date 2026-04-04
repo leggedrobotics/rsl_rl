@@ -136,5 +136,27 @@ class OffPolicyRunner:
         self.alg.eval_mode()
         return self.alg.get_policy().to(device)
 
+    def export_policy_to_onnx(self, path: str, filename: str = "policy.onnx", verbose: bool = False) -> None:
+        """Export the policy into an ONNX file."""
+        onnx_model = self.alg.get_policy().as_onnx(verbose=verbose)
+        onnx_model.to("cpu")
+        onnx_model.eval()
+
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+        save_path = os.path.join(path, filename)
+
+        torch.onnx.export(
+            onnx_model,
+            onnx_model.get_dummy_inputs(),  # type: ignore
+            save_path,
+            export_params=True,
+            opset_version=18,
+            external_data=False,
+            verbose=verbose,
+            input_names=onnx_model.input_names,  # type: ignore
+            output_names=onnx_model.output_names,  # type: ignore
+        )
+
     def add_git_repo_to_log(self, repo_file_path: str) -> None:
         self.logger.git_status_repos.append(repo_file_path)

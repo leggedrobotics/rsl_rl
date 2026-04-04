@@ -10,9 +10,20 @@ env:
   num_envs: 16
 
 train:
+  base_run_name: ${algorithm.run_name}
+  run_name: ${train.base_run_name}_${now:%Y%m%d_%H%M%S}
   learning_iterations: 10000
   log_dir: ./logs
   logger: tensorboard
 
 teacher:
   checkpoint: null
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ${train.log_dir}/${train.run_name}/hydra
+  sweep:
+    dir: ${train.log_dir}/${train.run_name}/hydra_multirun
+    subdir: ${hydra.job.num}

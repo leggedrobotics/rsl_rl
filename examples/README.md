@@ -87,6 +87,8 @@ python examples/train_gymnasium.py algorithm=amp_ppo env.id=Pendulum-v1 device=c
 ## Common Overrides
 
 - `env.num_envs=16`: parallel environments
+- `train.base_run_name=ppo`: base name for run folders
+- `train.run_name=${train.base_run_name}_${now:%Y%m%d_%H%M%S}`: default run folder naming (timestamped)
 - `algorithm.train_cfg.num_steps_per_env=64`: rollout steps per update
 - `train.learning_iterations=60`: number of training iterations
 - `algorithm.teacher.learning_iterations=40`: teacher pre-training iterations (DaggerPPO / Distillation)
@@ -98,6 +100,7 @@ python examples/train_gymnasium.py algorithm=amp_ppo env.id=Pendulum-v1 device=c
 
 Most training hyperparameters are now in `algorithm.train_cfg` (and `algorithm.teacher.train_cfg` when applicable).
 You can create a new config file and override via Hydra defaults, or override ad-hoc from CLI.
+Hydra run artifacts now default directly under the active run directory (for example `./logs/ppo_20260404_070000/hydra/` containing `.hydra/` and `train_gymnasium.log`) instead of project-root `outputs/...`.
 
 ## Evaluation Overrides
 
@@ -110,5 +113,9 @@ You can create a new config file and override via Hydra defaults, or override ad
 - `eval.render=true`: enable Gymnasium rendering (requires `env.num_envs=1`)
 - `eval.render_mode=human`: Gymnasium render mode passed to environment creation
 - `eval.save_video=true`: save an MP4 rollout video (requires `env.num_envs=1`)
-- `eval.video_path=./videos/eval.mp4`: output path for saved evaluation video
+- `eval.rendering_subdir=rendering`: output subdirectory under checkpoint run dir
+- `eval.exported_subdir=exported`: ONNX subdirectory under checkpoint run dir
+- `eval.video_path=null`: auto path `<run_dir>/rendering/ckpt_<iter>/<timestamp>.mp4`
 - `eval.video_fps=30`: FPS used for MP4 encoding
+- `eval.export_onnx=true`: export ONNX policy by default during evaluation
+- `eval.onnx_path=null`: auto path `<run_dir>/exported/ckpt_<iter>/policy.onnx`

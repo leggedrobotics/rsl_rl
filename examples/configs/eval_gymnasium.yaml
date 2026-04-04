@@ -23,5 +23,18 @@ eval:
   render: false
   render_mode: human
   save_video: false
-  video_path: ./videos/eval.mp4
+  rendering_subdir: rendering
+  exported_subdir: exported
+  video_path: null
   video_fps: 30
+  export_onnx: true
+  onnx_path: null
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ${train.log_dir}/${algorithm.run_name}_eval_${now:%Y%m%d_%H%M%S}/hydra
+  sweep:
+    dir: ${train.log_dir}/${algorithm.run_name}_eval_multirun_${now:%Y%m%d_%H%M%S}/hydra_multirun
+    subdir: ${hydra.job.num}

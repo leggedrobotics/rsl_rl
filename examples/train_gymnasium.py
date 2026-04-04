@@ -21,9 +21,17 @@ def to_plain_dict(node: DictConfig) -> dict[str, Any]:
 def build_train_cfg(cfg: DictConfig, train_cfg_key: str = "train_cfg") -> dict:
     """Build runner train_cfg directly from config without hardcoded hyperparameters."""
     train_cfg = deepcopy(to_plain_dict(cfg.algorithm[train_cfg_key]))
-    train_cfg["run_name"] = cfg.algorithm.run_name
+    train_cfg["run_name"] = cfg.train.run_name
     train_cfg["logger"] = cfg.train.get("logger", "tensorboard")
     return train_cfg
+
+
+def resolve_teacher_run_name(cfg: DictConfig) -> str:
+    """Resolve teacher run name, defaulting to a sibling of the active timestamped run."""
+    custom = cfg.train.get("teacher_run_name")
+    if custom is not None:
+        return str(custom)
+    return f"{cfg.train.run_name}_teacher"
 
 
 def collect_random_expert_observations(env: GymnasiumVecEnv, num_samples: int) -> torch.Tensor:
@@ -53,9 +61,10 @@ def train_teacher_if_needed(cfg: DictConfig) -> str:
         device=cfg.device,
     )
     teacher_cfg = deepcopy(to_plain_dict(cfg.algorithm.teacher.train_cfg))
-    teacher_cfg["run_name"] = cfg.algorithm.teacher.run_name
+    teacher_run_name = resolve_teacher_run_name(cfg)
+    teacher_cfg["run_name"] = teacher_run_name
     teacher_cfg["logger"] = cfg.train.get("logger", "tensorboard")
-    teacher_log_dir = make_log_dir(cfg.train.log_dir, cfg.algorithm.teacher.run_name)
+    teacher_log_dir = make_log_dir(cfg.train.log_dir, teacher_run_name)
     teacher_runner = OnPolicyRunner(env=env, train_cfg=teacher_cfg, log_dir=teacher_log_dir, device=cfg.device)
     teacher_runner.learn(num_learning_iterations=cfg.algorithm.teacher.learning_iterations)
 
@@ -74,7 +83,7 @@ def run_ppo(cfg: DictConfig) -> None:
     runner = OnPolicyRunner(
         env=env,
         train_cfg=train_cfg,
-        log_dir=make_log_dir(cfg.train.log_dir, cfg.algorithm.run_name),
+        log_dir=make_log_dir(cfg.train.log_dir, cfg.train.run_name),
         device=cfg.device,
     )
     runner.learn(num_learning_iterations=cfg.train.learning_iterations)
@@ -87,7 +96,7 @@ def run_sac(cfg: DictConfig) -> None:
     runner = OffPolicyRunner(
         env=env,
         train_cfg=train_cfg,
-        log_dir=make_log_dir(cfg.train.log_dir, cfg.algorithm.run_name),
+        log_dir=make_log_dir(cfg.train.log_dir, cfg.train.run_name),
         device=cfg.device,
     )
     runner.learn(num_learning_iterations=cfg.train.learning_iterations)
@@ -112,7 +121,7 @@ def run_amp_ppo(cfg: DictConfig) -> None:
     runner = OnPolicyRunner(
         env=env,
         train_cfg=train_cfg,
-        log_dir=make_log_dir(cfg.train.log_dir, cfg.algorithm.run_name),
+        log_dir=make_log_dir(cfg.train.log_dir, cfg.train.run_name),
         device=cfg.device,
     )
     runner.learn(num_learning_iterations=cfg.train.learning_iterations)
@@ -132,7 +141,7 @@ def run_dagger_ppo(cfg: DictConfig) -> None:
     runner = OnPolicyRunner(
         env=env,
         train_cfg=train_cfg,
-        log_dir=make_log_dir(cfg.train.log_dir, cfg.algorithm.run_name),
+        log_dir=make_log_dir(cfg.train.log_dir, cfg.train.run_name),
         device=cfg.device,
     )
 
@@ -154,7 +163,7 @@ def run_distillation(cfg: DictConfig) -> None:
     runner = DistillationRunner(
         env=env,
         train_cfg=train_cfg,
-        log_dir=make_log_dir(cfg.train.log_dir, cfg.algorithm.run_name),
+        log_dir=make_log_dir(cfg.train.log_dir, cfg.train.run_name),
         device=cfg.device,
     )
 
