@@ -1,0 +1,48 @@
+name: amp_ppo
+run_name: amp_ppo
+
+train_cfg:
+  num_steps_per_env: 64
+  save_interval: 1000
+  obs_groups:
+    actor: [policy]
+    critic: [policy]
+    amp: [policy]
+  algorithm:
+    class_name: AMPPPO
+    num_learning_epochs: 4
+    num_mini_batches: 4
+    clip_param: 0.2
+    gamma: 0.99
+    lam: 0.95
+    value_loss_coef: 1.0
+    entropy_coef: 0.0
+    learning_rate: 3.0e-4
+    max_grad_norm: 1.0
+    schedule: adaptive
+    desired_kl: 0.01
+    amp_reward_coef: 0.5
+    discriminator_loss_coef: 1.0
+    discriminator_learning_rate: 1.0e-3
+    expert_batch_size: 256
+  actor:
+    class_name: MLPModel
+    hidden_dims: [128, 128]
+    activation: elu
+    distribution_cfg:
+      class_name: GaussianDistribution
+      init_std: 1.0
+      std_type: scalar
+  critic:
+    class_name: MLPModel
+    hidden_dims: [128, 128]
+    activation: elu
+  discriminator:
+    class_name: MLPModel
+    hidden_dims: [256, 256]
+    activation: elu
+
+amp:
+  expert_dataset: null
+  expert_dataset_key: expert_observations
+  expert_samples: 8192

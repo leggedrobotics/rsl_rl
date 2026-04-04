@@ -1,0 +1,18 @@
+defaults:
+  - algorithm: ppo
+  - _self_
+
+seed: 42
+device: cpu
+
+env:
+  id: Pendulum-v1
+  num_envs: 16
+
+train:
+  learning_iterations: 10000
+  log_dir: ./logs
+  logger: tensorboard
+
+teacher:
+  checkpoint: null

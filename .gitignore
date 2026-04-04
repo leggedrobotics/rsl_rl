@@ -14,3 +14,6 @@ docs/_build/
 
 # vs code
 .vscode
+
+outputs/
+logs/

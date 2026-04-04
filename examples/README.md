@@ -2,7 +2,7 @@
 
 This folder contains end-to-end examples showing how to use rsl_rl algorithms on Gymnasium classic continuous-control benchmarks.
 
-The examples use a lightweight adapter that exposes Gymnasium environments through the rsl_rl VecEnv interface.
+The examples now use a single Hydra entrypoint and config groups to select the training algorithm.
 
 ## Requirements
 
@@ -12,65 +12,83 @@ The examples use a lightweight adapter that exposes Gymnasium environments throu
 pip install -e .
 ```
 
-- Install Gymnasium:
+- Install Gymnasium + Hydra:
 
 ```bash
-pip install gymnasium[classic-control]
+pip install gymnasium[classic-control] hydra-core
 ```
 
-## Included Examples
+- Install TensorBoard (used by default logging setup):
 
-- `train_ppo_gymnasium.py`
-  - PPO on a Gymnasium environment (default: `Pendulum-v1`).
+```bash
+pip install tensorboard
+```
 
-- `train_sac_gymnasium.py`
-  - SAC on a Gymnasium environment (default: `Pendulum-v1`).
+## Unified Entrypoint
 
-- `train_dagger_ppo_gymnasium.py`
-  - DaggerPPO with a PPO teacher.
-  - If `--teacher-checkpoint` is not provided, a teacher is pre-trained automatically.
+Use one script for all Gymnasium examples:
 
-- `train_distillation_gymnasium.py`
-  - Distillation runner with a PPO teacher.
-  - If `--teacher-checkpoint` is not provided, a teacher is pre-trained automatically.
+```bash
+python examples/train_gymnasium.py algorithm=ppo
+```
+
+Algorithm config files live in `examples/configs/algorithm`:
+
+- `ppo.yaml`
+- `sac.yaml`
+- `amp_ppo.yaml`
+- `dagger_ppo.yaml`
+- `distillation.yaml`
 
 ## Quick Start
 
 Run PPO on Pendulum:
 
 ```bash
-python examples/train_ppo_gymnasium.py --env-id Pendulum-v1 --device cpu
+python examples/train_gymnasium.py algorithm=ppo env.id=Pendulum-v1 device=cpu
 ```
 
 Run PPO on MountainCarContinuous:
 
 ```bash
-python examples/train_ppo_gymnasium.py --env-id MountainCarContinuous-v0 --device cpu
+python examples/train_gymnasium.py algorithm=ppo env.id=MountainCarContinuous-v0 device=cpu
 ```
 
 Run SAC on Pendulum:
 
 ```bash
-python examples/train_sac_gymnasium.py --env-id Pendulum-v1 --device cpu
+python examples/train_gymnasium.py algorithm=sac env.id=Pendulum-v1 device=cpu
 ```
 
 Run DaggerPPO (with auto teacher pre-training):
 
 ```bash
-python examples/train_dagger_ppo_gymnasium.py --env-id Pendulum-v1 --device cpu
+python examples/train_gymnasium.py algorithm=dagger_ppo env.id=Pendulum-v1 device=cpu
 ```
 
 Run Distillation (with auto teacher pre-training):
 
 ```bash
-python examples/train_distillation_gymnasium.py --env-id Pendulum-v1 --device cpu
+python examples/train_gymnasium.py algorithm=distillation env.id=Pendulum-v1 device=cpu
 ```
 
-## Useful Flags
+Run AMP-PPO:
 
-- `--num-envs`: parallel environments (default: 16)
-- `--num-steps-per-env`: rollout steps per update (default: 64)
-- `--learning-iterations`: number of training iterations
-- `--teacher-iters`: teacher pre-training iterations (for DaggerPPO / Distillation)
-- `--log-dir`: enable TensorBoard logging and checkpoints under this directory
-- `--teacher-checkpoint`: load an existing teacher checkpoint
+```bash
+python examples/train_gymnasium.py algorithm=amp_ppo env.id=Pendulum-v1 device=cpu
+```
+
+## Common Overrides
+
+- `env.num_envs=16`: parallel environments
+- `algorithm.train_cfg.num_steps_per_env=64`: rollout steps per update
+- `train.learning_iterations=60`: number of training iterations
+- `algorithm.teacher.learning_iterations=40`: teacher pre-training iterations (DaggerPPO / Distillation)
+- `train.log_dir=./logs`: enable TensorBoard logging and checkpoints
+- `train.log_dir=null`: disable file logging and console training summaries
+- `train.logger=tensorboard`: logging backend (`tensorboard`, `wandb`, `neptune`)
+- `teacher.checkpoint=/path/to/checkpoint.pt`: load an existing teacher checkpoint
+- `algorithm.amp.expert_dataset=/path/to/expert.pt`: load expert observations for AMP-PPO
+
+Most training hyperparameters are now in `algorithm.train_cfg` (and `algorithm.teacher.train_cfg` when applicable).
+You can create a new config file and override via Hydra defaults, or override ad-hoc from CLI.
