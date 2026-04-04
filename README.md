@@ -8,9 +8,19 @@ and features common algorithms for robot learning.
 ## Key Features
 
 - **Minimal, readable codebase** with clear extension points for rapid prototyping.
-- **Robotics-first methods** including PPO and Student-Teacher Distillation.
+- **Robotics-first methods** including PPO, AMP-PPO, SAC, DAgger-PPO, and Student-Teacher Distillation.
 - **High-throughput training** with native Multi-GPU support.
 - **Proven performance** in numerous research publications.
+
+## Supported Algorithms
+
+RSL-RL currently supports the following learning algorithms:
+
+- **PPO** (Proximal Policy Optimization)
+- **AMP-PPO** (Adversarial Motion Priors with PPO)
+- **SAC** (Soft Actor-Critic)
+- **DAgger-PPO** (Dataset Aggregation with PPO)
+- **Distillation** (Student-Teacher policy distillation)
 
 ## Learning Environments
 
