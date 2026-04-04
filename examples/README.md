@@ -32,6 +32,12 @@ Use one script for all Gymnasium examples:
 python examples/train_gymnasium.py algorithm=ppo
 ```
 
+Evaluate a trained checkpoint:
+
+```bash
+python examples/eval_gymnasium.py algorithm=ppo eval.checkpoint=./logs/ppo/model_10000.pt
+```
+
 Algorithm config files live in `examples/configs/algorithm`:
 
 - `ppo.yaml`
@@ -92,3 +98,14 @@ python examples/train_gymnasium.py algorithm=amp_ppo env.id=Pendulum-v1 device=c
 
 Most training hyperparameters are now in `algorithm.train_cfg` (and `algorithm.teacher.train_cfg` when applicable).
 You can create a new config file and override via Hydra defaults, or override ad-hoc from CLI.
+
+## Evaluation Overrides
+
+- `eval.checkpoint=/path/to/model.pt`: explicit checkpoint path
+- `eval.checkpoint=null`: auto-pick latest `model_*.pt` from `train.log_dir/algorithm.run_name`
+- `eval.num_episodes=20`: number of episodes used for metrics
+- `eval.max_steps_per_episode=1000`: hard cap for episode horizon in evaluation loop
+- `eval.stochastic_actions=false`: use deterministic actions (`true` samples stochastic policy actions)
+- `eval.print_episode_details=true`: print per-episode return/length during rollout
+- `eval.render=true`: enable Gymnasium rendering (requires `env.num_envs=1`)
+- `eval.render_mode=human`: Gymnasium render mode passed to environment creation

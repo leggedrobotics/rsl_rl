@@ -36,13 +36,14 @@ class GymnasiumVecEnv(VecEnv):
         num_envs: int = 16,
         seed: int = 0,
         device: str = "cpu",
+        render_mode: str | None = None,
     ) -> None:
         self.env_id = env_id
         self.num_envs = num_envs
         self.device = device
-        self.cfg = {"env_id": env_id, "num_envs": num_envs, "seed": seed}
+        self.cfg = {"env_id": env_id, "num_envs": num_envs, "seed": seed, "render_mode": render_mode}
 
-        self.envs = [gym.make(env_id) for _ in range(num_envs)]
+        self.envs = [gym.make(env_id, render_mode=render_mode) for _ in range(num_envs)]
         action_space = self.envs[0].action_space
         obs_space = self.envs[0].observation_space
         if not isinstance(action_space, gym.spaces.Box):

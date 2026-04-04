@@ -1,0 +1,24 @@
+defaults:
+  - algorithm: ppo
+  - _self_
+
+seed: 42
+device: cpu
+
+env:
+  id: Pendulum-v1
+  num_envs: 16
+
+train:
+  # Used for checkpoint auto-discovery: <log_dir>/<algorithm.run_name>/model_*.pt
+  log_dir: ./logs
+  logger: tensorboard
+
+eval:
+  checkpoint: null
+  num_episodes: 20
+  max_steps_per_episode: 1000
+  stochastic_actions: false
+  print_episode_details: true
+  render: false
+  render_mode: human
