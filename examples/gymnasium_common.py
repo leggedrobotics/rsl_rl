@@ -206,6 +206,66 @@ def build_ppo_train_cfg(num_steps_per_env: int, run_name: str | None = None) -> 
     return cfg
 
 
+def build_amp_ppo_train_cfg(
+    num_steps_per_env: int,
+    expert_observations: torch.Tensor | None = None,
+    expert_observations_path: str | None = None,
+    run_name: str | None = None,
+) -> dict:
+    """Create an AMP-PPO training config suitable for Gymnasium examples."""
+    algorithm_cfg = {
+        "class_name": "AMPPPO",
+        "num_learning_epochs": 4,
+        "num_mini_batches": 4,
+        "clip_param": 0.2,
+        "gamma": 0.99,
+        "lam": 0.95,
+        "value_loss_coef": 1.0,
+        "entropy_coef": 0.0,
+        "learning_rate": 3e-4,
+        "max_grad_norm": 1.0,
+        "schedule": "adaptive",
+        "desired_kl": 0.01,
+        "amp_reward_coef": 0.5,
+        "discriminator_loss_coef": 1.0,
+        "discriminator_learning_rate": 1e-3,
+        "expert_batch_size": 256,
+    }
+    if expert_observations is not None:
+        algorithm_cfg["expert_observations"] = expert_observations
+    if expert_observations_path is not None:
+        algorithm_cfg["expert_observations_path"] = expert_observations_path
+
+    cfg = {
+        "run_name": run_name,
+        "num_steps_per_env": num_steps_per_env,
+        "save_interval": 1000,
+        "obs_groups": {"actor": ["policy"], "critic": ["policy"], "amp": ["policy"]},
+        "algorithm": algorithm_cfg,
+        "actor": {
+            "class_name": "MLPModel",
+            "hidden_dims": [128, 128],
+            "activation": "elu",
+            "distribution_cfg": {
+                "class_name": "GaussianDistribution",
+                "init_std": 1.0,
+                "std_type": "scalar",
+            },
+        },
+        "critic": {
+            "class_name": "MLPModel",
+            "hidden_dims": [128, 128],
+            "activation": "elu",
+        },
+        "discriminator": {
+            "class_name": "MLPModel",
+            "hidden_dims": [256, 256],
+            "activation": "elu",
+        },
+    }
+    return cfg
+
+
 def build_sac_train_cfg(num_steps_per_env: int, run_name: str | None = None) -> dict:
     """Create a compact SAC training config suitable for Gymnasium examples."""
     cfg = {

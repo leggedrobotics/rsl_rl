@@ -9,6 +9,14 @@ PPO
    :undoc-members:
 
 
+AMP-PPO
+-------
+
+.. automodule:: rsl_rl.algorithms.amp_ppo
+   :members:
+   :undoc-members:
+
+
 Distillation
 ------------
 

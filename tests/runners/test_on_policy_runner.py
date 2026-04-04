@@ -148,6 +148,26 @@ class TestRunnerConstruction:
         runner = _build_runner()
         assert runner.current_learning_iteration == 0
 
+    def test_runner_creates_amp_ppo_algorithm(self) -> None:
+        """Runner should instantiate AMPPPO from config and run a short learn loop."""
+        env = DummyEnv()
+        cfg = _make_train_cfg("mlp")
+        cfg["obs_groups"]["amp"] = ["policy"]
+        cfg["algorithm"]["class_name"] = "AMPPPO"
+        cfg["algorithm"]["schedule"] = "fixed"
+        cfg["algorithm"]["expert_observations"] = torch.randn(64, OBS_DIM)
+        cfg["algorithm"]["expert_batch_size"] = 16
+        cfg["discriminator"] = {
+            "class_name": "MLPModel",
+            "hidden_dims": [32, 32],
+            "activation": "elu",
+        }
+
+        runner = OnPolicyRunner(env, cfg, log_dir=None, device="cpu")
+        runner.learn(num_learning_iterations=1)
+
+        assert runner.alg is not None
+
 
 class TestLearnLoop:
     """Tests that the learn loop runs and updates parameters."""
