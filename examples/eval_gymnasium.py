@@ -67,11 +67,15 @@ def build_runner(cfg: DictConfig, env: GymnasiumVecEnv) -> OnPolicyRunner | OffP
 
 def evaluate(cfg: DictConfig) -> None:
     """Evaluate a trained policy on vectorized Gymnasium environments."""
-    render_enabled = bool(cfg.eval.render)
-    render_mode = str(cfg.eval.render_mode) if render_enabled else None
+    save_video = bool(cfg.eval.save_video)
+    render_enabled = bool(cfg.eval.render) or save_video
+    render_mode = "rgb_array" if save_video else (str(cfg.eval.render_mode) if render_enabled else None)
 
     if render_enabled and int(cfg.env.num_envs) != 1:
-        raise ValueError("Rendering is only supported with env.num_envs=1 in eval mode.")
+        raise ValueError("Rendering/video capture is only supported with env.num_envs=1 in eval mode.")
+
+    if save_video and bool(cfg.eval.render) and str(cfg.eval.render_mode) != "rgb_array":
+        raise ValueError("eval.save_video=true cannot be combined with eval.render_mode other than 'rgb_array'.")
 
     env = GymnasiumVecEnv(
         cfg.env.id,
@@ -91,43 +95,66 @@ def evaluate(cfg: DictConfig) -> None:
     stochastic_actions = bool(cfg.eval.stochastic_actions)
     print_episode_details = bool(cfg.eval.print_episode_details)
 
+    video_writer = None
+    video_path: Path | None = None
+    if save_video:
+        try:
+            import imageio.v2 as imageio
+        except ImportError as exc:
+            raise ImportError("imageio is required for eval.save_video=true. Install with `pip install imageio`.") from exc
+
+        video_path = Path(str(cfg.eval.video_path)).expanduser()
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        video_writer = imageio.get_writer(str(video_path), fps=int(cfg.eval.video_fps))
+        first_frame = env.render()
+        if first_frame is not None:
+            video_writer.append_data(first_frame)
+
     obs = env.get_observations().to(cfg.device)
     ep_returns = torch.zeros(env.num_envs, dtype=torch.float32, device=cfg.device)
     ep_lengths = torch.zeros(env.num_envs, dtype=torch.int64, device=cfg.device)
     finished_returns: list[float] = []
     finished_lengths: list[int] = []
 
-    with torch.inference_mode():
-        while len(finished_returns) < target_episodes:
-            if stochastic_actions:
-                actions = policy(obs, stochastic_output=True)
-            else:
-                actions = policy(obs)
+    try:
+        with torch.inference_mode():
+            while len(finished_returns) < target_episodes:
+                if stochastic_actions:
+                    actions = policy(obs, stochastic_output=True)
+                else:
+                    actions = policy(obs)
 
-            obs, rewards, dones, _extras = env.step(actions.to(env.device))
-            obs = obs.to(cfg.device)
-            rewards = rewards.to(cfg.device)
-            dones = dones.to(cfg.device)
+                obs, rewards, dones, _extras = env.step(actions.to(env.device))
+                obs = obs.to(cfg.device)
+                rewards = rewards.to(cfg.device)
+                dones = dones.to(cfg.device)
 
-            ep_returns += rewards
-            ep_lengths += 1
+                if video_writer is not None:
+                    frame = env.render()
+                    if frame is not None:
+                        video_writer.append_data(frame)
 
-            finished_mask = (dones > 0.5) | (ep_lengths >= max_steps)
-            done_indices = torch.nonzero(finished_mask).flatten().tolist()
-            for idx in done_indices:
-                episode_return = float(ep_returns[idx].item())
-                episode_length = int(ep_lengths[idx].item())
-                finished_returns.append(episode_return)
-                finished_lengths.append(episode_length)
-                if print_episode_details:
-                    ep_num = len(finished_returns)
-                    print(f"Episode {ep_num:04d} | return={episode_return:.4f} | length={episode_length}")
-                ep_returns[idx] = 0.0
-                ep_lengths[idx] = 0
-                if len(finished_returns) >= target_episodes:
-                    break
+                ep_returns += rewards
+                ep_lengths += 1
 
-    env.close()
+                finished_mask = (dones > 0.5) | (ep_lengths >= max_steps)
+                done_indices = torch.nonzero(finished_mask).flatten().tolist()
+                for idx in done_indices:
+                    episode_return = float(ep_returns[idx].item())
+                    episode_length = int(ep_lengths[idx].item())
+                    finished_returns.append(episode_return)
+                    finished_lengths.append(episode_length)
+                    if print_episode_details:
+                        ep_num = len(finished_returns)
+                        print(f"Episode {ep_num:04d} | return={episode_return:.4f} | length={episode_length}")
+                    ep_returns[idx] = 0.0
+                    ep_lengths[idx] = 0
+                    if len(finished_returns) >= target_episodes:
+                        break
+    finally:
+        if video_writer is not None:
+            video_writer.close()
+        env.close()
 
     returns_t = torch.tensor(finished_returns[:target_episodes], dtype=torch.float32)
     lengths_t = torch.tensor(finished_lengths[:target_episodes], dtype=torch.float32)
@@ -142,6 +169,8 @@ def evaluate(cfg: DictConfig) -> None:
     print(f"Min Return:  {returns_t.min().item():.4f}")
     print(f"Max Return:  {returns_t.max().item():.4f}")
     print(f"Mean Length: {lengths_t.mean().item():.2f}")
+    if video_path is not None:
+        print(f"Video: {video_path}")
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="eval_gymnasium")

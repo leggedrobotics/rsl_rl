@@ -109,3 +109,6 @@ You can create a new config file and override via Hydra defaults, or override ad
 - `eval.print_episode_details=true`: print per-episode return/length during rollout
 - `eval.render=true`: enable Gymnasium rendering (requires `env.num_envs=1`)
 - `eval.render_mode=human`: Gymnasium render mode passed to environment creation
+- `eval.save_video=true`: save an MP4 rollout video (requires `env.num_envs=1`)
+- `eval.video_path=./videos/eval.mp4`: output path for saved evaluation video
+- `eval.video_fps=30`: FPS used for MP4 encoding

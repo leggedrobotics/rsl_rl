@@ -22,3 +22,6 @@ eval:
   print_episode_details: true
   render: false
   render_mode: human
+  save_video: false
+  video_path: ./videos/eval.mp4
+  video_fps: 30

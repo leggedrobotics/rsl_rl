@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 from dataclasses import dataclass
+from typing import Any
 
 import gymnasium as gym
 import numpy as np
@@ -118,6 +119,10 @@ class GymnasiumVecEnv(VecEnv):
     def close(self) -> None:
         for env in self.envs:
             env.close()
+
+    def render(self) -> Any:
+        """Render the first sub-environment and return its frame/object."""
+        return self.envs[0].render()
 
     @staticmethod
     def _flatten_obs(obs: np.ndarray) -> torch.Tensor:
