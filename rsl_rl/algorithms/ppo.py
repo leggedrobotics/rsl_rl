@@ -140,11 +140,11 @@ class PPO:
         """Sample actions and store transition data."""
         # Record the hidden states for recurrent policies
         self.transition.hidden_states = (self.actor.get_hidden_state(), self.critic.get_hidden_state())
-        # Consume all actor distribution state before running critic.
+        # Compute the actions and values
         self.transition.actions = self.actor(obs, stochastic_output=True).detach()
+        self.transition.values = self.critic(obs).detach()
         self.transition.actions_log_prob = self.actor.get_output_log_prob(self.transition.actions).detach()  # type: ignore
         self.transition.distribution_params = tuple(p.detach() for p in self.actor.output_distribution_params)
-        self.transition.values = self.critic(obs).detach()
         # Record observations before env.step()
         self.transition.observations = obs
         return self.transition.actions  # type: ignore
@@ -260,10 +260,10 @@ class PPO:
                 stochastic_output=True,
             )
             actions_log_prob = self.actor.get_output_log_prob(batch.actions)  # type: ignore
+            values = self.critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[1])
             # Note: We only keep the distribution parameters and entropy of the first augmentation (the original one)
             distribution_params = tuple(p[:original_batch_size] for p in self.actor.output_distribution_params)
             entropy = self.actor.output_entropy[:original_batch_size]
-            values = self.critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[1])
 
             # Compute KL divergence and adapt the learning rate
             if self.desired_kl is not None and self.schedule == "adaptive":
