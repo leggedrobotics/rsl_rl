@@ -39,14 +39,25 @@ class OnPolicyRunner:
         alg_class: type[PPO] = resolve_callable(self.cfg["algorithm"]["class_name"])  # type: ignore
         self.alg = alg_class.construct_algorithm(obs, self.env, self.cfg, self.device)
 
-        # Compile the actor model if requested
+        # Compile actor and critic models if requested
         torch_compile_mode = self.cfg.get("torch_compile_mode", "default")
         if torch_compile_mode is not None:
-            print(f"[OnPolicyRunner] Compiling actor with torch.compile(mode='{torch_compile_mode}')")
+            # CUDA-graph-based modes are incompatible with PPO's two-model (actor + critic) pattern:
+            # the critic's graph replay invalidates actor graph output buffers, causing errors.
+            _UNSUPPORTED_MODES = ("reduce-overhead", "max-autotune")
+            if torch_compile_mode in _UNSUPPORTED_MODES:
+                raise ValueError(
+                    f"torch_compile_mode='{torch_compile_mode}' uses CUDA graphs which are incompatible "
+                    f"with PPO's actor-critic pattern. Use 'default' or 'max-autotune-no-cudagraphs' instead."
+                )
+            print(f"[OnPolicyRunner] Compiling actor and critic with torch.compile(mode='{torch_compile_mode}')")
             self._uncompiled_actor = self.alg.actor
+            self._uncompiled_critic = self.alg.critic
             self.alg.actor = torch.compile(self.alg.actor, mode=torch_compile_mode)
+            self.alg.critic = torch.compile(self.alg.critic, mode=torch_compile_mode)
         else:
             self._uncompiled_actor = None
+            self._uncompiled_critic = None
 
         # Create the logger
         self.logger = Logger(
@@ -147,7 +158,12 @@ class OnPolicyRunner:
 
     def save(self, path: str, infos: dict | None = None) -> None:
         """Save the models and training state to a given path and upload them if external logging is used."""
+        # Use uncompiled models for save to avoid _orig_mod. prefix in state_dict keys
+        compiled_actor, compiled_critic = self.alg.actor, self.alg.critic
+        if self._uncompiled_actor is not None:
+            self.alg.actor, self.alg.critic = self._uncompiled_actor, self._uncompiled_critic
         saved_dict = self.alg.save()
+        self.alg.actor, self.alg.critic = compiled_actor, compiled_critic
         saved_dict["iter"] = self.current_learning_iteration
         saved_dict["infos"] = infos
         torch.save(saved_dict, path)
@@ -167,7 +183,12 @@ class OnPolicyRunner:
             map_location (str | None): Device mapping for loading the model.
         """
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
+        # Use uncompiled models for load to match clean state_dict keys
+        compiled_actor, compiled_critic = self.alg.actor, self.alg.critic
+        if self._uncompiled_actor is not None:
+            self.alg.actor, self.alg.critic = self._uncompiled_actor, self._uncompiled_critic
         load_iteration = self.alg.load(loaded_dict, load_cfg, strict)
+        self.alg.actor, self.alg.critic = compiled_actor, compiled_critic
         if load_iteration:
             self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]

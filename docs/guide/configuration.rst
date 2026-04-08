@@ -80,9 +80,10 @@ Currently, RSL-RL implements two runner classes:
    * - ``torch_compile_mode``
      - str | None
      - ``"default"``
-     - ``torch.compile`` mode for the actor model. Set to ``None`` to disable.
-       Valid values: ``"default"``, ``"reduce-overhead"``, ``"max-autotune"``.
-       Expert users can fine-tune via ``torch._inductor.config``.
+     - ``torch.compile`` mode for actor and critic models. Set to ``None`` to disable.
+       Valid values: ``"default"``, ``"max-autotune-no-cudagraphs"``.
+       CUDA-graph modes (``"reduce-overhead"``, ``"max-autotune"``) are not supported
+       because the critic's graph replay invalidates actor graph output buffers.
    * - ``algorithm``
      - dict
      - required
