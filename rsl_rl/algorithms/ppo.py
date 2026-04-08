@@ -9,7 +9,6 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from collections.abc import Callable
 from itertools import chain
 from tensordict import TensorDict
 
@@ -59,9 +58,6 @@ class PPO:
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
-        # Deferred Observation Synthesis (DOS) parameters
-        synthesizer: Callable[[torch.Tensor, torch.Tensor], TensorDict] | None = None,
-        compact_state_fn: Callable[[], torch.Tensor] | None = None,
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
         # Device-related parameters
@@ -140,12 +136,6 @@ class PPO:
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
 
-        # DOS components
-        self.synthesizer = synthesizer
-        self.compact_state_fn = compact_state_fn
-        self.dos_epoch_begin_fn: Callable[[], None] | None = None
-        self.dos_shuffled: bool = False
-
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Sample actions and store transition data."""
         # Record the hidden states for recurrent policies
@@ -155,11 +145,8 @@ class PPO:
         self.transition.actions_log_prob = self.actor.get_output_log_prob(self.transition.actions).detach()  # type: ignore
         self.transition.distribution_params = tuple(p.detach() for p in self.actor.output_distribution_params)
         self.transition.values = self.critic(obs).detach()
-        # Record observations (standard) or compact state (DOS) before env.step()
-        if self.compact_state_fn is not None:
-            self.transition.compact_state = self.compact_state_fn(obs)
-        else:
-            self.transition.observations = obs
+        # Record observations before env.step()
+        self.transition.observations = obs
         return self.transition.actions  # type: ignore
 
     def process_env_step(
@@ -232,20 +219,7 @@ class PPO:
         mean_symmetry_loss = 0 if self.symmetry else None
 
         # Get mini batch generator
-        if self.synthesizer is not None and self.dos_shuffled:
-            generator = self.storage.dos_shuffled_mini_batch_generator(
-                self.num_mini_batches,
-                self.num_learning_epochs,
-                synthesizer=self.synthesizer,
-                epoch_begin_fn=self.dos_epoch_begin_fn,
-            )
-        elif self.synthesizer is not None:
-            generator = self.storage.dos_mini_batch_generator(
-                self.num_mini_batches,
-                self.num_learning_epochs,
-                synthesizer=self.synthesizer,
-            )
-        elif self.actor.is_recurrent or self.critic.is_recurrent:
+        if self.actor.is_recurrent or self.critic.is_recurrent:
             generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -279,7 +253,6 @@ class PPO:
 
             # Recompute actions log prob and entropy for current batch of transitions
             # Note: We need to do this because we updated the policy with the new parameters
-            # Consume all actor distribution state before running critic.
             self.actor(
                 batch.observations,
                 masks=batch.masks,
@@ -524,11 +497,8 @@ class PPO:
         critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **cfg["critic"]).to(device)
         print(f"Critic Model: {critic}")
 
-        # Initialize the storage (compact_state_shape enables DOS mode if provided via cfg)
-        compact_state_shape = cfg.get("compact_state_shape", None)
-        storage = RolloutStorage(
-            "rl", env.num_envs, cfg["num_steps_per_env"], obs, [env.num_actions], device, compact_state_shape
-        )
+        # Initialize the storage
+        storage = RolloutStorage("rl", env.num_envs, cfg["num_steps_per_env"], obs, [env.num_actions], device)
 
         # Initialize the algorithm
         alg: PPO = alg_class(actor, critic, storage, device=device, **cfg["algorithm"], multi_gpu_cfg=cfg["multi_gpu"])
