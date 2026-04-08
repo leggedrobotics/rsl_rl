@@ -150,8 +150,6 @@ class PPO:
         """Sample actions and store transition data."""
         # Record the hidden states for recurrent policies
         self.transition.hidden_states = (self.actor.get_hidden_state(), self.critic.get_hidden_state())
-        # Consume all actor distribution state before running critic. Mark step boundaries
-        # so CUDA graph modes (reduce-overhead/max-autotune) know prior outputs were consumed.
         # Consume all actor distribution state before running critic.
         self.transition.actions = self.actor(obs, stochastic_output=True).detach()
         self.transition.actions_log_prob = self.actor.get_output_log_prob(self.transition.actions).detach()  # type: ignore
@@ -281,9 +279,7 @@ class PPO:
 
             # Recompute actions log prob and entropy for current batch of transitions
             # Note: We need to do this because we updated the policy with the new parameters
-            # Consume all actor distribution state before running critic. Mark step boundaries
-            # so CUDA graph modes know prior outputs were consumed.
-            torch.compiler.cudagraph_mark_step_begin()
+            # Consume all actor distribution state before running critic.
             self.actor(
                 batch.observations,
                 masks=batch.masks,
