@@ -108,13 +108,14 @@ class CNNModel(MLPModel):
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
     ) -> torch.Tensor:
         """Build the model latent by combining normalized 1D and CNN-encoded 2D observation groups."""
-        # Concatenate 1D observation groups and normalize
-        latent_1d = super().get_latent(obs)
         # Process 2D observation groups with CNNs
         latent_cnn_list = [self.cnns[obs_group](obs[obs_group]) for obs_group in self.obs_groups_2d]
         latent_cnn = torch.cat(latent_cnn_list, dim=-1)
-        # Concatenate 1D and CNN latents
-        return torch.cat([latent_1d, latent_cnn], dim=-1)
+        # If there are 1D observation groups, concatenate and normalize them
+        if self.obs_groups:
+            latent_1d = super().get_latent(obs)
+            return torch.cat([latent_1d, latent_cnn], dim=-1)
+        return latent_cnn
 
     def as_jit(self) -> nn.Module:
         """Return a version of the model compatible with Torch JIT export."""
@@ -166,6 +167,7 @@ class _TorchCNNModel(nn.Module):
     def __init__(self, model: CNNModel) -> None:
         """Create a TorchScript-friendly copy of a CNNModel."""
         super().__init__()
+        self.has_1d = bool(model.obs_groups)
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         # Convert ModuleDict to ModuleList for ordered iteration
         self.cnns = nn.ModuleList([copy.deepcopy(model.cnns[g]) for g in model.obs_groups_2d])
@@ -177,14 +179,16 @@ class _TorchCNNModel(nn.Module):
 
     def forward(self, obs_1d: torch.Tensor, obs_2d: list[torch.Tensor]) -> torch.Tensor:
         """Run deterministic inference from separated 1D and 2D inputs."""
-        latent_1d = self.obs_normalizer(obs_1d)
-
         latent_cnn_list = []
         for i, cnn in enumerate(self.cnns):  # We assume obs_2d list matches the order of obs_groups_2d
             latent_cnn_list.append(cnn(obs_2d[i]))
 
         latent_cnn = torch.cat(latent_cnn_list, dim=-1)
-        latent = torch.cat([latent_1d, latent_cnn], dim=-1)
+        if self.has_1d:
+            latent_1d = self.obs_normalizer(obs_1d)
+            latent = torch.cat([latent_1d, latent_cnn], dim=-1)
+        else:
+            latent = latent_cnn
 
         out = self.mlp(latent)
         return self.deterministic_output(out)
@@ -202,6 +206,7 @@ class _OnnxCNNModel(nn.Module):
         """Create an ONNX-export wrapper around a CNNModel."""
         super().__init__()
         self.verbose = verbose
+        self.has_1d = bool(model.obs_groups)
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         # Convert ModuleDict to ModuleList for ordered iteration
         self.cnns = nn.ModuleList([copy.deepcopy(model.cnns[g]) for g in model.obs_groups_2d])
@@ -218,14 +223,16 @@ class _OnnxCNNModel(nn.Module):
 
     def forward(self, obs_1d: torch.Tensor, *obs_2d: torch.Tensor) -> torch.Tensor:
         """Run deterministic inference for ONNX export."""
-        latent_1d = self.obs_normalizer(obs_1d)
-
         latent_cnn_list = []
         for i, cnn in enumerate(self.cnns):
             latent_cnn_list.append(cnn(obs_2d[i]))
 
         latent_cnn = torch.cat(latent_cnn_list, dim=-1)
-        latent = torch.cat([latent_1d, latent_cnn], dim=-1)
+        if self.has_1d:
+            latent_1d = self.obs_normalizer(obs_1d)
+            latent = torch.cat([latent_1d, latent_cnn], dim=-1)
+        else:
+            latent = latent_cnn
 
         out = self.mlp(latent)
         return self.deterministic_output(out)
