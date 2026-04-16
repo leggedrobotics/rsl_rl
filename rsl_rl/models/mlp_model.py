@@ -170,7 +170,7 @@ class MLPModel(nn.Module):
 
     def update_normalization(self, obs: TensorDict) -> None:
         """Update observation-normalization statistics from a batch of observations."""
-        if self.obs_normalization and self.obs_groups:
+        if self.obs_normalization:
             # Select and concatenate observations
             obs_list = [obs[obs_group] for obs_group in self.obs_groups]
             mlp_obs = torch.cat(obs_list, dim=-1)
