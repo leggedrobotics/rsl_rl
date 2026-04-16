@@ -17,6 +17,29 @@ from rsl_rl.utils import check_nan, resolve_callable
 from rsl_rl.utils.logger import Logger
 
 
+def _unwrap_compiled(model: torch.nn.Module) -> torch.nn.Module:
+    """Unwrap a ``torch.compile`` wrapper for serialization and export.
+
+    Returns the original module if the model was compiled, or the model
+    itself if it was not.  Raises :class:`RuntimeError` if the model
+    appears to be compiled (``state_dict`` keys carry the ``_orig_mod.``
+    prefix) but the expected attribute is missing — this would indicate
+    an incompatible PyTorch version.
+    """
+    state_keys = list(model.state_dict().keys())
+    if not state_keys or not state_keys[0].startswith("_orig_mod."):
+        return model
+
+    inner = getattr(model, "_orig_mod", None)
+    if inner is None:
+        raise RuntimeError(
+            "Model state_dict has '_orig_mod.' prefixed keys (indicating torch.compile) "
+            "but model._orig_mod is not available. This likely means the PyTorch internal "
+            f"API has changed. PyTorch version: {torch.__version__}"
+        )
+    return inner
+
+
 class OnPolicyRunner:
     """On-policy runner for reinforcement learning algorithms."""
 
@@ -40,24 +63,22 @@ class OnPolicyRunner:
         self.alg = alg_class.construct_algorithm(obs, self.env, self.cfg, self.device)
 
         # Compile actor and critic models if requested
+        self._torch_compiled = False
         torch_compile_mode = self.cfg.get("torch_compile_mode", "default")
         if torch_compile_mode is not None:
-            # CUDA-graph-based modes are incompatible with PPO's two-model (actor + critic) pattern:
-            # the critic's graph replay invalidates actor graph output buffers, causing errors.
             _UNSUPPORTED_MODES = ("reduce-overhead", "max-autotune")
             if torch_compile_mode in _UNSUPPORTED_MODES:
                 raise ValueError(
                     f"torch_compile_mode='{torch_compile_mode}' uses CUDA graphs which are incompatible "
                     f"with PPO's actor-critic pattern. Use 'default' or 'max-autotune-no-cudagraphs' instead."
                 )
-            print(f"[OnPolicyRunner] Compiling actor and critic with torch.compile(mode='{torch_compile_mode}')")
-            self._uncompiled_actor = self.alg.actor
-            self._uncompiled_critic = self.alg.critic
-            self.alg.actor = torch.compile(self.alg.actor, mode=torch_compile_mode)
-            self.alg.critic = torch.compile(self.alg.critic, mode=torch_compile_mode)
-        else:
-            self._uncompiled_actor = None
-            self._uncompiled_critic = None
+            try:
+                print(f"[OnPolicyRunner] Compiling actor and critic with torch.compile(mode='{torch_compile_mode}')")
+                self.alg.actor = torch.compile(self.alg.actor, mode=torch_compile_mode)
+                self.alg.critic = torch.compile(self.alg.critic, mode=torch_compile_mode)
+                self._torch_compiled = True
+            except Exception as e:
+                print(f"[OnPolicyRunner] torch.compile failed, falling back to eager mode: {e}")
 
         # Create the logger
         self.logger = Logger(
@@ -144,7 +165,7 @@ class OnPolicyRunner:
                 rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"]["rnd_cfg"] else None,
             )
 
-            if it == start_it and self._uncompiled_actor is not None:
+            if it == start_it and self._torch_compiled:
                 print("[OnPolicyRunner] First iteration included torch.compile overhead; subsequent iterations will be faster.")
 
             # Save model
@@ -158,10 +179,10 @@ class OnPolicyRunner:
 
     def save(self, path: str, infos: dict | None = None) -> None:
         """Save the models and training state to a given path and upload them if external logging is used."""
-        # Use uncompiled models for save to avoid _orig_mod. prefix in state_dict keys
+        # Unwrap compiled models for clean state_dict keys
         compiled_actor, compiled_critic = self.alg.actor, self.alg.critic
-        if self._uncompiled_actor is not None:
-            self.alg.actor, self.alg.critic = self._uncompiled_actor, self._uncompiled_critic
+        self.alg.actor = _unwrap_compiled(self.alg.actor)
+        self.alg.critic = _unwrap_compiled(self.alg.critic)
         saved_dict = self.alg.save()
         self.alg.actor, self.alg.critic = compiled_actor, compiled_critic
         saved_dict["iter"] = self.current_learning_iteration
@@ -183,10 +204,10 @@ class OnPolicyRunner:
             map_location (str | None): Device mapping for loading the model.
         """
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
-        # Use uncompiled models for load to match clean state_dict keys
+        # Unwrap compiled models so state_dict keys match the checkpoint
         compiled_actor, compiled_critic = self.alg.actor, self.alg.critic
-        if self._uncompiled_actor is not None:
-            self.alg.actor, self.alg.critic = self._uncompiled_actor, self._uncompiled_critic
+        self.alg.actor = _unwrap_compiled(self.alg.actor)
+        self.alg.critic = _unwrap_compiled(self.alg.critic)
         load_iteration = self.alg.load(loaded_dict, load_cfg, strict)
         self.alg.actor, self.alg.critic = compiled_actor, compiled_critic
         if load_iteration:
@@ -196,12 +217,12 @@ class OnPolicyRunner:
     def get_inference_policy(self, device: str | None = None) -> MLPModel:
         """Return the policy on the requested device for inference."""
         self.alg.eval_mode()  # Switch to evaluation mode (e.g. for dropout)
-        policy = self._uncompiled_actor if self._uncompiled_actor is not None else self.alg.get_policy()
+        policy = _unwrap_compiled(self.alg.get_policy())
         return policy.to(device)  # type: ignore
 
     def export_policy_to_jit(self, path: str, filename: str = "policy.pt") -> None:
         """Export the model to a Torch JIT file."""
-        policy = self._uncompiled_actor if self._uncompiled_actor is not None else self.alg.get_policy()
+        policy = _unwrap_compiled(self.alg.get_policy())
         jit_model = policy.as_jit()
         jit_model.to("cpu")
 
@@ -215,7 +236,7 @@ class OnPolicyRunner:
 
     def export_policy_to_onnx(self, path: str, filename: str = "policy.onnx", verbose: bool = False) -> None:
         """Export the model into an ONNX file."""
-        policy = self._uncompiled_actor if self._uncompiled_actor is not None else self.alg.get_policy()
+        policy = _unwrap_compiled(self.alg.get_policy())
         onnx_model = policy.as_onnx(verbose=verbose)
         onnx_model.to("cpu")
         onnx_model.eval()
