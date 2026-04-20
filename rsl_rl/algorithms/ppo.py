@@ -189,17 +189,17 @@ class PPO:
         # Symmetry loss
         mean_symmetry_loss = 0 if self.symmetry else None
 
-        # Get mini batch generator
+        # Get mini-batch generator
         if self.actor.is_recurrent or self.critic.is_recurrent:
             generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
 
-        # Iterate over batches
+        # Iterate over mini-batches
         for batch in generator:
             original_batch_size = batch.observations.batch_size[0]
 
-            # Check if we should normalize advantages per mini batch
+            # Check if we should normalize advantages per mini-batch
             if self.normalize_advantage_per_mini_batch:
                 with torch.no_grad():
                     batch.advantages = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)  # type: ignore
