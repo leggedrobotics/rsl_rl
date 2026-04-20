@@ -453,18 +453,10 @@ Random Network Distillation
      - Type
      - Default
      - Description
-   * - ``weight``
-     - float
-     - ``0.0``
-     - Initial weight of the RND reward.
-   * - ``weight_schedule``
-     - dict | None
-     - ``None``
-     - Weight schedule for the RND reward. Valid values: see :class:`~rsl_rl.extensions.rnd.RandomNetworkDistillation`.
-   * - ``learning_rate``
-     - float
-     - ``0.001``
-     - Learning rate for the RND optimizer.
+   * - ``num_outputs``
+     - int
+     - required
+     - Number of outputs of the RND networks.
    * - ``predictor_hidden_dims``
      - tuple[int] | list[int]
      - required
@@ -473,10 +465,6 @@ Random Network Distillation
      - tuple[int] | list[int]
      - required
      - Hidden dimensions of the RND target network.
-   * - ``num_outputs``
-     - int
-     - required
-     - Number of outputs of the RND networks.
    * - ``activation``
      - str
      - ``"elu"``
@@ -489,6 +477,18 @@ Random Network Distillation
      - bool
      - ``False``
      - Whether to normalize the RND reward.
+   * - ``weight``
+     - float
+     - ``0.0``
+     - Initial weight of the RND reward.
+   * - ``weight_schedule``
+     - dict | None
+     - ``None``
+     - Weight schedule for the RND reward. Valid values: see :class:`~rsl_rl.extensions.rnd.RandomNetworkDistillation`.
+   * - ``learning_rate``
+     - float
+     - ``0.001``
+     - Learning rate for the RND optimizer.
 
 Symmetry Augmentation
 ^^^^^^^^^^^^^^^^^^^^^

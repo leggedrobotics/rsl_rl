@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from itertools import chain
 from tensordict import TensorDict
 
@@ -72,18 +71,8 @@ class PPO:
             self.gpu_global_rank = 0
             self.gpu_world_size = 1
 
-        # RND components
-        if rnd_cfg:
-            # Extract parameters used in ppo
-            rnd_lr = rnd_cfg.pop("learning_rate", 1e-3)
-            # Create RND module
-            self.rnd = RandomNetworkDistillation(device=self.device, **rnd_cfg)
-            # Create RND optimizer
-            params = self.rnd.predictor.parameters()
-            self.rnd_optimizer = optim.Adam(params, lr=rnd_lr)
-        else:
-            self.rnd = None
-            self.rnd_optimizer = None
+        # RND extension
+        self.rnd = RandomNetworkDistillation(device=self.device, **rnd_cfg) if rnd_cfg else None
 
         # Symmetry components
         if symmetry_cfg is not None:
@@ -346,24 +335,14 @@ class PPO:
                     symmetry_loss = symmetry_loss.detach()
 
             # RND loss
-            if self.rnd:
-                # Extract the rnd_state
-                with torch.no_grad():
-                    rnd_state = self.rnd.get_rnd_state(batch.observations[:original_batch_size])  # type: ignore
-                    rnd_state = self.rnd.state_normalizer(rnd_state)
-                # Predict the embedding and the target
-                predicted_embedding = self.rnd.predictor(rnd_state)
-                target_embedding = self.rnd.target(rnd_state).detach()
-                # Compute the loss as the mean squared error
-                mseloss = torch.nn.MSELoss()
-                rnd_loss = mseloss(predicted_embedding, target_embedding)
+            rnd_loss = self.rnd.compute_loss(batch.observations[:original_batch_size]) if self.rnd else None  # type: ignore
 
             # Compute the gradients for PPO
             self.optimizer.zero_grad()
             loss.backward()
             # Compute the gradients for RND
             if self.rnd:
-                self.rnd_optimizer.zero_grad()
+                self.rnd.optimizer.zero_grad()
                 rnd_loss.backward()
 
             # Collect gradients from all GPUs
@@ -375,8 +354,8 @@ class PPO:
             nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
             # Apply the gradients for RND
-            if self.rnd_optimizer:
-                self.rnd_optimizer.step()
+            if self.rnd:
+                self.rnd.optimizer.step()
 
             # Store the losses
             mean_value_loss += value_loss.item()
@@ -438,7 +417,7 @@ class PPO:
         }
         if self.rnd:
             saved_dict["rnd_state_dict"] = self.rnd.state_dict()
-            saved_dict["rnd_optimizer_state_dict"] = self.rnd_optimizer.state_dict()
+            saved_dict["rnd_optimizer_state_dict"] = self.rnd.optimizer.state_dict()
         return saved_dict
 
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
@@ -462,7 +441,7 @@ class PPO:
             self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
         if load_cfg.get("rnd") and self.rnd:
             self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
-            self.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
+            self.rnd.optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
         return load_cfg.get("iteration", False)
 
     def get_policy(self) -> MLPModel:
