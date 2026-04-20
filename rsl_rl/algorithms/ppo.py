@@ -269,14 +269,14 @@ class PPO:
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
 
+            # RND loss
+            rnd_loss = self.rnd.compute_loss(batch.observations[:original_batch_size]) if self.rnd else None  # type: ignore
+
             # Symmetry loss
             if self.symmetry:
                 symmetry_loss = self.symmetry.compute_loss(self.actor, batch, original_batch_size)
                 if self.symmetry.use_mirror_loss:
                     loss = loss + self.symmetry.mirror_loss_coeff * symmetry_loss
-
-            # RND loss
-            rnd_loss = self.rnd.compute_loss(batch.observations[:original_batch_size]) if self.rnd else None  # type: ignore
 
             # Compute the gradients for PPO
             self.optimizer.zero_grad()
