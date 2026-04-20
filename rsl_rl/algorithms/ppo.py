@@ -16,7 +16,7 @@ from rsl_rl.env import VecEnv
 from rsl_rl.extensions import RandomNetworkDistillation, resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import resolve_callable, resolve_obs_groups, resolve_optimizer
+from rsl_rl.utils import compile_model, resolve_callable, resolve_obs_groups, resolve_optimizer
 
 
 class PPO:
@@ -111,6 +111,11 @@ class PPO:
         # PPO components
         self.actor = actor.to(self.device)
         self.critic = critic.to(self.device)
+
+        # Handles to the uncompiled modules for state_dict operations and export. If compilation is disabled, these
+        # simply alias ``self.actor`` / ``self.critic``.
+        self._raw_actor = self.actor
+        self._raw_critic = self.critic
 
         # Create the optimizer
         self.optimizer = resolve_optimizer(optimizer)(
@@ -432,8 +437,8 @@ class PPO:
     def save(self) -> dict:
         """Return a dict of all models for saving."""
         saved_dict = {
-            "actor_state_dict": self.actor.state_dict(),
-            "critic_state_dict": self.critic.state_dict(),
+            "actor_state_dict": self._raw_actor.state_dict(),
+            "critic_state_dict": self._raw_critic.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
         }
         if self.rnd:
@@ -455,9 +460,9 @@ class PPO:
 
         # Load the specified models
         if load_cfg.get("actor"):
-            self.actor.load_state_dict(loaded_dict["actor_state_dict"], strict=strict)
+            self._raw_actor.load_state_dict(loaded_dict["actor_state_dict"], strict=strict)
         if load_cfg.get("critic"):
-            self.critic.load_state_dict(loaded_dict["critic_state_dict"], strict=strict)
+            self._raw_critic.load_state_dict(loaded_dict["critic_state_dict"], strict=strict)
         if load_cfg.get("optimizer"):
             self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
         if load_cfg.get("rnd") and self.rnd:
@@ -467,7 +472,18 @@ class PPO:
 
     def get_policy(self) -> MLPModel:
         """Get the policy model."""
-        return self.actor
+        return self._raw_actor
+
+    def compile(self, mode: str | None = None) -> None:
+        """Compile actor and critic with ``torch.compile``.
+
+        See :func:`~rsl_rl.utils.compile_model` for the set of accepted modes.
+
+        Args:
+            mode: ``torch.compile`` mode. Defaults to ``None``, in which case compilation is disabled.
+        """
+        self.actor = compile_model(self._raw_actor, mode)  # type: ignore
+        self.critic = compile_model(self._raw_critic, mode)  # type: ignore
 
     @staticmethod
     def construct_algorithm(obs: TensorDict, env: VecEnv, cfg: dict, device: str) -> PPO:
@@ -503,19 +519,22 @@ class PPO:
         # Initialize the algorithm
         alg: PPO = alg_class(actor, critic, storage, device=device, **cfg["algorithm"], multi_gpu_cfg=cfg["multi_gpu"])
 
+        # Compile the algorithm's models if requested
+        alg.compile(cfg.get("torch_compile_mode"))
+
         return alg
 
     def broadcast_parameters(self) -> None:
         """Broadcast model parameters to all GPUs."""
         # Obtain the model parameters on current GPU
-        model_params = [self.actor.state_dict(), self.critic.state_dict()]
+        model_params = [self._raw_actor.state_dict(), self._raw_critic.state_dict()]
         if self.rnd:
             model_params.append(self.rnd.predictor.state_dict())
         # Broadcast the model parameters
         torch.distributed.broadcast_object_list(model_params, src=0)
         # Load the model parameters on all GPUs from source GPU
-        self.actor.load_state_dict(model_params[0])
-        self.critic.load_state_dict(model_params[1])
+        self._raw_actor.load_state_dict(model_params[0])
+        self._raw_critic.load_state_dict(model_params[1])
         if self.rnd:
             self.rnd.predictor.load_state_dict(model_params[2])
 

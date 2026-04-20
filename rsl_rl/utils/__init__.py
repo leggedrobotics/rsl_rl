@@ -7,6 +7,7 @@
 
 from .utils import (
     check_nan,
+    compile_model,
     get_param,
     resolve_callable,
     resolve_nn_activation,
@@ -18,6 +19,7 @@ from .utils import (
 
 __all__ = [
     "check_nan",
+    "compile_model",
     "get_param",
     "resolve_callable",
     "resolve_nn_activation",

@@ -77,6 +77,11 @@ Currently, RSL-RL implements two runner classes:
      - bool
      - ``True``
      - Whether to check for NaN values coming from the environment.
+   * - ``torch_compile_mode``
+     - str | None
+     - ``None``
+     - Compile mode for the PyTorch models to accelerate training.
+       Valid values: ``None``, ``"default"``, ``"max-autotune-no-cudagraphs"``.
    * - ``algorithm``
      - dict
      - required
