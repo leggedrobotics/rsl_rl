@@ -297,10 +297,10 @@ def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.M
 
     Args:
         model: The model to compile.
-        mode: The :func:`torch.compile` mode. CUDA-graph modes (``"reduce-overhead"``, ``"max-autotune"``)
-            are rejected because they are incompatible with the multi-model forward patterns used by the algorithms
-            (graph replay overwrites the previous call's output buffer). Use ``"default"`` or
-            ``"max-autotune-no-cudagraphs"`` instead. Defaults to ``None``, in which case compilation is disabled.
+        mode: The :func:`torch.compile` mode. CUDA-graph modes (``"reduce-overhead"``, ``"max-autotune"``) are rejected
+        because they are incompatible with the multi-model forward patterns used by the algorithms (graph replay
+        overwrites the previous call's output buffer). Use ``"default"`` or ``"max-autotune-no-cudagraphs"`` instead.
+        Defaults to ``None``, in which case compilation is disabled.
 
     Returns:
         The compiled model, or the original model if ``mode`` is ``None``.
