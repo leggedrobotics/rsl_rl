@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import torch
-import torch.optim as optim
 from tensordict import TensorDict
 
 from rsl_rl.extensions.rnd import RandomNetworkDistillation
@@ -62,17 +61,12 @@ class TestIntrinsicReward:
         with torch.no_grad():
             initial_reward = rnd.get_intrinsic_reward(obs).mean().item()
 
-        # Train predictor to match target
-        optimizer = optim.Adam(rnd.predictor.parameters(), lr=1e-3)
-        rnd_state = rnd.get_rnd_state(obs)
-
+        # Train predictor to match target using the module's own loss/optimizer
         for _ in range(200):
-            optimizer.zero_grad()
-            pred = rnd.predictor(rnd_state)
-            target = rnd.target(rnd_state).detach()
-            loss = torch.nn.functional.mse_loss(pred, target)
+            rnd.optimizer.zero_grad()
+            loss = rnd.compute_loss(obs)
             loss.backward()
-            optimizer.step()
+            rnd.optimizer.step()
 
         with torch.no_grad():
             # Reset counter to avoid schedule interference
@@ -101,6 +95,47 @@ class TestIntrinsicReward:
 
         rnd.get_intrinsic_reward(obs)
         assert rnd.update_counter == 2
+
+
+class TestPredictorLoss:
+    """Tests for :meth:`RandomNetworkDistillation.compute_loss` and the built-in optimizer."""
+
+    def test_compute_loss_is_finite_scalar(self) -> None:
+        """The MSE loss should be a finite, non-negative scalar tensor."""
+        rnd, obs = _make_rnd()
+
+        loss = rnd.compute_loss(obs)
+        assert loss.ndim == 0
+        assert torch.isfinite(loss)
+        assert loss.item() >= 0.0
+
+    def test_compute_loss_is_graph_connected(self) -> None:
+        """The returned loss should allow gradient flow back to the predictor."""
+        rnd, obs = _make_rnd()
+
+        loss = rnd.compute_loss(obs)
+        assert loss.requires_grad
+
+    def test_default_optimizer_updates_predictor_only(self) -> None:
+        """The auto-built optimizer should update the predictor and leave the frozen target untouched."""
+        rnd, obs = _make_rnd()
+
+        predictor_before = [p.detach().clone() for p in rnd.predictor.parameters()]
+        target_before = [p.detach().clone() for p in rnd.target.parameters()]
+
+        rnd.optimizer.zero_grad()
+        loss = rnd.compute_loss(obs)
+        loss.backward()
+        rnd.optimizer.step()
+
+        predictor_after = list(rnd.predictor.parameters())
+        target_after = list(rnd.target.parameters())
+
+        # Predictor should have changed on at least one parameter
+        assert any(not torch.equal(a, b) for a, b in zip(predictor_before, predictor_after))
+        # Target must not have moved
+        for a, b in zip(target_before, target_after):
+            assert torch.equal(a, b)
 
 
 class TestWeightSchedules:
