@@ -312,8 +312,8 @@ def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.M
         return model
     if mode in ("reduce-overhead", "max-autotune"):
         raise ValueError(
-            f"torch_compile_mode='{mode}' uses CUDA graphs which are incompatible with algorithms' multi-model forward "
-            f"pattern. Use 'default' or 'max-autotune-no-cudagraphs', or set to None to disable."
+            f"torch_compile_mode='{mode}' uses CUDA graphs which are incompatible with the algorithms' multi-model "
+            f"forward pattern. Use 'default' or 'max-autotune-no-cudagraphs', or set to None to disable."
         )
     return torch.compile(model, mode=mode)  # type: ignore
 
