@@ -107,7 +107,7 @@ class Symmetry:
         # Mirror the original-slice action means using the augmentation function. We use the action means here rather
         # than the sampled actions in ``batch.actions``, since the symmetry loss is defined on the policy mean.
         _, mean_actions_symm = self.data_augmentation_func(
-            env=self.env, obs=None, actions=mean_actions[original_batch_size:]
+            env=self.env, obs=None, actions=mean_actions[:original_batch_size]
         )
 
         # MSE between the actor prediction on mirrored obs and the mirrored actor prediction on the original obs
