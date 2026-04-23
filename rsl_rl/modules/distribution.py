@@ -136,7 +136,7 @@ class GaussianDistribution(Distribution):
     standard deviation can be a learnable parameter or a constant. It can be parameterized in either "scalar" space or
     "log" space and is clamped to a specified range.
 
-    ..note:
+    .. note::
         If the standard deviation type is set to "log", the provided arguments are still interpreted in scalar space,
         and converted to log space internally.
     """
@@ -247,7 +247,7 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
     standard deviation is output by the MLP alongside the mean, making it state-dependent. It can be parameterized in
     either "scalar" space or "log" space, and is clamped to a specified range.
 
-    ..note:
+    .. note::
         If the standard deviation type is set to "log", the provided arguments are still interpreted in scalar space,
         and converted to log space internally.
     """

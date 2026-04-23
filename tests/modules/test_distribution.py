@@ -96,6 +96,79 @@ class TestGaussianDistribution:
         assert mean.grad is not None, "Gradient should flow from log_prob to mean"
         assert not torch.all(mean.grad == 0), "Gradient should be non-zero"
 
+    def test_std_clamped_to_range_scalar(self) -> None:
+        """The std should be clamped to both bounds of std_range for std_type='scalar'."""
+        dim = 2
+        std_range = (0.1, 2.0)
+        # Above the upper bound.
+        dist_high = GaussianDistribution(output_dim=dim, init_std=10.0, std_type="scalar", std_range=std_range)
+        dist_high.update(torch.zeros(1, dim))
+        assert torch.allclose(dist_high.std, torch.full((1, dim), std_range[1]), atol=1e-6)
+        # Below the lower bound.
+        dist_low = GaussianDistribution(output_dim=dim, init_std=0.01, std_type="scalar", std_range=std_range)
+        dist_low.update(torch.zeros(1, dim))
+        assert torch.allclose(dist_low.std, torch.full((1, dim), std_range[0]), atol=1e-6)
+
+    def test_std_clamped_to_range_log(self) -> None:
+        """The std should be clamped to both bounds of std_range for std_type='log'."""
+        dim = 2
+        std_range = (0.1, 2.0)
+        # Above the upper bound.
+        dist_high = GaussianDistribution(output_dim=dim, init_std=10.0, std_type="log", std_range=std_range)
+        dist_high.update(torch.zeros(1, dim))
+        assert torch.allclose(dist_high.std, torch.full((1, dim), std_range[1]), atol=1e-6)
+        # Below the lower bound.
+        dist_low = GaussianDistribution(output_dim=dim, init_std=0.01, std_type="log", std_range=std_range)
+        dist_low.update(torch.zeros(1, dim))
+        assert torch.allclose(dist_low.std, torch.full((1, dim), std_range[0]), atol=1e-6)
+
+    def test_std_range_min_floor(self) -> None:
+        """The minimum of std_range should be floored to 1e-6 for numerical stability."""
+        dist = GaussianDistribution(output_dim=2, init_std=1.0, std_type="scalar", std_range=(0.0, 10.0))
+        assert dist.std_range[0] == 1e-6
+
+    def test_learn_std_scalar(self) -> None:
+        """learn_std should control whether the scalar std parameter is learnable."""
+        dim = 3
+        init_std = 0.7
+        # learn_std=True: parameter is trainable and receives non-zero gradient.
+        dist_learn = GaussianDistribution(output_dim=dim, init_std=init_std, std_type="scalar", learn_std=True)
+        assert dist_learn.std_param.requires_grad is True
+        dist_learn.update(torch.randn(2, dim))
+        sample = dist_learn.sample().detach()
+        dist_learn.log_prob(sample).sum().backward()
+        assert dist_learn.std_param.grad is not None and not torch.all(dist_learn.std_param.grad == 0)
+        # learn_std=False: parameter is frozen and receives no gradient.
+        dist_fixed = GaussianDistribution(output_dim=dim, init_std=init_std, std_type="scalar", learn_std=False)
+        assert dist_fixed.std_param.requires_grad is False
+        mean = torch.randn(2, dim, requires_grad=True)
+        dist_fixed.update(mean)
+        sample = dist_fixed.sample().detach()
+        dist_fixed.log_prob(sample).sum().backward()
+        assert dist_fixed.std_param.grad is None, "Non-learnable std should not receive gradients"
+        assert torch.allclose(dist_fixed.std_param, torch.full((dim,), init_std), atol=1e-6)
+
+    def test_learn_std_log(self) -> None:
+        """learn_std should control whether the log std parameter is learnable."""
+        dim = 3
+        init_std = 0.7
+        # learn_std=True: parameter is trainable and receives non-zero gradient.
+        dist_learn = GaussianDistribution(output_dim=dim, init_std=init_std, std_type="log", learn_std=True)
+        assert dist_learn.log_std_param.requires_grad is True
+        dist_learn.update(torch.randn(2, dim))
+        sample = dist_learn.sample().detach()
+        dist_learn.log_prob(sample).sum().backward()
+        assert dist_learn.log_std_param.grad is not None and not torch.all(dist_learn.log_std_param.grad == 0)
+        # learn_std=False: parameter is frozen and receives no gradient.
+        dist_fixed = GaussianDistribution(output_dim=dim, init_std=init_std, std_type="log", learn_std=False)
+        assert dist_fixed.log_std_param.requires_grad is False
+        mean = torch.randn(2, dim, requires_grad=True)
+        dist_fixed.update(mean)
+        sample = dist_fixed.sample().detach()
+        dist_fixed.log_prob(sample).sum().backward()
+        assert dist_fixed.log_std_param.grad is None, "Non-learnable log std should not receive gradients"
+        assert torch.allclose(dist_fixed.log_std_param, torch.log(torch.full((dim,), init_std)), atol=1e-6)
+
 
 class TestHeteroscedasticGaussianDistribution:
     """Tests for ``HeteroscedasticGaussianDistribution``."""
@@ -142,3 +215,37 @@ class TestHeteroscedasticGaussianDistribution:
         dim = 5
         dist = HeteroscedasticGaussianDistribution(output_dim=dim)
         assert dist.input_dim == [2, dim]
+
+    def test_std_clamped_to_range_scalar(self) -> None:
+        """The state-dependent std should be clamped to std_range for std_type='scalar'."""
+        dim = 3
+        dist = HeteroscedasticGaussianDistribution(
+            output_dim=dim, init_std=1.0, std_type="scalar", std_range=(0.1, 2.0)
+        )
+
+        mean_val = torch.zeros(1, dim)
+        std_val = torch.tensor([[10.0, 0.01, 1.0]])  # above, below, inside
+        mlp_output = torch.stack([mean_val, std_val], dim=-2)
+
+        dist.update(mlp_output)
+        expected = torch.tensor([[2.0, 0.1, 1.0]])
+        assert torch.allclose(dist.std, expected, atol=1e-6)
+
+    def test_std_clamped_to_range_log(self) -> None:
+        """The state-dependent std should be clamped to std_range for std_type='log'."""
+        dim = 3
+        dist = HeteroscedasticGaussianDistribution(output_dim=dim, init_std=1.0, std_type="log", std_range=(0.1, 2.0))
+
+        mean_val = torch.zeros(1, dim)
+        # log values: log(10) above, log(0.01) below, log(1) inside
+        log_std_val = torch.log(torch.tensor([[10.0, 0.01, 1.0]]))
+        mlp_output = torch.stack([mean_val, log_std_val], dim=-2)
+
+        dist.update(mlp_output)
+        expected = torch.tensor([[2.0, 0.1, 1.0]])
+        assert torch.allclose(dist.std, expected, atol=1e-6)
+
+    def test_std_range_min_floor(self) -> None:
+        """The minimum of std_range should be floored to 1e-6 for numerical stability."""
+        dist = HeteroscedasticGaussianDistribution(output_dim=2, init_std=1.0, std_type="scalar", std_range=(0.0, 10.0))
+        assert dist.std_range[0] == 1e-6
