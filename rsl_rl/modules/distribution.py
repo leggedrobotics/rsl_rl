@@ -130,19 +130,23 @@ class Distribution(nn.Module):
 
 
 class GaussianDistribution(Distribution):
-    """Gaussian (Normal) distribution module with state-independent standard deviation.
+    """Gaussian distribution module with state-independent standard deviation.
 
-    This distribution parameterizes actions using a multivariate Gaussian with diagonal covariance. The standard
-    deviation is a learnable parameter that is independent of the model input. It can be parameterized in either
-    "scalar" space (directly) or "log" space.
+    This distribution parameterizes stochastic outputs using a multivariate Gaussian with diagonal covariance. The
+    standard deviation can be a learnable parameter or a constant. It can be parameterized in either "scalar" space or
+    "log" space and is clamped to a specified range.
+
+    ..note:
+        If the standard deviation type is set to "log", the provided arguments are still interpreted in scalar space,
+        and converted to log space internally.
     """
 
     def __init__(
         self,
         output_dim: int,
         init_std: float = 1.0,
-        std_type: str = "scalar",
         std_range: tuple[float, float] = (1e-6, 1e6),
+        std_type: str = "scalar",
         learn_std: bool = True,
     ) -> None:
         """Initialize the Gaussian distribution module.
@@ -150,9 +154,9 @@ class GaussianDistribution(Distribution):
         Args:
             output_dim: Dimension of the action/output space.
             init_std: Initial standard deviation.
+            std_range: Range for the standard deviation. Should be a tuple of (min, max) values for clamping.
             std_type: Parameterization of the standard deviation: "scalar" or "log".
-            std_range: Range for the standard deviation. Should be a tuple (min, max) values to clamp the std.
-            learn_std: Whether the standard deviation should be learnable. If False, it will be fixed to init_std.
+            learn_std: Whether the standard deviation should be learnable. If False, it will be fixed to `init_std`.
         """
         super().__init__(output_dim)
         self.std_type = std_type
@@ -237,27 +241,31 @@ class GaussianDistribution(Distribution):
 
 
 class HeteroscedasticGaussianDistribution(GaussianDistribution):
-    """Gaussian (Normal) distribution module with state-dependent standard deviation.
+    """Gaussian distribution module with state-dependent standard deviation.
 
-    This distribution parameterizes actions using a multivariate Gaussian with diagonal covariance. The standard
-    deviation is output by the MLP alongside the mean, making it state-dependent (heteroscedastic). It can be
-    parameterized in either "scalar" space (directly) or "log" space.
+    This distribution parameterizes stochastic outputs using a multivariate Gaussian with diagonal covariance. The
+    standard deviation is output by the MLP alongside the mean, making it state-dependent. It can be parameterized in
+    either "scalar" space or "log" space, and is clamped to a specified range.
+
+    ..note:
+        If the standard deviation type is set to "log", the provided arguments are still interpreted in scalar space,
+        and converted to log space internally.
     """
 
     def __init__(
         self,
         output_dim: int,
         init_std: float = 1.0,
-        std_type: str = "scalar",
         std_range: tuple[float, float] = (1e-6, 1e6),
+        std_type: str = "scalar",
     ) -> None:
         """Initialize the heteroscedastic Gaussian distribution module.
 
         Args:
             output_dim: Dimension of the action/output space.
-            init_std: Initial standard deviation (used to initialize MLP std head bias).
+            init_std: Initial standard deviation (used to initialize the MLP's std head bias).
+            std_range: Range for the standard deviation. Should be a tuple of (min, max) values for clamping.
             std_type: Parameterization of the standard deviation: "scalar" or "log".
-            std_range: Range for the standard deviation. Should be a tuple (min, max) values to clamp the std.
         """
         # Skip GaussianDistribution.__init__ to avoid creating unnecessary learnable std parameters.
         Distribution.__init__(self, output_dim)
