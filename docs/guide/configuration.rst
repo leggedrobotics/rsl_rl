@@ -295,7 +295,13 @@ MLPModel
 The  ``distribution_cfg`` dictionary contains all parameters required by a specific distribution. RSL-RL implements two
 distributions by default: A simple Gaussian distribution (:class:`~rsl_rl.modules.distribution.GaussianDistribution`) 
 and a Gaussian distribution with state-dependent standard deviation 
-(:class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution`). Both require the same parameters:
+(:class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution`).
+
+GaussianDistribution
+  ^^^^^^^^^^^^^^^^^^^^
+
+The :class:`~rsl_rl.modules.distribution.GaussianDistribution` implements a multivariate Gaussian (Normal) distribution with diagonal covariance and **state-independent** standard deviation. 
+This means the standard deviation is a learnable parameter, but does not depend on the model input (i.e., it is global for all states). The main options are:
 
 .. list-table::
    :header-rows: 1
@@ -308,15 +314,54 @@ and a Gaussian distribution with state-dependent standard deviation
    * - ``class_name``
      - str
      - required
-     - Distribution class name. Valid values: ``"GaussianDistribution"``, ``"HeteroscedasticGaussianDistribution"``.
+     - Must be ``"GaussianDistribution"``.
    * - ``init_std``
      - float
      - ``1.0``
-     - Initial standard deviation.
+     - Initial standard deviation for all action dimensions.
    * - ``std_type``
      - str
      - ``"scalar"``
-     - Parameterization of the standard deviation. Valid values: ``"scalar"``, ``"log"``.
+     - Parameterization of the standard deviation. ``"scalar"`` means std is stored directly; ``"log"`` means std is stored in log-space and exponentiated. Both are learnable if ``learn_std`` is True.
+   * - ``std_range``
+     - tuple[float, float]
+     - ``(1e-6, 1e6)``
+     - Minimum and maximum allowed values for the standard deviation (clamped for numerical stability).
+   * - ``learn_std``
+     - bool
+     - ``True``
+     - Whether the standard deviation is learnable (True) or fixed (False).
+
+HeteroscedasticGaussianDistribution
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The :class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution` implements a multivariate Gaussian (Normal) distribution with diagonal covariance and **state-dependent** standard deviation. 
+Here, both the mean and standard deviation are produced by the model (typically as two heads of the MLP output). The main options are:
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - Must be ``"HeteroscedasticGaussianDistribution"``.
+   * - ``init_std``
+     - float
+     - ``1.0``
+     - Initial standard deviation (used to initialize the std head bias).
+   * - ``std_type``
+     - str
+     - ``"scalar"``
+     - Parameterization of the standard deviation. ``"scalar"`` means std is output directly; ``"log"`` means the model outputs log-std, which is exponentiated.
+   * - ``std_range``
+     - tuple[float, float]
+     - ``(1e-6, 1e6)``
+     - Minimum and maximum allowed values for the standard deviation (clamped for numerical stability).
 
 RNNModel
 ^^^^^^^^
