@@ -292,6 +292,32 @@ def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor) -> No
         )
 
 
+def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.Module:
+    """Wrap a model with :func:`torch.compile`, validating the compile mode.
+
+    Args:
+        model: The model to compile.
+        mode: The :func:`torch.compile` mode. CUDA-graph modes (``"reduce-overhead"``, ``"max-autotune"``) are rejected
+        because they are incompatible with the multi-model forward patterns used by the algorithms (graph replay
+        overwrites the previous call's output buffer). Use ``"default"`` or ``"max-autotune-no-cudagraphs"`` instead.
+        Defaults to ``None``, in which case compilation is disabled.
+
+    Returns:
+        The compiled model, or the original model if ``mode`` is ``None``.
+
+    Raises:
+        ValueError: If ``mode`` is one of the unsupported CUDA-graph modes.
+    """
+    if mode is None:
+        return model
+    if mode in ("reduce-overhead", "max-autotune"):
+        raise ValueError(
+            f"torch_compile_mode='{mode}' uses CUDA graphs which are incompatible with the algorithms' multi-model "
+            f"forward pattern. Use 'default' or 'max-autotune-no-cudagraphs', or set to None to disable."
+        )
+    return torch.compile(model, mode=mode)  # type: ignore
+
+
 def split_and_pad_trajectories(
     tensor: torch.Tensor | TensorDict, dones: torch.Tensor
 ) -> tuple[torch.Tensor | TensorDict, torch.Tensor]:
