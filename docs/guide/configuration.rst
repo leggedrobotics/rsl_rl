@@ -420,10 +420,11 @@ configuration includes the following parameters:
 Distribution Configuration
 --------------------------
 
-RSL-RL implements two distributions that enable stochastic model outputs: A
-:class:`~rsl_rl.modules.distribution.GaussianDistribution` and a
-:class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution` with state-dependent standard deviation, which
-may be configured as follows.
+RSL-RL implements three distributions that enable stochastic model outputs:
+:class:`~rsl_rl.modules.distribution.GaussianDistribution`,
+:class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution` with state-dependent standard deviation, and
+:class:`~rsl_rl.modules.distribution.BetaDistribution` for naturally bounded action spaces, which may be configured as
+follows.
 
 GaussianDistribution
 ^^^^^^^^^^^^^^^^^^^^
@@ -484,6 +485,27 @@ HeteroscedasticGaussianDistribution
      - str
      - ``"scalar"``
      - Whether the standard deviation is stored directly or in log-space. Valid values: ``"scalar"``, ``"log"``.
+
+BetaDistribution
+^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - Distribution class name. Valid values: ``"BetaDistribution"``.
+   * - ``action_range``
+     - tuple[float, float]
+     - ``(-1.0, 1.0)``
+     - Interval ``(min, max)`` to which samples are linearly rescaled. The Beta distribution naturally produces samples
+       in ``[0, 1]``, which are rescaled to this range.
 
 Extension Configuration
 -----------------------

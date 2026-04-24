@@ -8,7 +8,7 @@
 import math
 import torch
 
-from rsl_rl.modules.distribution import GaussianDistribution, HeteroscedasticGaussianDistribution
+from rsl_rl.modules.distribution import BetaDistribution, GaussianDistribution, HeteroscedasticGaussianDistribution
 
 
 class TestGaussianDistribution:
@@ -249,3 +249,68 @@ class TestHeteroscedasticGaussianDistribution:
         """The minimum of std_range should be floored to 1e-6 for numerical stability."""
         dist = HeteroscedasticGaussianDistribution(output_dim=2, init_std=1.0, std_type="scalar", std_range=(0.0, 10.0))
         assert dist.std_range[0] == 1e-6
+
+
+class TestBetaDistribution:
+    """Tests for ``BetaDistribution``."""
+
+    def test_alpha_beta_greater_than_one(self) -> None:
+        """After update(), alpha and beta should both be strictly greater than 1."""
+        dist = BetaDistribution(output_dim=4)
+        dist.update(torch.randn(8, 2, 4))
+        assert (dist._alpha > 1.0).all()
+        assert (dist._beta > 1.0).all()
+
+    def test_samples_within_action_range(self) -> None:
+        """Samples should lie within the specified action_range."""
+        dist = BetaDistribution(output_dim=4, action_range=(-1.0, 1.0))
+        dist.update(torch.randn(64, 2, 4))
+        samples = dist.sample()
+        assert (samples >= -1.0).all() and (samples <= 1.0).all()
+
+    def test_log_prob_unit_range_matches_torch(self) -> None:
+        """With action_range (0, 1), log_prob should match torch.distributions.Beta directly."""
+        dim = 3
+        dist = BetaDistribution(output_dim=dim, action_range=(0.0, 1.0))
+        mlp_output = torch.randn(4, 2, dim)
+        dist.update(mlp_output)
+
+        samples = dist.sample().clamp(1e-6, 1.0 - 1e-6)
+        expected = torch.distributions.Beta(dist._alpha, dist._beta).log_prob(samples).sum(dim=-1)
+        assert torch.allclose(dist.log_prob(samples), expected, atol=1e-5)
+
+    def test_log_prob_jacobian_correction(self) -> None:
+        """log_prob with a scaled action_range should differ from the unscaled case by log(scale) per dimension."""
+        dim = 3
+        scale = 2.0
+        dist_unit = BetaDistribution(output_dim=dim, action_range=(0.0, 1.0))
+        dist_scaled = BetaDistribution(output_dim=dim, action_range=(0.0, scale))
+
+        mlp_output = torch.randn(4, 2, dim)
+        dist_unit.update(mlp_output)
+        dist_scaled.update(mlp_output)
+
+        unit_samples = dist_unit.sample().clamp(1e-6, 1.0 - 1e-6)
+        scaled_samples = unit_samples * scale
+
+        lp_unit = dist_unit.log_prob(unit_samples)
+        lp_scaled = dist_scaled.log_prob(scaled_samples)
+        # Change-of-variables: log p(y) = log p(x) - dim * log(scale)
+        assert torch.allclose(lp_unit - dim * math.log(scale), lp_scaled, atol=1e-5)
+
+    def test_deterministic_output_matches_module(self) -> None:
+        """as_deterministic_output_module() should produce the same result as deterministic_output()."""
+        dist = BetaDistribution(output_dim=4, action_range=(-1.0, 1.0))
+        mlp_output = torch.randn(8, 2, 4)
+        assert torch.allclose(dist.deterministic_output(mlp_output), dist.as_deterministic_output_module()(mlp_output))
+
+    def test_log_prob_gradient_flows(self) -> None:
+        """log_prob should allow gradient flow back through the MLP output."""
+        dim = 3
+        dist = BetaDistribution(output_dim=dim)
+        mlp_output = torch.randn(4, 2, dim, requires_grad=True)
+        dist.update(mlp_output)
+        samples = dist.sample().detach()
+        dist.log_prob(samples).sum().backward()
+        assert mlp_output.grad is not None
+        assert not torch.all(mlp_output.grad == 0)
