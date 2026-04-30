@@ -87,6 +87,20 @@ class MLP(nn.Sequential):
                 nn.init.orthogonal_(module.weight, gain=get_param(scales, idx))
                 nn.init.zeros_(module.bias)
 
+    def reset_last_layer_weights(self, scale: float | tuple[float] = 1.0) -> None:
+        """Reset the weights of the last linear layer.
+
+        The method reinitializes the last Linear layer found in the sequential model using
+        orthogonal initialization and zeros the bias.
+        """
+        for module in reversed(self):
+            if isinstance(module, nn.Linear):
+                nn.init.orthogonal_(module.weight, gain=get_param(scale, 0))
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+                return
+        raise RuntimeError("MLP does not contain any Linear layers to reset.")
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the MLP."""
         for layer in self:

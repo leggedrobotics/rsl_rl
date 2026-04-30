@@ -153,6 +153,20 @@ class CNN(nn.Sequential):
                 torch.nn.init.kaiming_normal_(module.weight)
                 torch.nn.init.zeros_(module.bias)
 
+    def reset_last_layer_weights(self) -> None:
+        """Reset the weights of the last convolutional layer.
+
+        The method reinitializes the last Conv2d layer found in the sequential model using
+        Kaiming normal initialization and zeros the bias.
+        """
+        for module in reversed(self):
+            if isinstance(module, nn.Conv2d):
+                torch.nn.init.kaiming_normal_(module.weight)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
+                return
+        raise RuntimeError("CNN does not contain any Conv2d layers to reset.")
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the CNN."""
         for layer in self:

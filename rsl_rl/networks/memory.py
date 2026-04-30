@@ -66,6 +66,26 @@ class Memory(nn.Module):
                     "Resetting the hidden state of done environments with a custom hidden state is not implemented"
                 )
 
+    def reset_last_layer_weights(self) -> None:
+        """Reset the weights of the last recurrent layer."""
+        last_layer = self.rnn.num_layers - 1
+        suffix = f"_l{last_layer}"
+        found = False
+
+        for name, param in self.rnn.named_parameters():
+            if not name.endswith(suffix):
+                continue
+            found = True
+            if "weight_hh" in name:
+                nn.init.orthogonal_(param)
+            elif "weight_ih" in name:
+                nn.init.xavier_uniform_(param)
+            elif "bias" in name:
+                nn.init.zeros_(param)
+
+        if not found:
+            raise RuntimeError("No parameters found for last RNN layer to reset.")
+
     def detach_hidden_state(self, dones: torch.Tensor | None = None) -> None:
         if self.hidden_state is not None:
             if dones is None:  # Detach hidden state

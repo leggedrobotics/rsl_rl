@@ -414,6 +414,20 @@ class PPO:
 
         return loss_dict
 
+    def reset_last_layer_weights(self, part: str = "both") -> None:
+        """Reset the last layer weights for actor and/or critic.
+
+        Args:
+            part: Which network to reset. One of 'actor', 'critic', or 'both'.
+        """
+        if part not in {"actor", "critic", "both"}:
+            raise ValueError("part must be 'actor', 'critic', or 'both'")
+
+        if not hasattr(self.policy, "reset_last_layer_weights"):
+            raise AttributeError("Policy does not support reset_last_layer_weights")
+
+        self.policy.reset_last_layer_weights(part)
+
     def broadcast_parameters(self) -> None:
         """Broadcast model parameters to all GPUs."""
         # Obtain the model parameters on current GPU

@@ -105,6 +105,25 @@ class ActorCritic(nn.Module):
     def reset(self, dones: torch.Tensor | None = None) -> None:
         pass
 
+    def reset_last_layer_weights(self, part: str = "both") -> None:
+        """Reset the last layer weights for actor and/or critic.
+
+        Args:
+            part: Which network to reset. One of 'actor', 'critic', or 'both'.
+        """
+        if part not in {"actor", "critic", "both"}:
+            raise ValueError("part must be 'actor', 'critic', or 'both'")
+
+        if part in {"actor", "both"}:
+            if not hasattr(self.actor, "reset_last_layer_weights"):
+                raise AttributeError("Actor does not support reset_last_layer_weights")
+            self.actor.reset_last_layer_weights()
+
+        if part in {"critic", "both"}:
+            if not hasattr(self.critic, "reset_last_layer_weights"):
+                raise AttributeError("Critic does not support reset_last_layer_weights")
+            self.critic.reset_last_layer_weights()
+
     def forward(self) -> NoReturn:
         raise NotImplementedError
 
