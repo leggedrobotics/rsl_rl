@@ -157,11 +157,8 @@ class Logger:
             # Log episode extras
             extras_string = ""
             if self.ep_extras:
-                # Union of keys across the window: avoids dropping keys that are
-                # absent from ep_extras[0] but present in later entries (e.g. when
-                # an env writes to extras["log"] only on reset steps).
-                all_keys = {k for ep_info in self.ep_extras for k in ep_info}
-                for key in all_keys:
+                # Iterate over all keys in the episode info dictionary
+                for key in {k for ep_info in self.ep_extras for k in ep_info}:
                     infotensor = torch.tensor([], device=self.device)
                     # Iterate over all steps
                     for ep_info in self.ep_extras:
