@@ -163,8 +163,11 @@ class PPO:
     def compute_returns(self, obs: TensorDict) -> None:
         """Compute return and advantage targets from stored transitions."""
         st = self.storage
-        # Compute value for the last step
+        # Compute values for the last step
+        critic_hidden_state = self.critic.get_hidden_state()
         last_values = self.critic(obs).detach()
+        # Restore the critic's hidden state so the next rollout is not affected by the forward pass
+        self.critic.reset(hidden_state=critic_hidden_state)
         # Compute returns and advantages
         advantage = 0
         for step in reversed(range(st.num_transitions_per_env)):
