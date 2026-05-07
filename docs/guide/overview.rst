@@ -57,9 +57,14 @@ Distributions
    log-scale.
 
 :class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution`
-   A diagonal Gaussian distribution with state-dependent standard deviation. The model's MLP network predicts both mean 
+   A diagonal Gaussian distribution with state-dependent standard deviation. The model's MLP network predicts both mean
    and standard-deviation terms per sample, allowing uncertainty to vary with the observation. As with the standard
    Gaussian variant, both scalar and log-scale parameterizations are supported.
+
+:class:`~rsl_rl.modules.distribution.BetaDistribution`
+   A Beta distribution for bounded action spaces. Samples are naturally constrained to [0, 1] and linearly rescaled to a
+   configurable action range. The concentration parameters are predicted by the model's MLP and constrained to guarantee
+   a unimodal distribution.
 
 Extensions
 ^^^^^^^^^^
@@ -71,7 +76,7 @@ Extensions
    reward contribution over the training. This extension is compatible with the :class:`~rsl_rl.algorithms.ppo.PPO`
    algorithm. For more details, please check `this paper <https://proceedings.mlr.press/v229/schwarke23a.html>`__.
 
-Symmetry
+:class:`~rsl_rl.extensions.symmetry.Symmetry`
    Symmetry augments the collected environment interaction data with mirrored data using a user-provided symmetry 
    function that defines how observations and actions are transformed. This can improve sample efficiency and promote
    symmetric behaviors for robots with structured morphology. Additionally, a mirror-loss regularization term can be
