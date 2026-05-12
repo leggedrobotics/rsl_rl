@@ -23,7 +23,13 @@ class OnPolicyRunner:
     alg: PPO
     """The actor-critic algorithm."""
 
-    def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
+    def __init__(
+        self,
+        env: VecEnv,
+        train_cfg: dict,
+        log_dir: str | Logger | None = None,
+        device: str = "cpu",
+    ) -> None:
         """Construct the runner, algorithm, and logging stack."""
         self.env = env
         self.cfg = train_cfg
@@ -39,17 +45,20 @@ class OnPolicyRunner:
         alg_class: type[PPO] = resolve_callable(self.cfg["algorithm"]["class_name"])  # type: ignore
         self.alg = alg_class.construct_algorithm(obs, self.env, self.cfg, self.device)
 
-        # Create the logger
-        self.logger = Logger(
-            log_dir=log_dir,
-            cfg=self.cfg,
-            env_cfg=self.env.cfg,
-            num_envs=self.env.num_envs,
-            is_distributed=self.is_distributed,
-            gpu_world_size=self.gpu_world_size,
-            gpu_global_rank=self.gpu_global_rank,
-            device=self.device,
-        )
+        # Use the provided logger or create a default one from the log_dir path
+        if isinstance(log_dir, Logger):
+            self.logger = log_dir
+        else:
+            self.logger = Logger(
+                log_dir=log_dir,
+                cfg=self.cfg,
+                env_cfg=self.env.cfg,
+                num_envs=self.env.num_envs,
+                is_distributed=self.is_distributed,
+                gpu_world_size=self.gpu_world_size,
+                gpu_global_rank=self.gpu_global_rank,
+                device=self.device,
+            )
 
         self.current_learning_iteration = 0
 
@@ -125,11 +134,11 @@ class OnPolicyRunner:
             )
 
             # Save model
-            if self.logger.writer is not None and it % self.cfg["save_interval"] == 0:
+            if self.logger.is_logging and it % self.cfg["save_interval"] == 0:
                 self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore
 
         # Save the final model after training and stop the logging writer
-        if self.logger.writer is not None:
+        if self.logger.is_logging:
             self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))  # type: ignore
             self.logger.stop_logging_writer()
 

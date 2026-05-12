@@ -10,13 +10,15 @@ import os
 from dataclasses import asdict
 from torch.utils.tensorboard import SummaryWriter
 
+from rsl_rl.utils.log_writer import LogWriter
+
 try:
     import neptune
 except ModuleNotFoundError:
     raise ModuleNotFoundError("neptune-client is required to log to Neptune.") from None
 
 
-class NeptuneSummaryWriter(SummaryWriter):
+class NeptuneSummaryWriter(SummaryWriter, LogWriter):
     """Summary writer for Neptune."""
 
     def __init__(self, log_dir: str, flush_secs: int, cfg: dict) -> None:
@@ -70,6 +72,7 @@ class NeptuneSummaryWriter(SummaryWriter):
         global_step: int | None = None,
         walltime: float | None = None,
         new_style: bool = False,
+        double_precision: bool = False,
     ) -> None:
         """Log a scalar to both TensorBoard and Neptune."""
         super().add_scalar(
@@ -78,6 +81,7 @@ class NeptuneSummaryWriter(SummaryWriter):
             global_step=global_step,
             walltime=walltime,
             new_style=new_style,
+            double_precision=double_precision,
         )
         self.run[self._map_path(tag)].log(scalar_value, step=global_step)
 

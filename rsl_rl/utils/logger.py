@@ -15,6 +15,7 @@ import torch
 from collections import deque
 
 import rsl_rl
+from rsl_rl.utils.log_writer import LogWriter
 
 
 class Logger:
@@ -30,6 +31,7 @@ class Logger:
         gpu_world_size: int,
         gpu_global_rank: int,
         device: str,
+        writer: LogWriter | None = None,
     ) -> None:
         """Initialize buffers and logging state for a training run."""
         self.log_dir = log_dir
@@ -41,6 +43,10 @@ class Logger:
         self.git_status_repos = [rsl_rl.__file__]
         self.tot_timesteps = 0
         self.tot_time = 0
+
+        self._injected_writer = writer
+        self.writer: LogWriter | None = None
+        self.logger_type: str | None = None
 
         # Create buffers
         self.ep_extras = []
@@ -60,39 +66,51 @@ class Logger:
         # Note: We only log from the process with rank 0 (main process)
         self.disable_logs = is_distributed and gpu_global_rank != 0
 
-    def init_logging_writer(self) -> None:
-        """Initialize the logging writer, which can be either Tensorboard, W&B or Neptune and save the code state.
+    @property
+    def is_logging(self) -> bool:
+        """True if a writer is active and emitting metrics."""
+        return self.writer is not None
 
-        If the writer is either W&B or Neptune, the configuration and code state are uploaded as well.
+    def init_logging_writer(self) -> None:
+        """Initialize the logging writer and save the code state.
+
+        If a writer was injected via the constructor, it is used directly. Otherwise
+        a writer is constructed from ``cfg["logger"]`` (``"tensorboard"``, ``"wandb"``,
+        or ``"neptune"``). Configuration and git diffs are uploaded for writers that
+        inherit from :class:`~rsl_rl.utils.LogWriter`.
         """
         if self.log_dir is not None and not self.disable_logs:
-            self.logger_type = self.cfg.get("logger", "tensorboard")
-            self.logger_type = self.logger_type.lower()
-            if self.logger_type == "neptune":
-                from rsl_rl.utils.neptune_utils import NeptuneSummaryWriter
-
-                self.writer = NeptuneSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
-            elif self.logger_type == "wandb":
-                from rsl_rl.utils.wandb_utils import WandbSummaryWriter
-
-                self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
-            elif self.logger_type == "tensorboard":
-                from torch.utils.tensorboard import SummaryWriter
-
-                self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
+            if self._injected_writer is not None:
+                self.writer = self._injected_writer
+                self.logger_type = "custom"
             else:
-                raise ValueError("Logger type not found. Please choose 'wandb', 'neptune', or 'tensorboard'.")
+                self.logger_type = self.cfg.get("logger", "tensorboard")
+                self.logger_type = self.logger_type.lower()
+                if self.logger_type == "neptune":
+                    from rsl_rl.utils.neptune_utils import NeptuneSummaryWriter
+
+                    self.writer = NeptuneSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
+                elif self.logger_type == "wandb":
+                    from rsl_rl.utils.wandb_utils import WandbSummaryWriter
+
+                    self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
+                elif self.logger_type == "tensorboard":
+                    from torch.utils.tensorboard import SummaryWriter
+
+                    self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
+                else:
+                    raise ValueError("Logger type not found. Please choose 'wandb', 'neptune', or 'tensorboard'.")
         else:
             self.writer = None
 
         # Save code state
         files_to_upload = self._store_code_state()
 
-        # Upload configuration and code state to external logging service if applicable
-        if self.writer is not None and self.logger_type in ["wandb", "neptune"]:
-            self.writer.store_config(self.env_cfg, self.cfg)  # type: ignore
+        # Upload configuration and code state for LogWriter subclasses (no-op for plain TensorBoard)
+        if isinstance(self.writer, LogWriter):
+            self.writer.store_config(self.env_cfg, self.cfg)
             for path in files_to_upload:
-                self.writer.save_file(path)  # type: ignore
+                self.writer.save_file(path)
 
     def process_env_step(
         self,
@@ -146,7 +164,7 @@ class Logger:
     ) -> None:
         """Log the training metrics to the logging service and print them to the console.
 
-        If videos are available, they are uploaded to the logging service (W&B) as well.
+        If videos are available, they are uploaded to the logging service as well.
         """
         if self.writer is not None:
             collection_size = self.cfg["num_steps_per_env"] * self.num_envs * self.gpu_world_size
@@ -200,13 +218,10 @@ class Logger:
                     self.writer.add_scalar("Rnd/weight", rnd_weight, it)  # type: ignore
                 self.writer.add_scalar("Train/mean_reward", statistics.mean(self.rewbuffer), it)
                 self.writer.add_scalar("Train/mean_episode_length", statistics.mean(self.lenbuffer), it)
-                if self.logger_type != "wandb":
-                    self.writer.add_scalar(
-                        "Train/mean_reward/time", statistics.mean(self.rewbuffer), int(self.tot_time)
-                    )
-                    self.writer.add_scalar(
-                        "Train/mean_episode_length/time", statistics.mean(self.lenbuffer), int(self.tot_time)
-                    )
+                self.writer.add_scalar("Train/mean_reward/time", statistics.mean(self.rewbuffer), int(self.tot_time))
+                self.writer.add_scalar(
+                    "Train/mean_episode_length/time", statistics.mean(self.lenbuffer), int(self.tot_time)
+                )
 
             # Print to console
             log_string = f"""{"#" * width}\n"""
@@ -255,23 +270,23 @@ class Logger:
             )
             print(log_string)
 
-            # Upload available videos
-            if self.logger_type == "wandb":
+            # Upload available videos (no-op for writers that don't support it)
+            if isinstance(self.writer, LogWriter):
                 for video in pathlib.Path(self.log_dir).rglob("*.mp4"):  # type: ignore
-                    self.writer.save_video(video, it)  # type: ignore
+                    self.writer.save_video(video, it)
 
             # Clear extras buffer
             self.ep_extras.clear()
 
     def save_model(self, path: str, it: int) -> None:
         """Save the model to external logging services if specified."""
-        if self.writer is not None and self.logger_type in ["neptune", "wandb"]:
-            self.writer.save_model(path, it)  # type: ignore
+        if isinstance(self.writer, LogWriter):
+            self.writer.save_model(path, it)
 
     def stop_logging_writer(self) -> None:
         """Stop the logging writer."""
-        if self.writer is not None and self.logger_type in ["neptune", "wandb"]:
-            self.writer.stop()  # type: ignore
+        if isinstance(self.writer, LogWriter):
+            self.writer.stop()
 
     def _store_code_state(self) -> list[str]:
         """Store the current git diff of the code repositories involved in the experiment."""

@@ -11,13 +11,15 @@ import pathlib
 from dataclasses import asdict
 from torch.utils.tensorboard import SummaryWriter
 
+from rsl_rl.utils.log_writer import LogWriter
+
 try:
     import wandb
 except ModuleNotFoundError:
     raise ModuleNotFoundError("wandb package is required to log to Weights and Biases.") from None
 
 
-class WandbSummaryWriter(SummaryWriter):
+class WandbSummaryWriter(SummaryWriter, LogWriter):
     """Summary writer for W&B."""
 
     def __init__(self, log_dir: str, flush_secs: int, cfg: dict) -> None:
@@ -64,6 +66,7 @@ class WandbSummaryWriter(SummaryWriter):
         global_step: int | None = None,
         walltime: float | None = None,
         new_style: bool = False,
+        double_precision: bool = False,
     ) -> None:
         """Log a scalar to both TensorBoard and W&B."""
         super().add_scalar(
@@ -72,6 +75,7 @@ class WandbSummaryWriter(SummaryWriter):
             global_step=global_step,
             walltime=walltime,
             new_style=new_style,
+            double_precision=double_precision,
         )
         wandb.log({tag: scalar_value}, step=global_step)
 

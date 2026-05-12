@@ -5,6 +5,8 @@
 
 """Helper functions."""
 
+from .log_writer import LogWriter
+from .logger import Logger
 from .utils import (
     check_nan,
     compile_model,
@@ -18,6 +20,8 @@ from .utils import (
 )
 
 __all__ = [
+    "LogWriter",
+    "Logger",
     "check_nan",
     "compile_model",
     "get_param",
