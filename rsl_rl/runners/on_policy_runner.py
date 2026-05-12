@@ -14,6 +14,7 @@ from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
 from rsl_rl.utils import check_nan, resolve_callable
+from rsl_rl.utils.log_writer import LogWriter
 from rsl_rl.utils.logger import Logger
 
 
@@ -29,6 +30,7 @@ class OnPolicyRunner:
         train_cfg: dict,
         log_dir: str | Logger | None = None,
         device: str = "cpu",
+        writer: LogWriter | None = None,
     ) -> None:
         """Construct the runner, algorithm, and logging stack."""
         self.env = env
@@ -58,6 +60,7 @@ class OnPolicyRunner:
                 gpu_world_size=self.gpu_world_size,
                 gpu_global_rank=self.gpu_global_rank,
                 device=self.device,
+                writer=writer,
             )
 
         self.current_learning_iteration = 0
