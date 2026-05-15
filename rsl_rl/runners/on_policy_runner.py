@@ -24,6 +24,16 @@ from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_obs_groups
 from rsl_rl.utils.logger import Logger
 
+# Persona compositional networks: factory function is registered under the policy
+# class_name "CompositionalActorCritic" so OnPolicyRunner's eval() resolves it.
+# Import failure is non-fatal (shared_lab may not be importable in some contexts).
+try:
+    from shared_lab.rl.compositional_networks.factory import (
+        build_compositional_actor_critic as CompositionalActorCritic,  # noqa: F401
+    )
+except ImportError:
+    pass
+
 
 class OnPolicyRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""

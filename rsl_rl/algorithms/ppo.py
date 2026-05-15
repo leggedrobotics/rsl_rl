@@ -316,6 +316,13 @@ class PPO:
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
 
+            # Compose hook: joint-optimizer aux losses (e.g. supervised heads sharing the actor's
+            # backbone). hasattr-gated so standard ActorCritic is unaffected.
+            if hasattr(self.policy, "extra_losses"):
+                extra_loss_dict = self.policy.extra_losses(obs_batch, {"returns": returns_batch})
+                for _name, extra_loss in extra_loss_dict.items():
+                    loss = loss + extra_loss
+
             # Symmetry loss
             if self.symmetry:
                 # Obtain the symmetric actions
@@ -382,6 +389,9 @@ class PPO:
             # Apply the gradients for RND
             if self.rnd_optimizer:
                 self.rnd_optimizer.step()
+            # Compose hook: separate-optimizer aux losses do their own forward/backward/step.
+            if hasattr(self.policy, "extras_step"):
+                self.policy.extras_step(obs_batch)
 
             # Store the losses
             mean_value_loss += value_loss.item()
