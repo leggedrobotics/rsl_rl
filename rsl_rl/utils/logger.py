@@ -17,6 +17,18 @@ from collections import deque
 import rsl_rl
 
 
+def _format_duration(seconds: float) -> str:
+    """Format elapsed seconds as ``D days, HH:MM:SS`` when needed."""
+    seconds = int(seconds)
+    days, remainder = divmod(seconds, 24 * 60 * 60)
+    duration = time.strftime("%H:%M:%S", time.gmtime(remainder))
+    if days == 0:
+        return duration
+    if days == 1:
+        return f"1 day, {duration}"
+    return f"{days} days, {duration}"
+
+
 class Logger:
     """Logger to save the learning metrics to different logging services."""
 
@@ -250,8 +262,8 @@ class Logger:
             log_string += (
                 f"""{"-" * width}\n"""
                 f"""{"Iteration time:":>{pad}} {iteration_time:.2f}s\n"""
-                f"""{"Time elapsed:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
-                f"""{"ETA:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(eta))}\n"""
+                f"""{"Time elapsed:":>{pad}} {_format_duration(self.tot_time)}\n"""
+                f"""{"ETA:":>{pad}} {_format_duration(eta)}\n"""
             )
             print(log_string)
 
