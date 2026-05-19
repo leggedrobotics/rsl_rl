@@ -58,6 +58,7 @@ napoleon_numpy_docstring = False
 autodoc_mock_imports = [
     "torch",
     "tensordict",
+    "numpy",
     "onnx",
     "onnxruntime",
     "wandb",
