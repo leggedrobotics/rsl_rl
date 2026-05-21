@@ -11,27 +11,26 @@ import pathlib
 from dataclasses import asdict
 from torch.utils.tensorboard import SummaryWriter
 
+from rsl_rl.utils.log_writer import LogWriter
+
 try:
     import wandb
 except ModuleNotFoundError:
-    raise ModuleNotFoundError("wandb package is required to log to Weights and Biases.") from None
+    wandb = None
 
 
-class WandbSummaryWriter(SummaryWriter):
+class WandbLogWriter(SummaryWriter, LogWriter):
     """Summary writer for W&B."""
 
-    def __init__(self, log_dir: str, flush_secs: int, cfg: dict) -> None:
+    def __init__(self, log_dir: str, project_name: str) -> None:
         """Initialize a W&B run for logging."""
-        super().__init__(log_dir, flush_secs=flush_secs)
+        if wandb is None:
+            raise ModuleNotFoundError("wandb package is required to log to Weights and Biases.")
+        super().__init__(log_dir, flush_secs=10)
 
         # Get the run name
         run_name = os.path.split(log_dir)[-1]
 
-        # Get wandb project and entity
-        try:
-            project = cfg["wandb_project"]
-        except KeyError:
-            raise KeyError("Please specify wandb_project in the runner config, e.g. legged_gym.") from None
         try:
             entity = os.environ["WANDB_USERNAME"]
         except KeyError:
@@ -39,7 +38,7 @@ class WandbSummaryWriter(SummaryWriter):
 
         # Initialize wandb
         wandb.init(
-            project=project,
+            project=project_name,
             entity=entity,
             name=run_name,
             config={"log_dir": log_dir},
@@ -48,14 +47,6 @@ class WandbSummaryWriter(SummaryWriter):
 
         # Initialize set to keep track of logged videos
         self.logged_videos: set[str] = set()
-
-    def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
-        """Upload environment and training configuration to W&B."""
-        wandb.config.update({"train_cfg": train_cfg})
-        try:
-            wandb.config.update({"env_cfg": env_cfg.to_dict()})  # type: ignore
-        except Exception:
-            wandb.config.update({"env_cfg": asdict(env_cfg)})  # type: ignore
 
     def add_scalar(
         self,
@@ -66,18 +57,16 @@ class WandbSummaryWriter(SummaryWriter):
         new_style: bool = False,
     ) -> None:
         """Log a scalar to both TensorBoard and W&B."""
-        super().add_scalar(
-            tag,
-            scalar_value,
-            global_step=global_step,
-            walltime=walltime,
-            new_style=new_style,
-        )
+        super().add_scalar(tag, scalar_value, global_step=global_step, walltime=walltime, new_style=new_style)
         wandb.log({tag: scalar_value}, step=global_step)
 
-    def stop(self) -> None:
-        """Finish the active W&B run."""
-        wandb.finish()
+    def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
+        """Upload environment and training configuration to W&B."""
+        wandb.config.update({"train_cfg": train_cfg})
+        try:
+            wandb.config.update({"env_cfg": env_cfg.to_dict()})  # type: ignore
+        except Exception:
+            wandb.config.update({"env_cfg": asdict(env_cfg)})  # type: ignore
 
     def save_model(self, model_path: str, it: int) -> None:
         """Upload a model checkpoint artifact to W&B."""
@@ -92,3 +81,7 @@ class WandbSummaryWriter(SummaryWriter):
         if video.name not in self.logged_videos:
             wandb.log({"video": wandb.Video(str(video), format="mp4")}, step=it)
             self.logged_videos.add(video.name)
+
+    def stop(self) -> None:
+        """Finish the active W&B run."""
+        wandb.finish()
