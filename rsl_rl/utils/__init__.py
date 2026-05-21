@@ -6,7 +6,7 @@
 """Helper functions."""
 
 from .log_writer import LogWriter
-from .neptune_utils import NeptuneLogWriter
+from .neptune_log_writer import NeptuneLogWriter
 from .utils import (
     check_nan,
     compile_model,
@@ -18,7 +18,7 @@ from .utils import (
     split_and_pad_trajectories,
     unpad_trajectories,
 )
-from .wandb_utils import WandbLogWriter
+from .wandb_log_writer import WandbLogWriter
 
 __all__ = [
     "LogWriter",
