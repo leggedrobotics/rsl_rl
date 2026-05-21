@@ -16,7 +16,7 @@ remaining easy to adapt. The following sections summarize the main features curr
 
 .. note::
    Adding new algorithms, models, or loggers is straightforward and does not require modifying the library itself.
-   Custom classes can simply be passed as part of the configuration, enabling users to work with the pip version of the 
+   Custom classes can simply be passed as part of the configuration, enabling users to work with the pip version of the
    library.
 
 Algorithms

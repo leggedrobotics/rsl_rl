@@ -29,6 +29,7 @@ dependencies = [
     "torchvision>=0.5.0",
     "tensordict>=0.7.0",
     "numpy>=1.16.4",
+    "tensorboard",
     "GitPython",
     "onnx",
     "onnxscript>=0.5.4",
