@@ -224,7 +224,7 @@ class Logger:
                     self.writer.add_scalar("Rnd/weight", rnd_weight, it)  # type: ignore
                 self.writer.add_scalar("Train/mean_reward", statistics.mean(self.rewbuffer), it)
                 self.writer.add_scalar("Train/mean_episode_length", statistics.mean(self.lenbuffer), it)
-                if self.logger_type != "wandb":
+                if self.logger_type != "WandbLogWriter":
                     self.writer.add_scalar(
                         "Train/mean_reward/time", statistics.mean(self.rewbuffer), int(self.tot_time)
                     )
