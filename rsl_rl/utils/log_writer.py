@@ -12,8 +12,8 @@ from abc import ABC, abstractmethod
 class LogWriter(ABC):
     """Abstract base class for logging backends.
 
-    Log writers are configured via ``cfg["logger"]``, a dict with a ``"class_name"`` key pointing to the subclass
-    and any additional keys forwarded as constructor kwargs. The class is resolved via
+    Log writers are configured via ``cfg["logger"]``, a dict with a ``"class_name"`` key pointing to the subclass and
+    any additional keys forwarded as constructor kwargs. The class is resolved via
     :func:`~rsl_rl.utils.resolve_callable`. Only :meth:`add_scalar` must be implemented; all other methods are no-ops.
     """
 
