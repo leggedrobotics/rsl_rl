@@ -6,11 +6,11 @@
 
 from __future__ import annotations
 
+import datetime
 import git
 import os
 import pathlib
 import statistics
-import time
 import torch
 import warnings
 from collections import deque
@@ -274,8 +274,8 @@ class Logger:
             log_string += (
                 f"""{"-" * width}\n"""
                 f"""{"Iteration time:":>{pad}} {iteration_time:.2f}s\n"""
-                f"""{"Time elapsed:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
-                f"""{"ETA:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(eta))}\n"""
+                f"""{"Time elapsed:":>{pad}} {datetime.timedelta(seconds=int(self.tot_time))}\n"""
+                f"""{"ETA:":>{pad}} {datetime.timedelta(seconds=int(eta))}\n"""
             )
             print(log_string)
 

@@ -36,6 +36,7 @@ Please keep the lists sorted alphabetically.
 * Lorenzo Terenzi
 * Marko Bjelonic
 * Markus Portugall
+* Masahiro Kubota
 * Matthijs van der Boon
 * Özhan Özen
 * Pascal Roth
