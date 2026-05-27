@@ -141,7 +141,7 @@ class RolloutStorage:
         # Core
         self.observations = TensorDict(
             {
-                key: torch.zeros(num_transitions_per_env, *value.shape, device=device, dtype=value.dtype)
+                key: torch.zeros(num_transitions_per_env, *value.shape, dtype=value.dtype, device=device)
                 for key, value in obs.items()
             },
             batch_size=[num_transitions_per_env, num_envs],
