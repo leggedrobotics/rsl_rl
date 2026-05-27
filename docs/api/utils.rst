@@ -9,29 +9,34 @@ Logger
    :undoc-members:
 
 
+Log Writer
+----------
+
+.. automodule:: rsl_rl.utils.log_writer
+   :members:
+   :undoc-members:
+
+
+Wandb Log Writer
+----------------
+
+.. automodule:: rsl_rl.utils.wandb_log_writer
+   :members:
+   :undoc-members:
+
+
+Neptune Log Writer
+------------------
+
+.. automodule:: rsl_rl.utils.neptune_log_writer
+   :members:
+   :undoc-members:
+
+
 Utils
 -----
 
 .. automodule:: rsl_rl.utils.utils
    :members:
    :undoc-members:
-
-
-Wandb Utils
------------
-
-.. automodule:: rsl_rl.utils.wandb_utils
-   :members:
-   :undoc-members:
-
-
-Neptune Utils
--------------
-
-.. automodule:: rsl_rl.utils.neptune_utils
-   :members:
-   :undoc-members:
-
-
-
 
