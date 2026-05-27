@@ -34,8 +34,10 @@ Runner Configuration
 
 Currently, RSL-RL implements two runner classes:
 :class:`~rsl_rl.runners.on_policy_runner.OnPolicyRunner` and
-:class:`~rsl_rl.runners.distillation_runner.DistillationRunner`. The 
-:class:`~rsl_rl.runners.on_policy_runner.OnPolicyRunner` is configured as follows:
+:class:`~rsl_rl.runners.distillation_runner.DistillationRunner`, which are configured as follows.
+
+OnPolicyRunner
+^^^^^^^^^^^^^^
 
 .. list-table::
    :header-rows: 1
@@ -45,31 +47,19 @@ Currently, RSL-RL implements two runner classes:
      - Type
      - Default
      - Description
-   * - ``num_steps_per_env``
-     - int
-     - required
-     - Number of environment steps collected per iteration.
    * - ``obs_groups``
      - dict[str, list[str]]
      - required
      - Mapping from observation sets to observation groups coming from the environment. See :ref:`here
        <observation-configuration>` for more details.
+   * - ``num_steps_per_env``
+     - int
+     - required
+     - Number of environment steps collected per iteration.
    * - ``save_interval``
      - int
      - required
      - Number of iterations between checkpoints.
-   * - ``logger``
-     - str
-     - ``"tensorboard"``
-     - Logging service to use. Valid values: ``"tensorboard"``, ``"wandb"``, ``"neptune"``.
-   * - ``wandb_project``
-     - str
-     - required for W&B
-     - W&B project name used by the W&B writer.
-   * - ``neptune_project``
-     - str
-     - required for Neptune
-     - Neptune project name used by the Neptune writer.
    * - ``run_name``
      - str
      - missing
@@ -83,6 +73,19 @@ Currently, RSL-RL implements two runner classes:
      - ``None``
      - Compile mode for the PyTorch models to accelerate training.
        Valid values: ``None``, ``"default"``, ``"max-autotune-no-cudagraphs"``.
+   * - ``logger``
+     - str | dict
+     - ``"tensorboard"``
+     - Logging writer configuration. The plain strings ``"wandb"`` and ``"neptune"`` are 
+       still accepted but deprecated.
+   * - ``wandb_project``
+     - str
+     - --
+     - Deprecated. Pass ``project_name`` inside the ``logger`` configuration instead.
+   * - ``neptune_project``
+     - str
+     - --
+     - Deprecated. Pass ``project_name`` inside the ``logger`` configuration instead.
    * - ``algorithm``
      - dict
      - required
@@ -95,6 +98,9 @@ Currently, RSL-RL implements two runner classes:
      - dict
      - required
      - Critic model configuration.
+
+DistillationRunner
+^^^^^^^^^^^^^^^^^^
 
 For the :class:`~rsl_rl.runners.distillation_runner.DistillationRunner`, the ``actor`` and ``critic`` keys are simply
 replaced by ``student`` and ``teacher`` keys, respectively:
@@ -119,6 +125,31 @@ replaced by ``student`` and ``teacher`` keys, respectively:
      - dict
      - required
      - Teacher model configuration.
+
+Logger
+^^^^^^
+The ``logger`` key of the runner configuration defines the logging writer used to log training metrics and other
+information during training. RSL-RL supports TensorBoard, Weights & Biases, and Neptune out of the box. While
+TensorBoard does not require any configuration and is set using the plain string ``"tensorboard"``, the other logging
+backends are configured by passing a dictionary with the following keys:
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - Logger class name. Valid values: ``"WandbLogWriter"``, ``"NeptuneLogWriter"``.
+   * - ``project_name``
+     - str
+     - required
+     - Name of the project.
+
 
 Algorithm Configuration
 -----------------------

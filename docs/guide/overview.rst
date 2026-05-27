@@ -14,6 +14,11 @@ Library Features
 RSL-RL is intentionally kept minimal and focuses on a small set of components that cover common robotics workflows while
 remaining easy to adapt. The following sections summarize the main features currently available.
 
+.. note::
+   Adding new algorithms, models, or loggers is straightforward and does not require modifying the library itself.
+   Custom classes can simply be passed as part of the configuration, enabling users to work with the pip version of the
+   library.
+
 Algorithms
 ^^^^^^^^^^
 
@@ -198,7 +203,9 @@ not constrain the way an **Extension** may be implemented, allowing for arbitrar
 Utils
 ^^^^^
 **Utils** include various helpers for the library, such as a :class:`~rsl_rl.utils.logger.Logger` to record the learning
-process, or functions to resolve configuration settings.
+process, or functions to resolve configuration settings. For example, the :func:`~rsl_rl.utils.utils.resolve_callable` 
+function allows users to pass classes via the configuration dictionary, enabling the use of custom models, loggers, etc. 
+without modifying the library.
 
 .. _example-integration:
 
