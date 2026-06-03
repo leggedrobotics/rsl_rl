@@ -112,8 +112,7 @@ class MLPModel(nn.Module):
     ) -> torch.Tensor:
         """Build the model latent by concatenating and normalizing selected observation groups."""
         # Select and concatenate observations
-        obs_list = [obs[obs_group] for obs_group in self.obs_groups]
-        latent = torch.cat(obs_list, dim=-1)
+        latent = torch.cat([obs[obs_group] for obs_group in self.obs_groups], dim=-1)
         # Normalize observations
         latent = self.obs_normalizer(latent)
         return latent
