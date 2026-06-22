@@ -53,3 +53,26 @@ If you use RSL-RL in your research, please cite the [paper](https://arxiv.org/ab
   year={2025}
 }
 ```
+
+## Version matrix (Chrono / Gymnasium integrations)
+
+| `rsl-rl-lib` | Config schema | Notes |
+|--------------|---------------|-------|
+| **2.3.x** (e.g. 2.3.3) | Top-level `policy` with `class_name: ActorCritic`; flat `algorithm` dict | Used by [gym-chrono](https://github.com/projectchrono/gym-chrono) Chrono 10 reproducers and [Chrono::Ray](https://github.com/uwsbel/chrono-ray) quadruped-style scripts. Example: `config/examples/chrono_gymnasium_ppo_2x.yaml`. |
+| **5.x / main** | `actor` + `critic` `MLPModel` blocks; required `obs_groups`; `TensorDict` observations | See [configuration guide](docs/guide/configuration.rst). Example: `config/examples/chrono_gymnasium_ppo_current.yaml`. |
+
+When upgrading `rsl-rl-lib`, diff your YAML against the table above — field renames are **not** backward compatible between the 2.x ActorCritic layout and the current MLPModel layout.
+
+## PyTorch on AMD ROCm
+
+RSL-RL uses generic `torch` ops (no custom CUDA extensions in the default PPO path). Training on **AMD Instinct** GPUs works when you install **PyTorch built for ROCm** and pass `device="cuda"` to `OnPolicyRunner` (PyTorch uses the HIP/ROCm backend).
+
+```bash
+pip install rsl-rl-lib==2.3.3   # or your pinned minor
+pip install --force-reinstall torch torchvision \
+    --index-url https://download.pytorch.org/whl/rocm6.2
+```
+
+Use a ROCm wheel index that matches your driver (`rocm6.2`, `rocm6.3`, etc.). After installing RSL-RL, re-pin ROCm `torch` if pip resolves a CUDA build.
+
+**Related:** [gym-chrono](https://github.com/projectchrono/gym-chrono) README (version pins, Ray + ROCm layout); [chrono-ray](https://github.com/uwsbel/chrono-ray) `docs/AMD_ROCM.md` for Ray bootstrap before `import ray`.

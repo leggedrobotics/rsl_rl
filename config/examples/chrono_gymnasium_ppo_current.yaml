@@ -1,0 +1,36 @@
+# Chrono-style PPO — current rsl-rl main schema (MLPModel + obs_groups)
+#
+# For rsl-rl-lib main / 5.x. Requires a VecEnv that returns TensorDict
+# observations with a "policy" group — see docs/guide/configuration.rst.
+# Users on rsl-rl-lib 2.3.x should use chrono_gymnasium_ppo_2x.yaml instead.
+
+num_steps_per_env: 24
+save_interval: 50
+obs_groups:
+  actor: ["policy"]
+  critic: ["policy"]
+algorithm:
+  class_name: PPO
+  learning_rate: 0.001
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  schedule: adaptive
+  value_loss_coef: 1.0
+  clip_param: 0.2
+  use_clipped_value_loss: true
+  desired_kl: 0.01
+  entropy_coef: 0.005
+  gamma: 0.99
+  lam: 0.95
+  max_grad_norm: 1.0
+actor:
+  class_name: MLPModel
+  hidden_dims: [512, 256, 128]
+  activation: elu
+  distribution_cfg:
+    class_name: GaussianDistribution
+    init_std: 1.0
+critic:
+  class_name: MLPModel
+  hidden_dims: [512, 256, 128]
+  activation: elu
