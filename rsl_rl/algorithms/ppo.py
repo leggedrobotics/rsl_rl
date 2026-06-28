@@ -15,7 +15,7 @@ from rsl_rl.env import VecEnv
 from rsl_rl.extensions import RandomNetworkDistillation, Symmetry, resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import compile_model, resolve_callable, resolve_obs_groups, resolve_optimizer
+from rsl_rl.utils import compile_model, resolve_callable, resolve_mixed_precision, resolve_obs_groups, resolve_optimizer
 
 
 class PPO:
@@ -23,6 +23,11 @@ class PPO:
 
     Reference:
         - Schulman et al. "Proximal policy optimization algorithms." arXiv preprint arXiv:1707.06347 (2017).
+
+    Set ``use_mixed_precision`` to run the forward pass and loss computation in
+    bfloat16 autocast (backward, gradient clipping, and the optimizer step stay in
+    fp32). Accepts ``True`` (force on), ``False`` (default, off), or ``"auto"``
+    (enable only on bfloat16-capable CUDA devices, otherwise fp32).
     """
 
     actor: MLPModel
@@ -50,6 +55,7 @@ class PPO:
         schedule: str = "adaptive",
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
+        use_mixed_precision: bool | str = False,
         device: str = "cpu",
         # RND parameters
         rnd_cfg: dict | None = None,
@@ -111,6 +117,10 @@ class PPO:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        # Mixed precision: bf16 autocast over forward+loss, no GradScaler needed.
+        # "auto" enables bf16 only on hardware that supports it; otherwise fp32.
+        self.device_type = torch.device(device).type
+        self.use_mixed_precision = resolve_mixed_precision(use_mixed_precision, self.device_type)
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Sample actions and store transition data."""
@@ -216,75 +226,78 @@ class PPO:
             if self.symmetry:
                 self.symmetry.augment_batch(batch, original_batch_size)
 
-            # Recompute actions log prob and entropy for current batch of transitions
-            # Note: We need to do this because we updated the policy with new parameters
-            self.actor(
-                batch.observations,
-                masks=batch.masks,
-                hidden_state=batch.hidden_states[0],
-                stochastic_output=True,
-            )
-            actions_log_prob = self.actor.get_output_log_prob(batch.actions)  # type: ignore
-            values = self.critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[1])
-            # Note: We only keep the following tensors for the original samples in case of symmetry augmentation
-            distribution_params = tuple(p[:original_batch_size] for p in self.actor.output_distribution_params)
-            entropy = self.actor.output_entropy[:original_batch_size]
+            with torch.amp.autocast(
+                device_type=self.device_type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
+            ):
+                # Recompute actions log prob and entropy for current batch of transitions
+                # Note: We need to do this because we updated the policy with new parameters
+                self.actor(
+                    batch.observations,
+                    masks=batch.masks,
+                    hidden_state=batch.hidden_states[0],
+                    stochastic_output=True,
+                )
+                actions_log_prob = self.actor.get_output_log_prob(batch.actions)  # type: ignore
+                values = self.critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[1])
+                # Note: We only keep the following tensors for the original samples in case of symmetry augmentation
+                distribution_params = tuple(p[:original_batch_size] for p in self.actor.output_distribution_params)
+                entropy = self.actor.output_entropy[:original_batch_size]
 
-            # Compute KL divergence and adapt the learning rate
-            if self.desired_kl is not None and self.schedule == "adaptive":
-                with torch.inference_mode():
-                    kl = self.actor.get_kl_divergence(batch.old_distribution_params, distribution_params)  # type: ignore
-                    kl_mean = torch.mean(kl)
+                # Compute KL divergence and adapt the learning rate
+                if self.desired_kl is not None and self.schedule == "adaptive":
+                    with torch.inference_mode():
+                        kl = self.actor.get_kl_divergence(batch.old_distribution_params, distribution_params)  # type: ignore
+                        kl_mean = torch.mean(kl)
 
-                    # Reduce the KL divergence across all GPUs
-                    if self.is_multi_gpu:
-                        torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
-                        kl_mean /= self.gpu_world_size
+                        # Reduce the KL divergence across all GPUs
+                        if self.is_multi_gpu:
+                            torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
+                            kl_mean /= self.gpu_world_size
 
-                    # Update the learning rate only on the main process
-                    if self.gpu_global_rank == 0:
-                        if kl_mean > self.desired_kl * 2.0:
-                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
-                        elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                        # Update the learning rate only on the main process
+                        if self.gpu_global_rank == 0:
+                            if kl_mean > self.desired_kl * 2.0:
+                                self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                            elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
+                                self.learning_rate = min(1e-2, self.learning_rate * 1.5)
 
-                    # Update the learning rate for all GPUs
-                    if self.is_multi_gpu:
-                        lr_tensor = torch.tensor(self.learning_rate, device=self.device)
-                        torch.distributed.broadcast(lr_tensor, src=0)
-                        self.learning_rate = lr_tensor.item()
+                        # Update the learning rate for all GPUs
+                        if self.is_multi_gpu:
+                            lr_tensor = torch.tensor(self.learning_rate, device=self.device)
+                            torch.distributed.broadcast(lr_tensor, src=0)
+                            self.learning_rate = lr_tensor.item()
 
-                    # Update the learning rate for all parameter groups
-                    for param_group in self.optimizer.param_groups:
-                        param_group["lr"] = self.learning_rate
+                        # Update the learning rate for all parameter groups
+                        for param_group in self.optimizer.param_groups:
+                            param_group["lr"] = self.learning_rate
 
-            # Surrogate loss
-            ratio = torch.exp(actions_log_prob - torch.squeeze(batch.old_actions_log_prob))  # type: ignore
-            surrogate = -torch.squeeze(batch.advantages) * ratio  # type: ignore
-            surrogate_clipped = -torch.squeeze(batch.advantages) * torch.clamp(  # type: ignore
-                ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
-            )
-            surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+                # Surrogate loss
+                ratio = torch.exp(actions_log_prob - torch.squeeze(batch.old_actions_log_prob))  # type: ignore
+                surrogate = -torch.squeeze(batch.advantages) * ratio  # type: ignore
+                surrogate_clipped = -torch.squeeze(batch.advantages) * torch.clamp(  # type: ignore
+                    ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
+                )
+                surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
-            # Value function loss
-            if self.use_clipped_value_loss:
-                value_clipped = batch.values + (values - batch.values).clamp(-self.clip_param, self.clip_param)
-                value_losses = (values - batch.returns).pow(2)
-                value_losses_clipped = (value_clipped - batch.returns).pow(2)
-                value_loss = torch.max(value_losses, value_losses_clipped).mean()
-            else:
-                value_loss = (batch.returns - values).pow(2).mean()
+                # Value function loss
+                if self.use_clipped_value_loss:
+                    value_clipped = batch.values + (values - batch.values).clamp(-self.clip_param, self.clip_param)
+                    value_losses = (values - batch.returns).pow(2)
+                    value_losses_clipped = (value_clipped - batch.returns).pow(2)
+                    value_loss = torch.max(value_losses, value_losses_clipped).mean()
+                else:
+                    value_loss = (batch.returns - values).pow(2).mean()
 
-            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+                loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
 
-            # RND loss
-            rnd_loss = self.rnd.compute_loss(batch.observations[:original_batch_size]) if self.rnd else None  # type: ignore
+                # RND loss
+                rnd_loss = self.rnd.compute_loss(batch.observations[:original_batch_size]) if self.rnd else None  # type: ignore
 
-            # Symmetry loss
-            if self.symmetry:
-                symmetry_loss = self.symmetry.compute_loss(self.actor, batch, original_batch_size)
-                if self.symmetry.use_mirror_loss:
-                    loss = loss + self.symmetry.mirror_loss_coeff * symmetry_loss
+                # Symmetry loss
+                if self.symmetry:
+                    symmetry_loss = self.symmetry.compute_loss(self.actor, batch, original_batch_size)
+                    if self.symmetry.use_mirror_loss:
+                        loss = loss + self.symmetry.mirror_loss_coeff * symmetry_loss
 
             # Compute the gradients for PPO
             self.optimizer.zero_grad()

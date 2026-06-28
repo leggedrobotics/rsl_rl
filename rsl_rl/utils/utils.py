@@ -94,6 +94,28 @@ def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
         raise ValueError(f"Invalid optimizer '{optimizer_name}'. Valid optimizers are: {list(optimizer_dict.keys())}")
 
 
+def resolve_mixed_precision(setting: bool | str, device_type: str) -> bool:
+    """Resolve the mixed-precision setting to a concrete enabled flag.
+
+    Args:
+        setting: ``True`` to force bfloat16 autocast, ``False`` to disable, or
+            ``"auto"`` to enable only when the device supports bfloat16 (CUDA
+            with :func:`torch.cuda.is_bf16_supported`).
+        device_type: The bare device type string (for example ``"cuda"`` or ``"cpu"``).
+
+    Returns:
+        Whether bfloat16 autocast should be enabled.
+
+    Raises:
+        ValueError: If ``setting`` is a string other than ``"auto"``.
+    """
+    if isinstance(setting, str):
+        if setting != "auto":
+            raise ValueError(f"Invalid use_mixed_precision '{setting}'. Use True, False, or 'auto'.")
+        return device_type == "cuda" and torch.cuda.is_bf16_supported()
+    return bool(setting)
+
+
 def resolve_callable(callable_or_name: type | Callable | str) -> Callable:
     """Resolve a callable from a string, type, or return callable directly.
 

@@ -318,3 +318,51 @@ class TestAdaptiveLearningRate:
             ppo.learning_rate = min(1e-2, ppo.learning_rate * 1.5)
 
         assert ppo.learning_rate == initial_lr
+
+
+def _fill_ppo_storage(ppo: PPO, obs: TensorDict) -> None:
+    """Populate the rollout storage with a full set of transitions."""
+    for _ in range(NUM_STEPS):
+        t = RolloutStorage.Transition()
+        t.observations = obs
+        t.hidden_states = (None, None)
+        t.actions = ppo.actor(obs, stochastic_output=True).detach()
+        t.values = ppo.critic(obs).detach()
+        t.actions_log_prob = ppo.actor.get_output_log_prob(t.actions).detach()
+        t.distribution_params = tuple(p.detach() for p in ppo.actor.output_distribution_params)
+        t.rewards = torch.randn(NUM_ENVS)
+        t.dones = torch.zeros(NUM_ENVS)
+        ppo.storage.add_transition(t)
+
+
+class TestMixedPrecision:
+    """Tests for the use_mixed_precision flag."""
+
+    def test_flag_defaults_to_false(self) -> None:
+        """Mixed precision must be opt-in."""
+        ppo, _obs = _build_ppo()
+        assert ppo.use_mixed_precision is False
+
+    def test_device_type_derived_from_device(self) -> None:
+        """device_type should be the bare device type string for autocast."""
+        ppo, _obs = _build_ppo()
+        assert ppo.device_type == "cpu"
+
+    def test_update_runs_with_mixed_precision(self) -> None:
+        """update() with the flag on returns finite losses and changes parameters."""
+        ppo, obs = _build_ppo(use_mixed_precision=True, schedule="fixed")
+        ppo.train_mode()
+        _fill_ppo_storage(ppo, obs)
+        ppo.compute_returns(obs)
+
+        before = [p.clone() for p in ppo.actor.parameters()]
+        loss_dict = ppo.update()
+
+        assert all(torch.isfinite(torch.tensor(v)) for v in loss_dict.values())
+        after = list(ppo.actor.parameters())
+        assert any(not torch.equal(b, a) for b, a in zip(before, after)), "actor params should change"
+
+    def test_auto_resolves_to_false_on_cpu(self) -> None:
+        """'auto' must resolve to False on the cpu test fixtures."""
+        ppo, _obs = _build_ppo(use_mixed_precision="auto")
+        assert ppo.use_mixed_precision is False
