@@ -25,7 +25,10 @@ NUM_ACTIONS = 4
 
 
 def _make_distillation_setup(
-    gradient_length: int = 3, num_learning_epochs: int = 1, obs_normalization: bool = False
+    gradient_length: int = 3,
+    num_learning_epochs: int = 1,
+    obs_normalization: bool = False,
+    use_mixed_precision: bool = False,
 ) -> tuple:
     """Build a Distillation instance with small networks."""
     obs = make_obs(NUM_ENVS, OBS_DIM)
@@ -45,6 +48,7 @@ def _make_distillation_setup(
         num_learning_epochs=num_learning_epochs,
         gradient_length=gradient_length,
         learning_rate=1e-3,
+        use_mixed_precision=use_mixed_precision,
     )
     return alg, obs, storage
 
@@ -163,3 +167,33 @@ class TestGradientBudgetWarning:
             warnings.simplefilter("always")
             _make_distillation_setup(gradient_length=gradient_length, num_learning_epochs=num_learning_epochs)
         assert not [w for w in caught if "gradient_length" in str(w.message)]
+
+
+class TestDistillationMixedPrecision:
+    """Tests for the use_mixed_precision flag in distillation."""
+
+    def test_flag_defaults_to_false(self) -> None:
+        """Mixed precision must be opt-in."""
+        alg, _obs, _storage = _make_distillation_setup()
+        assert alg.use_mixed_precision is False
+        assert alg.device_type == "cpu"
+
+    def test_update_runs_with_mixed_precision(self) -> None:
+        """update() with the flag on returns a finite loss and changes student params."""
+        alg, obs, _storage = _make_distillation_setup(
+            gradient_length=3, num_learning_epochs=1, use_mixed_precision=True
+        )
+        alg.train_mode()
+        _fill_distillation_storage(alg, obs)
+
+        before = [p.clone() for p in alg.student.parameters()]
+        loss_dict = alg.update()
+
+        assert torch.isfinite(torch.tensor(loss_dict["behavior"]))
+        after = list(alg.student.parameters())
+        assert any(not torch.equal(b, a) for b, a in zip(before, after)), "student params should change"
+
+    def test_auto_resolves_to_false_on_cpu(self) -> None:
+        """'auto' must resolve to False on the cpu test fixtures."""
+        alg, _obs, _storage = _make_distillation_setup(use_mixed_precision="auto")
+        assert alg.use_mixed_precision is False
