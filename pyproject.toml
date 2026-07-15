@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rsl-rl-lib"
-version = "5.4.1"
+version = "5.4.2"
 keywords = ["reinforcement-learning", "robotics"]
 maintainers = [
   { name="Clemens Schwarke", email="cschwarke@ethz.ch" },
