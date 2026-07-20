@@ -13,11 +13,17 @@ from tensordict import TensorDict
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import compile_model, resolve_callable, resolve_obs_groups, resolve_optimizer
+from rsl_rl.utils import compile_model, resolve_callable, resolve_mixed_precision, resolve_obs_groups, resolve_optimizer
 
 
 class Distillation:
-    """Distillation algorithm for training a student model to mimic a teacher model."""
+    """Distillation algorithm for training a student model to mimic a teacher model.
+
+    Set ``use_mixed_precision`` to run the forward pass and loss computation in
+    bfloat16 autocast (backward, gradient clipping, and the optimizer step stay in
+    fp32). Accepts ``True`` (force on), ``False`` (default, off), or ``"auto"``
+    (enable only on bfloat16-capable CUDA devices, otherwise fp32).
+    """
 
     student: MLPModel
     """The student model."""
@@ -39,6 +45,7 @@ class Distillation:
         max_grad_norm: float | None = None,
         loss_type: str = "mse",
         optimizer: str = "adam",
+        use_mixed_precision: bool | str = False,
         device: str = "cpu",
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
@@ -47,6 +54,10 @@ class Distillation:
         """Initialize the algorithm with models, storage, and optimization settings."""
         # Device-related parameters
         self.device = device
+        # Mixed precision: bf16 autocast over forward+loss, no GradScaler needed.
+        # "auto" enables bf16 only on hardware that supports it; otherwise fp32.
+        self.device_type = torch.device(device).type
+        self.use_mixed_precision = resolve_mixed_precision(use_mixed_precision, self.device_type)
         self.is_multi_gpu = multi_gpu_cfg is not None
 
         # Multi-GPU parameters
@@ -134,10 +145,12 @@ class Distillation:
             self.student.detach_hidden_state()
             for batch in self.storage.generator():
                 # Inference of the student for gradient computation
-                actions = self.student(batch.observations)
-
-                # Behavior cloning loss
-                behavior_loss = self.loss_fn(actions, batch.privileged_actions)
+                with torch.amp.autocast(
+                    device_type=self.device_type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
+                ):
+                    actions = self.student(batch.observations)
+                    # Behavior cloning loss
+                    behavior_loss = self.loss_fn(actions, batch.privileged_actions)
 
                 # Total loss
                 loss = loss + behavior_loss
