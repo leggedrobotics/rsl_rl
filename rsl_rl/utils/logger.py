@@ -182,7 +182,7 @@ class Logger:
             extras_string = ""
             if self.ep_extras:
                 # Iterate over all keys in the episode info dictionary
-                for key in {k for ep_info in self.ep_extras for k in ep_info}:
+                for key in dict.fromkeys(k for ep_info in self.ep_extras for k in ep_info):
                     infotensor = torch.tensor([], device=self.device)
                     # Iterate over all steps
                     for ep_info in self.ep_extras:
