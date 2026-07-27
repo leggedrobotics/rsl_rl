@@ -1,0 +1,518 @@
+from __future__ import annotations
+
+import torch
+import torch.nn as nn
+from itertools import chain
+from tensordict import TensorDict
+
+from rsl_rl.env import VecEnv
+from rsl_rl.extensions import RandomNetworkDistillation, resolve_rnd_config, resolve_symmetry_config
+from rsl_rl.models import MLPModel
+from rsl_rl.storage import MultiCriticRolloutStorage
+from rsl_rl.utils import compile_model, resolve_callable, resolve_obs_groups, resolve_optimizer
+
+
+class MultiCriticPPO:
+    """Proximal Policy Optimization algorithm with multiple critics.
+
+    Reference:
+        - Schulman et al. "Proximal policy optimization algorithms." arXiv preprint arXiv:1707.06347 (2017).
+    """
+
+    actor: MLPModel
+    """The actor model."""
+
+    critics: list[MLPModel]
+    """The critic models."""
+
+    def __init__(
+        self,
+        actor: MLPModel,
+        critics: list[MLPModel],
+        storage: MultiCriticRolloutStorage,
+        num_learning_epochs: int = 5,
+        num_mini_batches: int = 4,
+        clip_param: float = 0.2,
+        gamma: float = 0.99,
+        lam: float = 0.95,
+        value_loss_coef: float = 1.0,
+        entropy_coef: float = 0.01,
+        learning_rate: float = 0.001,
+        max_grad_norm: float = 1.0,
+        optimizer: str = "adam",
+        use_clipped_value_loss: bool = True,
+        schedule: str = "adaptive",
+        desired_kl: float = 0.01,
+        normalize_advantage_per_mini_batch: bool = False,
+        device: str = "cpu",
+        # RND parameters
+        rnd_cfg: dict | None = None,
+        # Symmetry parameters
+        # Distributed training parameters
+        multi_gpu_cfg: dict | None = None,
+    ) -> None:
+        """Initialize the algorithm with models, storage, and optimization settings."""
+        # Device-related parameters
+        self.device = device
+        self.is_multi_gpu = multi_gpu_cfg is not None
+
+        # Multi-GPU parameters
+        if multi_gpu_cfg is not None:
+            self.gpu_global_rank = multi_gpu_cfg["global_rank"]
+            self.gpu_world_size = multi_gpu_cfg["world_size"]
+        else:
+            self.gpu_global_rank = 0
+            self.gpu_world_size = 1
+
+        # RND extension
+        self.rnd = RandomNetworkDistillation(device=self.device, **rnd_cfg) if rnd_cfg else None
+
+        # PPO components
+        self.actor = actor.to(self.device)
+        self.critics = [critic.to(self.device) for critic in critics]
+
+        # Handles to the uncompiled modules for state_dict operations and export. If compilation is disabled, these
+        # simply alias ``self.actor`` / ``self.critics``.
+        self._raw_actor = self.actor
+        self._raw_critics = self.critics
+
+        # Create the optimizer
+        self.optimizer = resolve_optimizer(optimizer)(
+            chain(self.actor.parameters(), *(critic.parameters() for critic in self.critics)), lr=learning_rate
+        )  # type: ignore
+
+        # Add storage
+        self.storage = storage
+        self.transition = MultiCriticRolloutStorage.Transition()
+
+        # PPO parameters
+        self.clip_param = clip_param
+        self.num_learning_epochs = num_learning_epochs
+        self.num_mini_batches = num_mini_batches
+        self.value_loss_coef = value_loss_coef
+        self.entropy_coef = entropy_coef
+        self.gamma = gamma
+        self.lam = lam
+        self.max_grad_norm = max_grad_norm
+        self.use_clipped_value_loss = use_clipped_value_loss
+        self.desired_kl = desired_kl
+        self.schedule = schedule
+        self.learning_rate = learning_rate
+        self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+
+    def act(self, obs: TensorDict) -> torch.Tensor:
+        """Sample actions and store transition data."""
+        # Record the hidden states for recurrent policies: (actor, critic_0, ..., critic_{n-1})
+        self.transition.hidden_states = (
+            self.actor.get_hidden_state(),
+            *(critic.get_hidden_state() for critic in self.critics),
+        )
+        # Compute the actions and values
+        self.transition.actions = self.actor(obs, stochastic_output=True).detach()
+        self.transition.values = tuple(critic(obs).detach() for critic in self.critics)
+        self.transition.actions_log_prob = self.actor.get_output_log_prob(self.transition.actions).detach()  # type: ignore
+        self.transition.distribution_params = tuple(p.detach() for p in self.actor.output_distribution_params)
+        # Record observations before env.step()
+        self.transition.observations = obs
+        return self.transition.actions  # type: ignore
+
+    def process_env_step(
+        self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
+    ) -> None:
+        """Record one environment step and update the normalizers."""
+        # Update the normalizers
+        self.actor.update_normalization(obs)
+        for critic in self.critics:
+            critic.update_normalization(obs)
+        if self.rnd:
+            self.rnd.update_normalization(obs)
+
+        # Record the rewards and dones
+        # Note: We clone here because later on we bootstrap the rewards based on timeouts
+        self.transition.rewards = rewards.clone()
+        self.transition.dones = dones
+
+        # Compute the intrinsic rewards and add to extrinsic rewards
+        if self.rnd:
+            # Compute the intrinsic rewards
+            self.intrinsic_rewards = self.rnd.get_intrinsic_reward(obs)
+            # Add intrinsic rewards to extrinsic rewards
+            self.transition.rewards += self.intrinsic_rewards
+
+        # Bootstrapping on time outs
+        # ASSUMPTION: reward is shared across critics, so we bootstrap with the mean value estimate
+        # across critics. If you want a per-critic reward stream instead, this needs to change to
+        # keep `self.transition.rewards` as a tuple too.
+        if "time_outs" in extras:
+            time_outs = extras["time_outs"].unsqueeze(1).to(self.device)
+            mean_value = sum(self.transition.values) / len(self.transition.values)  # type: ignore
+            self.transition.rewards += self.gamma * torch.squeeze(mean_value * time_outs, 1)
+
+        # Record the transition
+        self.storage.add_transition(self.transition)
+        self.transition.clear()
+        self.actor.reset(dones)
+        for critic in self.critics:
+            critic.reset(dones)
+
+    def compute_returns(self, obs: TensorDict) -> None:
+        """Compute return and advantage targets from stored transitions."""
+        st = self.storage
+        # Compute values for the last step, per critic
+        last_values = []
+        for critic in self.critics:
+            hidden_state = critic.get_hidden_state()
+            last_values.append(critic(obs).detach())
+            # Restore the critic's hidden state so the next rollout is not affected by the forward pass
+            critic.reset(hidden_state=hidden_state)
+        last_values = tuple(last_values)
+
+        # Compute returns and advantages, one running advantage accumulator per critic
+        advantage = tuple(torch.zeros_like(v) for v in last_values)
+        for step in reversed(range(st.num_transitions_per_env)):
+            # If we are at the last step, bootstrap the return value
+            next_values = (
+                last_values if step == st.num_transitions_per_env - 1 else tuple(v[step + 1] for v in st.values)
+            )
+            # 1 if we are not in a terminal state, 0 otherwise
+            next_is_not_terminal = 1.0 - st.dones[step].float()
+            # TD error per critic: r_t + gamma * V_c(s_{t+1}) - V_c(s_t)  (reward shared across critics)
+            delta = tuple(
+                st.rewards[step] + next_is_not_terminal * self.gamma * next_v - values_c[step]
+                for values_c, next_v in zip(st.values, next_values)
+            )
+            # Advantage per critic: A_c(s_t, a_t) = delta_t + gamma * lambda * A_c(s_{t+1}, a_{t+1})
+            advantage = tuple(
+                d + next_is_not_terminal * self.gamma * self.lam * adv for d, adv in zip(delta, advantage)
+            )
+            # Return per critic: R_c,t = A_c(s_t, a_t) + V_c(s_t)
+            for c_idx, (adv_c, values_c) in enumerate(zip(advantage, st.values)):
+                st.returns[c_idx][step] = adv_c + values_c[step]
+
+        # Compute the advantages per critic
+        st.advantages = torch.tensor(tuple(ret - val for ret, val in zip(st.returns, st.values)))
+        # Normalize the advantages per critic if per-mini-batch normalization is not used
+        if not self.normalize_advantage_per_mini_batch:
+            st.advantages = torch.tensor(tuple((adv - adv.mean()) / (adv.std() + 1e-8) for adv in st.advantages))
+
+    def update(self) -> dict[str, float]:
+        """Run optimization epochs over stored batches and return mean losses."""
+        mean_value_loss = 0
+        mean_surrogate_loss = 0
+        mean_entropy = 0
+        # RND loss
+        mean_rnd_loss = 0 if self.rnd else None
+        # Symmetry loss
+        mean_symmetry_loss = None
+
+        # Get mini-batch generator
+        if self.actor.is_recurrent or any(critic.is_recurrent for critic in self.critics):
+            generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+        else:
+            generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+
+        # Iterate over mini-batches
+        for batch in generator:
+            original_batch_size = batch.observations.batch_size[0]
+
+            # Check if we should normalize advantages per mini-batch
+            if self.normalize_advantage_per_mini_batch:
+                with torch.no_grad():
+                    batch.advantages = tuple(  # type: ignore
+                        (adv - adv.mean()) / (adv.std() + 1e-8) for adv in batch.advantages  # type: ignore
+                    )
+
+
+            # Recompute actions log prob and entropy for current batch of transitions
+            # Note: We need to do this because we updated the policy with new parameters
+            self.actor(
+                batch.observations,
+                masks=batch.masks,
+                hidden_state=batch.hidden_states[0],
+                stochastic_output=True,
+            )
+            actions_log_prob = self.actor.get_output_log_prob(batch.actions)  # type: ignore
+
+            # Recompute values per critic, using each critic's own hidden state slot
+            values = tuple(
+                critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[c_idx + 1])
+                for c_idx, critic in enumerate(self.critics)
+            )
+
+            # Note: We only keep the following tensors for the original samples in case of symmetry augmentation
+            distribution_params = tuple(p[:original_batch_size] for p in self.actor.output_distribution_params)
+            entropy = self.actor.output_entropy[:original_batch_size]
+
+            # Compute KL divergence and adapt the learning rate
+            if self.desired_kl is not None and self.schedule == "adaptive":
+                with torch.inference_mode():
+                    kl = self.actor.get_kl_divergence(batch.old_distribution_params, distribution_params)  # type: ignore
+                    kl_mean = torch.mean(kl)
+
+                    # Reduce the KL divergence across all GPUs
+                    if self.is_multi_gpu:
+                        torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
+                        kl_mean /= self.gpu_world_size
+
+                    # Update the learning rate only on the main process
+                    if self.gpu_global_rank == 0:
+                        if kl_mean > self.desired_kl * 2.0:
+                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                        elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
+                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+
+                    # Update the learning rate for all GPUs
+                    if self.is_multi_gpu:
+                        lr_tensor = torch.tensor(self.learning_rate, device=self.device)
+                        torch.distributed.broadcast(lr_tensor, src=0)
+                        self.learning_rate = lr_tensor.item()
+
+                    # Update the learning rate for all parameter groups
+                    for param_group in self.optimizer.param_groups:
+                        param_group["lr"] = self.learning_rate
+
+            # Surrogate loss — one actor, but advantages differ per critic; average across critics into
+            # a single scalar surrogate loss. If critics represent different reward components you want
+            # weighted differently, replace the plain mean with a weighted sum here.
+            ratio = torch.exp(actions_log_prob - torch.squeeze(batch.old_actions_log_prob))  # type: ignore
+            surrogate_losses = []
+            for adv in batch.advantages:  # type: ignore
+                surrogate = -torch.squeeze(adv) * ratio
+                surrogate_clipped = -torch.squeeze(adv) * torch.clamp(
+                    ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
+                )
+                surrogate_losses.append(torch.max(surrogate, surrogate_clipped).mean())
+            surrogate_loss = sum(surrogate_losses) / len(surrogate_losses)
+
+            # Value function loss — computed per critic, then averaged into a single scalar
+            value_losses = []
+            for values_c, batch_values_c, batch_returns_c in zip(values, batch.values, batch.returns):  # type: ignore
+                if self.use_clipped_value_loss:
+                    value_clipped = batch_values_c + (values_c - batch_values_c).clamp(
+                        -self.clip_param, self.clip_param
+                    )
+                    vl = (values_c - batch_returns_c).pow(2)
+                    vl_clipped = (value_clipped - batch_returns_c).pow(2)
+                    value_losses.append(torch.max(vl, vl_clipped).mean())
+                else:
+                    value_losses.append((batch_returns_c - values_c).pow(2).mean())
+            value_loss = sum(value_losses) / len(value_losses)
+
+            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+
+            # RND loss
+            rnd_loss = self.rnd.compute_loss(batch.observations[:original_batch_size]) if self.rnd else None  # type: ignore
+
+            # Compute the gradients for PPO
+            self.optimizer.zero_grad()
+            loss.backward()
+            # Compute the gradients for RND
+            if self.rnd:
+                self.rnd.optimizer.zero_grad()
+                rnd_loss.backward()
+
+            # Collect gradients from all GPUs
+            if self.is_multi_gpu:
+                self.reduce_parameters()
+
+            # Apply the gradients for PPO
+            nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+            for critic in self.critics:
+                nn.utils.clip_grad_norm_(critic.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+            # Apply the gradients for RND
+            if self.rnd:
+                self.rnd.optimizer.step()
+
+            # Store the losses
+            mean_value_loss += value_loss
+            mean_surrogate_loss += surrogate_loss
+            mean_entropy += entropy.mean().item()
+            # RND loss
+            if mean_rnd_loss is not None:
+                mean_rnd_loss += rnd_loss.item()
+            # Symmetry loss
+
+        # Divide the losses by the number of updates
+        num_updates = self.num_learning_epochs * self.num_mini_batches
+        mean_value_loss /= num_updates
+        mean_surrogate_loss /= num_updates
+        mean_entropy /= num_updates
+        if mean_rnd_loss is not None:
+            mean_rnd_loss /= num_updates
+        if mean_symmetry_loss is not None:
+            mean_symmetry_loss /= num_updates
+
+        # Construct the loss dictionary
+        loss_dict = {
+            "value": mean_value_loss,
+            "surrogate": mean_surrogate_loss,
+            "entropy": mean_entropy,
+        }
+        if self.rnd:
+            if mean_rnd_loss is not None :
+                loss_dict["rnd"] = mean_rnd_loss
+
+        # Clear the storage
+        self.storage.clear()
+
+        return loss_dict
+
+    def train_mode(self) -> None:
+        """Set train mode for learnable models."""
+        self.actor.train()
+        for critic in self.critics:
+            critic.train()
+        if self.rnd:
+            self.rnd.train()
+
+    def eval_mode(self) -> None:
+        """Set evaluation mode for learnable models."""
+        self.actor.eval()
+        for critic in self.critics:
+            critic.eval()
+        if self.rnd:
+            self.rnd.eval()
+
+    def save(self) -> dict:
+        """Return a dict of all models for saving."""
+        saved_dict = {
+            "actor_state_dict": self._raw_actor.state_dict(),
+            "critic_state_dict": [critic.state_dict() for critic in self._raw_critics],
+            "optimizer_state_dict": self.optimizer.state_dict(),
+        }
+        if self.rnd:
+            saved_dict["rnd_state_dict"] = self.rnd.state_dict()
+            saved_dict["rnd_optimizer_state_dict"] = self.rnd.optimizer.state_dict()
+        return saved_dict
+
+    def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
+        """Load specified models from a saved dict."""
+        # If no load_cfg is provided, load all models and states
+        if load_cfg is None:
+            load_cfg = {
+                "actor": True,
+                "critic": True,
+                "optimizer": True,
+                "iteration": True,
+                "rnd": True,
+            }
+
+        # Load the specified models
+        if load_cfg.get("actor"):
+            self._raw_actor.load_state_dict(loaded_dict["actor_state_dict"], strict=strict)
+        if load_cfg.get("critic"):
+            for critic, state_dict in zip(self._raw_critics, loaded_dict["critic_state_dict"]):
+                critic.load_state_dict(state_dict, strict=strict)
+        if load_cfg.get("optimizer"):
+            self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+            self.learning_rate = self.optimizer.param_groups[0]["lr"]
+        if load_cfg.get("rnd") and self.rnd:
+            self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
+            self.rnd.optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
+        return load_cfg.get("iteration", False)
+
+    def get_policy(self) -> MLPModel:
+        """Get the policy model."""
+        return self._raw_actor
+
+    def compile(self, mode: str | None = None) -> None:
+        """Compile actor and critics with ``torch.compile``.
+
+        See :func:`~rsl_rl.utils.compile_model` for the set of accepted modes.
+
+        Args:
+            mode: ``torch.compile`` mode. Defaults to ``None``, in which case compilation is disabled.
+        """
+        self.actor = compile_model(self._raw_actor, mode)  # type: ignore
+        self.critics = [compile_model(critic, mode) for critic in self._raw_critics]  # type: ignore
+
+    @staticmethod
+    def construct_algorithm(obs: TensorDict, env: VecEnv, cfg: dict, device: str) -> MultiCriticPPO:
+        """Construct the PPO algorithm."""
+        # Resolve class callables
+        alg_class: type[MultiCriticPPO] = resolve_callable(cfg["algorithm"].pop("class_name"))  # type: ignore
+        actor_class: type[MLPModel] = resolve_callable(cfg["actor"].pop("class_name"))  # type: ignore
+        critic_class: type[MLPModel] = resolve_callable(cfg["critic"].pop("class_name"))  # type: ignore
+
+        # Resolve observation groups
+        default_sets = ["actor", "critic"]
+        if "rnd_cfg" in cfg["algorithm"] and cfg["algorithm"]["rnd_cfg"] is not None:
+            default_sets.append("rnd_state")
+        cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], default_sets)
+
+        # Resolve RND config if used
+        cfg["algorithm"] = resolve_rnd_config(cfg["algorithm"], obs, cfg["obs_groups"], env)
+
+        # Resolve symmetry config if used
+        cfg["algorithm"] = resolve_symmetry_config(cfg["algorithm"], env)
+
+        # Initialize the policy
+        actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **cfg["actor"]).to(device)
+        print(f"Actor Model: {actor}")
+        if cfg["algorithm"].pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critics
+            cfg["critic"]["cnns"] = actor.cnns  # type: ignore
+
+        # NOTE: assumes cfg["algorithm"] specifies how many critics to build via "num_critics";
+        # adjust this if your config instead provides a list of per-critic configs.
+        num_critics = cfg["algorithm"].pop("num_critics", 1)
+        critics: list[MLPModel] = []
+        for i in range(num_critics):
+            critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **cfg["critic"]).to(device)
+            print(f"Critic {i} Model: {critic}")
+            critics.append(critic)
+
+        # Initialize the storage
+        storage = MultiCriticRolloutStorage(
+            "rl", env.num_envs, cfg["num_steps_per_env"], obs, [env.num_actions], num_critics=num_critics, device=device
+        )
+
+        # Initialize the algorithm
+        alg: MultiCriticPPO = alg_class(
+            actor, critics, storage, device=device, **cfg["algorithm"], multi_gpu_cfg=cfg["multi_gpu"]
+        )
+
+        # Compile the algorithm's models if requested
+        alg.compile(cfg.get("torch_compile_mode"))
+
+        return alg
+
+    def broadcast_parameters(self) -> None:
+        """Broadcast model parameters to all GPUs."""
+        # Obtain the model parameters on current GPU
+        model_params = [self._raw_actor.state_dict(), *(critic.state_dict() for critic in self._raw_critics)]
+        if self.rnd:
+            model_params.append(self.rnd.predictor.state_dict())
+        # Broadcast the model parameters
+        torch.distributed.broadcast_object_list(model_params, src=0)
+        # Load the model parameters on all GPUs from source GPU
+        self._raw_actor.load_state_dict(model_params[0])
+        for critic, state_dict in zip(self._raw_critics, model_params[1 : 1 + len(self._raw_critics)]):
+            critic.load_state_dict(state_dict)
+        if self.rnd:
+            self.rnd.predictor.load_state_dict(model_params[1 + len(self._raw_critics)])
+
+    def reduce_parameters(self) -> None:
+        """Collect gradients from all GPUs and average them.
+
+        This function is called after the backward pass to synchronize the gradients across all GPUs.
+        """
+        # Create a tensor to store the gradients
+        all_params = chain(self.actor.parameters(), *(critic.parameters() for critic in self.critics))
+        if self.rnd:
+            all_params = chain(all_params, self.rnd.parameters())
+        all_params = list(all_params)
+        grads = [param.grad.view(-1) for param in all_params if param.grad is not None]
+        all_grads = torch.cat(grads)
+        # Average the gradients across all GPUs
+        torch.distributed.all_reduce(all_grads, op=torch.distributed.ReduceOp.SUM)
+        all_grads /= self.gpu_world_size
+        # Update the gradients for all parameters with the reduced gradients
+        offset = 0
+        for param in all_params:
+            if param.grad is not None:
+                numel = param.numel()
+                # Copy data back from shared buffer
+                param.grad.data.copy_(all_grads[offset : offset + numel].view_as(param.grad.data))
+                # Update the offset for the next parameter
+                offset += numel

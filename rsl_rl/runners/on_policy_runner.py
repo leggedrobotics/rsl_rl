@@ -10,7 +10,7 @@ import os
 import time
 import torch
 
-from rsl_rl.algorithms import PPO
+from rsl_rl.algorithms import PPO, MultiCriticPPO
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
 from rsl_rl.utils import check_nan, resolve_callable
@@ -20,7 +20,7 @@ from rsl_rl.utils.logger import Logger
 class OnPolicyRunner:
     """On-policy runner for reinforcement learning algorithms."""
 
-    alg: PPO
+    alg: PPO | MultiCriticPPO
     """The actor-critic algorithm."""
 
     def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
