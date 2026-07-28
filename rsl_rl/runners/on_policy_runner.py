@@ -10,7 +10,7 @@ import os
 import time
 import torch
 
-from rsl_rl.algorithms import PPO, MultiCriticPPO
+from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
 from rsl_rl.utils import check_nan, resolve_callable
