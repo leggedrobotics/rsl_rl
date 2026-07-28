@@ -69,15 +69,18 @@ class MultiCriticRolloutStorage:
 
         This class provides named access to mini-batch fields. Fields are optional to support different training modes
         (RL vs distillation) and architectures (feedforward vs recurrent).
+
+        For RL, ``values`` / ``advantages`` / ``returns`` are tuples with one tensor per critic (mirroring
+        :class:`MultiCriticPPO`'s expectations), not single tensors.
         """
 
         def __init__(
             self,
             observations: TensorDict | None = None,
             actions: torch.Tensor | None = None,
-            values: torch.Tensor | None = None,
-            advantages: torch.Tensor | None = None,
-            returns: torch.Tensor | None = None,
+            values: tuple[torch.Tensor, ...] | None = None,
+            advantages: tuple[torch.Tensor, ...] | None = None,
+            returns: tuple[torch.Tensor, ...] | None = None,
             old_actions_log_prob: torch.Tensor | None = None,
             old_distribution_params: tuple[torch.Tensor, ...] | None = None,
             hidden_states: tuple[HiddenState | None, ...] = (),
@@ -93,14 +96,14 @@ class MultiCriticRolloutStorage:
             self.actions: torch.Tensor | None = actions
             """Batch of actions."""
 
-            self.values: torch.Tensor | None = values
-            """Batch of value estimates (RL only)."""
+            self.values: tuple[torch.Tensor, ...] | None = values
+            """Batch of value estimates, one tensor per critic (RL only)."""
 
-            self.advantages: torch.Tensor | None = advantages
-            """Batch of advantage estimates (RL only)."""
+            self.advantages: tuple[torch.Tensor, ...] | None = advantages
+            """Batch of advantage estimates, one tensor per critic (RL only)."""
 
-            self.returns: torch.Tensor | None = returns
-            """Batch of return targets (RL only)."""
+            self.returns: tuple[torch.Tensor, ...] | None = returns
+            """Batch of return targets, one tensor per critic (RL only)."""
 
             self.old_actions_log_prob: torch.Tensor | None = old_actions_log_prob
             """Batch of log probabilities of the old actions (RL only)."""
@@ -158,12 +161,21 @@ class MultiCriticRolloutStorage:
             self.privileged_actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
 
         # For reinforcement learning
+        # NOTE: values/returns/advantages are lists with one tensor per critic (each shaped
+        # [num_transitions_per_env, num_envs, 1]), since MultiCriticPPO tracks a separate value
+        # function / advantage / return stream per critic even though rewards are shared.
         if training_type == "rl":
-            self.values = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
+            self.values: list[torch.Tensor] = [
+                torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device) for _ in range(num_critics)
+            ]
             self.actions_log_prob = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
             self.distribution_params: tuple[torch.Tensor, ...] | None = None  # Lazily initialized on first transition
-            self.returns = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
-            self.advantages = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
+            self.returns: list[torch.Tensor] = [
+                torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device) for _ in range(num_critics)
+            ]
+            self.advantages: list[torch.Tensor] = [
+                torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device) for _ in range(num_critics)
+            ]
 
         # For recurrent networks
         self.saved_hidden_state_a: list[torch.Tensor] | None = None
@@ -190,7 +202,12 @@ class MultiCriticRolloutStorage:
 
         # For reinforcement learning
         if self.training_type == "rl":
-            self.values[self.step].copy_(transition.values)  # type: ignore
+            if len(transition.values) != self.num_critics:  # type: ignore
+                raise ValueError(
+                    f"Expected {self.num_critics} critic value estimates, got {len(transition.values)}."  # type: ignore
+                )
+            for c_idx, v in enumerate(transition.values):  # type: ignore
+                self.values[c_idx][self.step].copy_(v.view(-1, 1))
             self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
             if self.distribution_params is None:  # Initialize the distribution parameters
                 self.distribution_params = tuple(
@@ -232,13 +249,13 @@ class MultiCriticRolloutStorage:
         mini_batch_size = batch_size // num_mini_batches
         indices = torch.randperm(num_mini_batches * mini_batch_size, requires_grad=False, device=self.device)
 
-        # Flatten the data
+        # Flatten the data. Values/returns/advantages stay as one flattened tensor per critic.
         observations = self.observations.flatten(0, 1)
         actions = self.actions.flatten(0, 1)
-        values = self.values.flatten(0, 1)
-        returns = self.returns.flatten(0, 1)
+        values = tuple(v.flatten(0, 1) for v in self.values)
+        returns = tuple(r.flatten(0, 1) for r in self.returns)
+        advantages = tuple(a.flatten(0, 1) for a in self.advantages)
         old_actions_log_prob = self.actions_log_prob.flatten(0, 1)
-        advantages = self.advantages.flatten(0, 1)
         old_distribution_params = tuple(p.flatten(0, 1) for p in self.distribution_params)  # type: ignore
 
         for epoch in range(num_epochs):
@@ -252,9 +269,9 @@ class MultiCriticRolloutStorage:
                 yield MultiCriticRolloutStorage.Batch(
                     observations=observations[batch_idx],  # type: ignore
                     actions=actions[batch_idx],
-                    values=values[batch_idx],
-                    advantages=advantages[batch_idx],
-                    returns=returns[batch_idx],
+                    values=tuple(v[batch_idx] for v in values),
+                    advantages=tuple(a[batch_idx] for a in advantages),
+                    returns=tuple(r[batch_idx] for r in returns),
                     old_actions_log_prob=old_actions_log_prob[batch_idx],
                     old_distribution_params=tuple(p[batch_idx] for p in old_distribution_params),
                 )
@@ -320,13 +337,14 @@ class MultiCriticRolloutStorage:
                         batch = None
                     hidden_state_c_batches.append(batch)
 
-                # Yield the mini-batch
+                # Yield the mini-batch. values/advantages/returns are per-critic tuples, each
+                # sliced the same way the single-critic tensors used to be.
                 yield MultiCriticRolloutStorage.Batch(
                     observations=padded_obs_trajectories[:, first_traj:last_traj],  # type: ignore
                     actions=self.actions[:, start:stop],
-                    values=self.values[:, start:stop],
-                    advantages=self.advantages[:, start:stop],
-                    returns=self.returns[:, start:stop],
+                    values=tuple(v[:, start:stop] for v in self.values),
+                    advantages=tuple(a[:, start:stop] for a in self.advantages),
+                    returns=tuple(r[:, start:stop] for r in self.returns),
                     old_actions_log_prob=self.actions_log_prob[:, start:stop],
                     old_distribution_params=tuple(p[:, start:stop] for p in self.distribution_params),  # type: ignore
                     hidden_states=(hidden_state_a_batch, *hidden_state_c_batches),  # type: ignore

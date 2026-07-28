@@ -20,7 +20,7 @@ from rsl_rl.utils.logger import Logger
 class OnPolicyRunner:
     """On-policy runner for reinforcement learning algorithms."""
 
-    alg: PPO | MultiCriticPPO
+    alg: PPO
     """The actor-critic algorithm."""
 
     def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:

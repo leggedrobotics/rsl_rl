@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from itertools import chain
 from tensordict import TensorDict
+from collections.abc import Sequence
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import RandomNetworkDistillation, resolve_rnd_config, resolve_symmetry_config
@@ -11,6 +12,15 @@ from rsl_rl.models import MLPModel
 from rsl_rl.storage import MultiCriticRolloutStorage
 from rsl_rl.utils import compile_model, resolve_callable, resolve_obs_groups, resolve_optimizer
 
+def _detach_hidden_state(hidden_state):
+    """Recursively detach a (possibly nested) hidden-state structure."""
+    if hidden_state is None:
+        return None
+    if isinstance(hidden_state, torch.Tensor):
+        return hidden_state.detach()
+    if isinstance(hidden_state, (tuple, list)):
+        return type(hidden_state)(_detach_hidden_state(h) for h in hidden_state)
+    return hidden_state
 
 class MultiCriticPPO:
     """Proximal Policy Optimization algorithm with multiple critics.
@@ -22,13 +32,13 @@ class MultiCriticPPO:
     actor: MLPModel
     """The actor model."""
 
-    critics: list[MLPModel]
+    critics: Sequence[MLPModel]
     """The critic models."""
 
     def __init__(
         self,
         actor: MLPModel,
-        critics: list[MLPModel],
+        critics: Sequence[MLPModel],
         storage: MultiCriticRolloutStorage,
         num_learning_epochs: int = 5,
         num_mini_batches: int = 4,
@@ -48,6 +58,7 @@ class MultiCriticPPO:
         # RND parameters
         rnd_cfg: dict | None = None,
         # Symmetry parameters
+        symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
     ) -> None:
@@ -66,6 +77,11 @@ class MultiCriticPPO:
 
         # RND extension
         self.rnd = RandomNetworkDistillation(device=self.device, **rnd_cfg) if rnd_cfg else None
+
+        # Symmetry augmentation is not implemented for multi-critic PPO
+        if symmetry_cfg is not None:
+            raise NotImplementedError("Symmetry augmentation is not supported for MultiCriticPPO.")
+
 
         # PPO components
         self.actor = actor.to(self.device)
@@ -103,9 +119,11 @@ class MultiCriticPPO:
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Sample actions and store transition data."""
         # Record the hidden states for recurrent policies: (actor, critic_0, ..., critic_{n-1})
-        self.transition.hidden_states = (
-            self.actor.get_hidden_state(),
-            *(critic.get_hidden_state() for critic in self.critics),
+        # Detached because these are only used to initialize truncated-BPTT segments during update(),
+        # not to carry gradients across the whole rollout.
+        self.transition.hidden_states = tuple(
+            _detach_hidden_state(h)
+            for h in (self.actor.get_hidden_state(), *(critic.get_hidden_state() for critic in self.critics))
         )
         # Compute the actions and values
         self.transition.actions = self.actor(obs, stochastic_output=True).detach()
@@ -189,11 +207,13 @@ class MultiCriticPPO:
             for c_idx, (adv_c, values_c) in enumerate(zip(advantage, st.values)):
                 st.returns[c_idx][step] = adv_c + values_c[step]
 
-        # Compute the advantages per critic
-        st.advantages = torch.tensor(tuple(ret - val for ret, val in zip(st.returns, st.values)))
+        # Compute the advantages per critic. Kept as a tuple of per-critic tensors (NOT wrapped in
+        # torch.tensor(...)) since `update()` and both mini-batch generators iterate over
+        # `st.advantages` expecting one tensor per critic.
+        st.advantages = [ret - val for ret, val in zip(st.returns, st.values)]
         # Normalize the advantages per critic if per-mini-batch normalization is not used
         if not self.normalize_advantage_per_mini_batch:
-            st.advantages = torch.tensor(tuple((adv - adv.mean()) / (adv.std() + 1e-8) for adv in st.advantages))
+            st.advantages = [(adv - adv.mean()) / (adv.std() + 1e-8) for adv in st.advantages]
 
     def update(self) -> dict[str, float]:
         """Run optimization epochs over stored batches and return mean losses."""
@@ -224,18 +244,26 @@ class MultiCriticPPO:
 
 
             # Recompute actions log prob and entropy for current batch of transitions
-            # Note: We need to do this because we updated the policy with new parameters
+            # Note: We need to do this because we updated the policy with new parameters.
+            # `batch.hidden_states` is only populated for recurrent models (see
+            # MultiCriticRolloutStorage.recurrent_mini_batch_generator); the feedforward generator
+            # leaves it as the empty-tuple default, so guard the indexing here.
+            actor_hidden_state = batch.hidden_states[0] if batch.hidden_states else None
             self.actor(
                 batch.observations,
                 masks=batch.masks,
-                hidden_state=batch.hidden_states[0],
+                hidden_state=actor_hidden_state,
                 stochastic_output=True,
             )
             actions_log_prob = self.actor.get_output_log_prob(batch.actions)  # type: ignore
 
-            # Recompute values per critic, using each critic's own hidden state slot
+            # Recompute values per critic, using each critic's own hidden state slot (if any)
             values = tuple(
-                critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[c_idx + 1])
+                critic(
+                    batch.observations,
+                    masks=batch.masks,
+                    hidden_state=(batch.hidden_states[c_idx + 1] if batch.hidden_states else None),
+                )
                 for c_idx, critic in enumerate(self.critics)
             )
 
