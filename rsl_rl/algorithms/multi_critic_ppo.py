@@ -135,9 +135,15 @@ class MultiCriticPPO:
         return self.transition.actions  # type: ignore
 
     def process_env_step(
-        self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
+        self, obs: TensorDict, rewards: tuple[torch.Tensor, ...], dones: torch.Tensor, extras: dict[str, torch.Tensor]
     ) -> None:
-        """Record one environment step and update the normalizers."""
+        """Record one environment step and update the normalizers.
+
+        Args:
+            rewards: One reward tensor per critic, each shape [num_envs]. Critics no longer share a
+                single reward stream — each is free to optimize a distinct signal (e.g. task reward,
+                energy penalty, smoothness penalty, ...).
+        """
         # Update the normalizers
         self.actor.update_normalization(obs)
         for critic in self.critics:
@@ -145,26 +151,28 @@ class MultiCriticPPO:
         if self.rnd:
             self.rnd.update_normalization(obs)
 
-        # Record the rewards and dones
-        # Note: We clone here because later on we bootstrap the rewards based on timeouts
-        self.transition.rewards = rewards.clone()
+        # Record the rewards and dones (clone each critic's reward stream independently, since we
+        # bootstrap on time-outs below)
+        self.transition.rewards = tuple(r.clone() for r in rewards)
         self.transition.dones = dones
 
-        # Compute the intrinsic rewards and add to extrinsic rewards
+        # Compute the intrinsic rewards and add to the *first* critic's extrinsic reward stream.
+        # NOTE: RND was designed for a single shared reward; if you want intrinsic reward added to
+        # every critic instead, decide that policy explicitly rather than defaulting silently.
         if self.rnd:
-            # Compute the intrinsic rewards
             self.intrinsic_rewards = self.rnd.get_intrinsic_reward(obs)
-            # Add intrinsic rewards to extrinsic rewards
-            self.transition.rewards += self.intrinsic_rewards
+            rewards_list = list(self.transition.rewards)
+            rewards_list[0] = rewards_list[0] + self.intrinsic_rewards
+            self.transition.rewards = tuple(rewards_list)
 
-        # Bootstrapping on time outs
-        # ASSUMPTION: reward is shared across critics, so we bootstrap with the mean value estimate
-        # across critics. If you want a per-critic reward stream instead, this needs to change to
-        # keep `self.transition.rewards` as a tuple too.
+        # Bootstrapping on time outs — now per-critic, using each critic's own value estimate rather
+        # than a mean across critics, since each critic now has its own reward scale/target.
         if "time_outs" in extras:
             time_outs = extras["time_outs"].unsqueeze(1).to(self.device)
-            mean_value = sum(self.transition.values) / len(self.transition.values)  # type: ignore
-            self.transition.rewards += self.gamma * torch.squeeze(mean_value * time_outs, 1)
+            self.transition.rewards = tuple(
+                r + self.gamma * torch.squeeze(v * time_outs, 1)
+                for r, v in zip(self.transition.rewards, self.transition.values)  # type: ignore
+            )
 
         # Record the transition
         self.storage.add_transition(self.transition)
@@ -174,47 +182,35 @@ class MultiCriticPPO:
             critic.reset(dones)
 
     def compute_returns(self, obs: TensorDict) -> None:
-        """Compute return and advantage targets from stored transitions."""
+        """Compute return and advantage targets from stored transitions, per critic."""
         st = self.storage
-        # Compute values for the last step, per critic
         last_values = []
         for critic in self.critics:
             hidden_state = critic.get_hidden_state()
             last_values.append(critic(obs).detach())
-            # Restore the critic's hidden state so the next rollout is not affected by the forward pass
             critic.reset(hidden_state=hidden_state)
         last_values = tuple(last_values)
 
-        # Compute returns and advantages, one running advantage accumulator per critic
         advantage = tuple(torch.zeros_like(v) for v in last_values)
         for step in reversed(range(st.num_transitions_per_env)):
-            # If we are at the last step, bootstrap the return value
             next_values = (
                 last_values if step == st.num_transitions_per_env - 1 else tuple(v[step + 1] for v in st.values)
             )
-            # 1 if we are not in a terminal state, 0 otherwise
             next_is_not_terminal = 1.0 - st.dones[step].float()
-            # TD error per critic: r_t + gamma * V_c(s_{t+1}) - V_c(s_t)  (reward shared across critics)
+            # TD error per critic, now using that critic's OWN reward stream: st.rewards[c_idx][step]
             delta = tuple(
-                st.rewards[step] + next_is_not_terminal * self.gamma * next_v - values_c[step]
-                for values_c, next_v in zip(st.values, next_values)
+                st.rewards[c_idx][step] + next_is_not_terminal * self.gamma * next_v - values_c[step]
+                for c_idx, (values_c, next_v) in enumerate(zip(st.values, next_values))
             )
-            # Advantage per critic: A_c(s_t, a_t) = delta_t + gamma * lambda * A_c(s_{t+1}, a_{t+1})
             advantage = tuple(
                 d + next_is_not_terminal * self.gamma * self.lam * adv for d, adv in zip(delta, advantage)
             )
-            # Return per critic: R_c,t = A_c(s_t, a_t) + V_c(s_t)
             for c_idx, (adv_c, values_c) in enumerate(zip(advantage, st.values)):
                 st.returns[c_idx][step] = adv_c + values_c[step]
 
-        # Compute the advantages per critic. Kept as a tuple of per-critic tensors (NOT wrapped in
-        # torch.tensor(...)) since `update()` and both mini-batch generators iterate over
-        # `st.advantages` expecting one tensor per critic.
         st.advantages = [ret - val for ret, val in zip(st.returns, st.values)]
-        # Normalize the advantages per critic if per-mini-batch normalization is not used
         if not self.normalize_advantage_per_mini_batch:
             st.advantages = [(adv - adv.mean()) / (adv.std() + 1e-8) for adv in st.advantages]
-
     def update(self) -> dict[str, float]:
         """Run optimization epochs over stored batches and return mean losses."""
         mean_value_loss = 0

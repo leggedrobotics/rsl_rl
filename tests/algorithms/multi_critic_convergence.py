@@ -43,38 +43,98 @@ DEVICE = "cpu"
 
 
 class LearnableRewardEnv(VecEnv):
-    """VecEnv with i.i.d. observations and a reward that is a deterministic function of the
-    observation, so the critic has a well-defined, learnable regression target and value loss
-    should decrease steadily as training progresses.
+    """VecEnv with i.i.d. observations and a distinct reward function per critic.
+
+    Each critic receives a different reward stream based on a different observation
+    dimension. Since observations are i.i.d., each critic has a distinct, bounded,
+    learnable value function of the current state.
+
+    Critic i learns the value corresponding to:
+
+        r_i(s) = -0.02 * s[i]^2
+
+    Therefore, the critics have distinct targets while maintaining comparable
+    reward scales.
     """
 
-    def __init__(self, device: str = DEVICE) -> None:  # noqa: D107
+    def __init__(self, num_critics: int, device: str = DEVICE) -> None:  # noqa: D107
         self.num_envs = NUM_ENVS
         self.num_actions = NUM_ACTIONS
+        self.num_critics = num_critics
         self.max_episode_length = MAX_EP_LEN
-        self.episode_length_buf = torch.zeros(NUM_ENVS, dtype=torch.long, device=device)
+        self.episode_length_buf = torch.zeros(
+            NUM_ENVS,
+            dtype=torch.long,
+            device=device,
+        )
         self.device = device
         self.cfg = {}
 
+        # Keep the current observation so the reward is computed from s_t,
+        # while step() returns a newly sampled s_{t+1}.
+        self.obs = self._sample_obs()
+
     def _sample_obs(self) -> TensorDict:
-        data = {"policy": torch.randn(self.num_envs, OBS_DIM, device=self.device)}
-        return TensorDict(data, batch_size=[self.num_envs], device=self.device)
+        data = {
+            "policy": torch.randn(
+                self.num_envs,
+                OBS_DIM,
+                device=self.device,
+            )
+        }
+        return TensorDict(
+            data,
+            batch_size=[self.num_envs],
+            device=self.device,
+        )
 
     def get_observations(self) -> TensorDict:  # noqa: D102
-        return self._sample_obs()
+        return self.obs
 
-    def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:  # noqa: D102
+    def step(
+        self,
+        actions: torch.Tensor,
+    ) -> tuple[
+        TensorDict,
+        tuple[torch.Tensor, ...],
+        torch.Tensor,
+        dict,
+    ]:  # noqa: D102
+        # Current state s_t.
+        current_obs = self.obs
+        x = current_obs["policy"]
+
         self.episode_length_buf += 1
-        dones = (self.episode_length_buf >= self.max_episode_length).float()
+        dones = (
+            self.episode_length_buf >= self.max_episode_length
+        ).float()
         self.episode_length_buf[dones.bool()] = 0
-        obs = self._sample_obs()
-        # Deterministic, bounded reward derived purely from the *current* observation (independent
-        # of the action), so the critic's regression target is well-defined. Kept small (0.02, not
-        # 0.1) so the resulting value target (~ reward / (1 - gamma)) stays in an easy range for
-        # low-capacity critics to regress onto within a short training run.
-        rewards = -0.02 * (obs["policy"] ** 2).sum(dim=-1)
-        extras = {"time_outs": torch.zeros(self.num_envs, device=self.device)}
-        return obs, rewards, dones, extras
+
+        # Each critic receives a different reward function.
+        #
+        # Critic 0: r_0(s) = -0.02 * s[0]^2
+        # Critic 1: r_1(s) = -0.02 * s[1]^2
+        # Critic 2: r_2(s) = -0.02 * s[2]^2
+        # ...
+        #
+        # All reward streams have comparable scale, but each critic has a
+        # genuinely different value target.
+        rewards = tuple(
+            -0.02 * x[:, critic_idx].pow(2)
+            for critic_idx in range(self.num_critics)
+        )
+
+        # Generate next state s_{t+1}.
+        self.obs = self._sample_obs()
+
+        extras = {
+            "time_outs": torch.zeros(
+                self.num_envs,
+                device=self.device,
+            )
+        }
+
+        return self.obs, rewards, dones, extras
 
 
 def _make_cfg(model_type: str, num_critics: int) -> dict:
@@ -140,28 +200,55 @@ def _make_cfg(model_type: str, num_critics: int) -> dict:
     return cfg
 
 
-def _train_and_collect_value_losses(model_type: str, num_critics: int, num_iterations: int) -> list[float]:
-    """Build a MultiCriticPPO algorithm and run a short training loop, returning the per-iteration
-    mean value loss (averaged across all critics, exactly as `MultiCriticPPO.update()` reports it).
+def _train_and_collect_value_losses(
+    model_type: str,
+    num_critics: int,
+    num_iterations: int,
+) -> list[float]:
+    """Build a MultiCriticPPO algorithm and run a short training loop.
 
-    Mirrors the rollout/update loop in `OnPolicyRunner.learn()` (minus logging), so we can collect
-    the loss history directly instead of going through the `Logger`.
+    Each critic receives a distinct reward stream and therefore learns a distinct
+    value function. The returned loss is the mean value loss across all critics,
+    exactly as `MultiCriticPPO.update()` reports it.
+
+    The rollout/update loop mirrors the core loop in `OnPolicyRunner.learn()`,
+    minus logging.
     """
-    env = LearnableRewardEnv()
+    env = LearnableRewardEnv(
+        num_critics=num_critics,
+        device=DEVICE,
+    )
     cfg = _make_cfg(model_type, num_critics)
     obs = env.get_observations()
 
-    alg = MultiCriticPPO.construct_algorithm(obs, env, cfg, DEVICE)
+    alg = MultiCriticPPO.construct_algorithm(
+        obs,
+        env,
+        cfg,
+        DEVICE,
+    )
     alg.train_mode()
 
     value_losses: list[float] = []
+
     for _ in range(num_iterations):
         with torch.inference_mode():
             for _ in range(NUM_STEPS_PER_ENV):
                 actions = alg.act(obs)
+
                 obs, rewards, dones, extras = env.step(actions)
-                alg.process_env_step(obs, rewards, dones, extras)
+
+                # `rewards` is already a tuple containing one distinct
+                # reward tensor per critic.
+                alg.process_env_step(
+                    obs,
+                    rewards,
+                    dones,
+                    extras,
+                )
+
             alg.compute_returns(obs)
+
         loss_dict = alg.update()
         value_losses.append(loss_dict["value"])
 

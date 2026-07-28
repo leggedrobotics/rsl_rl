@@ -33,6 +33,7 @@ dependencies = [
     "GitPython",
     "onnx",
     "onnxscript>=0.5.4",
+    "pytest",
 ]
 
 [project.urls]

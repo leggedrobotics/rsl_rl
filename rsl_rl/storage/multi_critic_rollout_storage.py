@@ -36,8 +36,8 @@ class MultiCriticRolloutStorage:
             self.actions: torch.Tensor | None = None
             """Actions taken at the current step."""
 
-            self.rewards: torch.Tensor | None = None
-            """Rewards received after the action."""
+            self.rewards: tuple[torch.Tensor, ...] | torch.Tensor | None = None
+            """Rewards received after the action. RL: one tensor per critic. Distillation: a single tensor."""
 
             self.dones: torch.Tensor | None = None
             """Done flags indicating episode termination."""
@@ -152,9 +152,17 @@ class MultiCriticRolloutStorage:
             batch_size=[num_transitions_per_env, num_envs],
             device=self.device,
         )
-        self.rewards = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
         self.actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
+
+        # Rewards: one independent stream per critic for RL (each critic can now optimize a distinct
+        # signal), a single shared stream for distillation (no critics involved there).
+        if training_type == "rl":
+            self.rewards = [
+                torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device) for _ in range(num_critics)
+            ]
+        else:
+            self.rewards = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
 
         # For distillation
         if training_type == "distillation":
@@ -186,15 +194,24 @@ class MultiCriticRolloutStorage:
 
     def add_transition(self, transition: Transition) -> None:
         """Add one transition to the storage at the current step index."""
-        # Check if the transition is valid
         if self.step >= self.num_transitions_per_env:
             raise OverflowError("Rollout buffer overflow! You should call clear() before adding new transitions.")
 
         # Core
         self.observations[self.step].copy_(transition.observations)
         self.actions[self.step].copy_(transition.actions)  # type: ignore
-        self.rewards[self.step].copy_(transition.rewards.view(-1, 1))
         self.dones[self.step].copy_(transition.dones.view(-1, 1))
+
+        # Rewards
+        if self.training_type == "rl":
+            if len(transition.rewards) != self.num_critics:  # type: ignore
+                raise ValueError(
+                    f"Expected {self.num_critics} per-critic reward streams, got {len(transition.rewards)}."  # type: ignore
+                )
+            for c_idx, r in enumerate(transition.rewards):  # type: ignore
+                self.rewards[c_idx][self.step].copy_(r.view(-1, 1))
+        else:
+            self.rewards[self.step].copy_(transition.rewards.view(-1, 1))  # type: ignore
 
         # For distillation
         if self.training_type == "distillation":
@@ -209,7 +226,7 @@ class MultiCriticRolloutStorage:
             for c_idx, v in enumerate(transition.values):  # type: ignore
                 self.values[c_idx][self.step].copy_(v.view(-1, 1))
             self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
-            if self.distribution_params is None:  # Initialize the distribution parameters
+            if self.distribution_params is None:
                 self.distribution_params = tuple(
                     torch.zeros(self.num_transitions_per_env, *p.shape, device=self.device)
                     for p in transition.distribution_params  # type: ignore
