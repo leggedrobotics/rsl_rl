@@ -3,9 +3,9 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Tests for OnPolicyRunner used with MultiCriticPPO.
+"""Tests for MultiCriticOnPolicyRunner used with MultiCriticPPO.
 
-OnPolicyRunner is generic over the algorithm class (it resolves `cfg["algorithm"]["class_name"]` and
+MultiCriticOnPolicyRunner is generic over the algorithm class (it resolves `cfg["algorithm"]["class_name"]` and
 calls `alg_class.construct_algorithm(...)`), so no runner subclass is needed for multi-critic PPO — we
 only need a config that sets `class_name: "MultiCriticPPO"` and `num_critics: N`. These tests exercise
 that full config-driven path end to end (resolve_obs_groups / resolve_rnd_config / resolve_symmetry_config
@@ -22,7 +22,7 @@ from tensordict import TensorDict
 
 from rsl_rl.algorithms import MultiCriticPPO
 from rsl_rl.env import VecEnv
-from rsl_rl.runners import OnPolicyRunner
+from rsl_rl.runners import MultiCriticOnPolicyRunner
 
 NUM_ENVS = 4
 OBS_DIM = 8
@@ -31,27 +31,76 @@ MAX_EP_LEN = 50
 
 
 class DummyEnv(VecEnv):
-    """Minimal VecEnv that returns random observations and rewards."""
+    """Minimal VecEnv that returns random observations and one reward per critic."""
 
-    def __init__(self, device: str = "cpu") -> None:  # noqa: D107
+    def __init__(
+        self,
+        num_critics: int,
+        device: str = "cpu",
+    ) -> None:
         self.num_envs = NUM_ENVS
         self.num_actions = NUM_ACTIONS
+        self.num_critics = num_critics
         self.max_episode_length = MAX_EP_LEN
-        self.episode_length_buf = torch.zeros(NUM_ENVS, dtype=torch.long, device=device)
+
+        self.episode_length_buf = torch.zeros(
+            NUM_ENVS,
+            dtype=torch.long,
+            device=device,
+        )
+
         self.device = device
         self.cfg = {}
 
-    def get_observations(self) -> TensorDict:  # noqa: D102
-        data = {"policy": torch.randn(self.num_envs, OBS_DIM, device=self.device)}
-        return TensorDict(data, batch_size=[self.num_envs], device=self.device)
+    def get_observations(self) -> TensorDict:
+        data = {
+            "policy": torch.randn(
+                self.num_envs,
+                OBS_DIM,
+                device=self.device,
+            )
+        }
 
-    def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:  # noqa: D102
+        return TensorDict(
+            data,
+            batch_size=[self.num_envs],
+            device=self.device,
+        )
+
+    def step(
+        self,
+        actions: torch.Tensor,
+    ) -> tuple[
+        TensorDict,
+        tuple[torch.Tensor, ...],
+        torch.Tensor,
+        dict,
+    ]:
         self.episode_length_buf += 1
-        dones = (self.episode_length_buf >= self.max_episode_length).float()
+
+        dones = (
+            self.episode_length_buf >= self.max_episode_length
+        ).float()
+
         self.episode_length_buf[dones.bool()] = 0
+
         obs = self.get_observations()
-        rewards = torch.randn(self.num_envs, device=self.device)
-        extras = {"time_outs": torch.zeros(self.num_envs, device=self.device)}
+
+        rewards = tuple(
+            torch.randn(
+                self.num_envs,
+                device=self.device,
+            )
+            for _ in range(self.num_critics)
+        )
+
+        extras = {
+            "time_outs": torch.zeros(
+                self.num_envs,
+                device=self.device,
+            )
+        }
+
         return obs, rewards, dones, extras
 
 
@@ -69,7 +118,13 @@ def _make_multi_critic_train_cfg(model_type: str = "mlp", num_critics: int = 2) 
     cfg: dict = {
         "num_steps_per_env": 8,
         "save_interval": 100,
-        "obs_groups": {"actor": ["policy"], "critic": ["policy"]},
+        "obs_groups": {
+            "actor": ["policy"],
+            **{
+                f"critic_{i}": ["policy"]
+                for i in range(num_critics)
+            },
+        },
         "algorithm": {
             "class_name": "MultiCriticPPO",
             "num_learning_epochs": 2,
@@ -109,12 +164,23 @@ def _make_multi_critic_train_cfg(model_type: str = "mlp", num_critics: int = 2) 
 
 
 def _build_multi_critic_runner(
-    log_dir: str | None = None, model_type: str = "mlp", num_critics: int = 2
-) -> OnPolicyRunner:
-    """Construct an OnPolicyRunner wired up for MultiCriticPPO."""
-    env = DummyEnv()
-    cfg = _make_multi_critic_train_cfg(model_type, num_critics)
-    return OnPolicyRunner(env, cfg, log_dir=log_dir, device="cpu")
+    log_dir: str | None = None,
+    model_type: str = "mlp",
+    num_critics: int = 2,
+) -> MultiCriticOnPolicyRunner:
+    env = DummyEnv(num_critics=num_critics)
+
+    cfg = _make_multi_critic_train_cfg(
+        model_type,
+        num_critics,
+    )
+
+    return MultiCriticOnPolicyRunner(
+        env,
+        cfg,
+        log_dir=log_dir,
+        device="cpu",
+    )
 
 
 class TestMultiCriticRunnerConstruction:

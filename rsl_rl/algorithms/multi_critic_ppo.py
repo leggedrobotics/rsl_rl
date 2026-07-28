@@ -452,52 +452,198 @@ class MultiCriticPPO:
         self.critics = [compile_model(critic, mode) for critic in self._raw_critics]  # type: ignore
 
     @staticmethod
-    def construct_algorithm(obs: TensorDict, env: VecEnv, cfg: dict, device: str) -> MultiCriticPPO:
-        """Construct the PPO algorithm."""
-        # Resolve class callables
-        alg_class: type[MultiCriticPPO] = resolve_callable(cfg["algorithm"].pop("class_name"))  # type: ignore
-        actor_class: type[MLPModel] = resolve_callable(cfg["actor"].pop("class_name"))  # type: ignore
-        critic_class: type[MLPModel] = resolve_callable(cfg["critic"].pop("class_name"))  # type: ignore
+    def construct_algorithm(
+        obs: TensorDict,
+        env: VecEnv,
+        cfg: dict,
+        device: str,
+    ) -> MultiCriticPPO:
+        """Construct the MultiCriticPPO algorithm."""
 
-        # Resolve observation groups
-        default_sets = ["actor", "critic"]
-        if "rnd_cfg" in cfg["algorithm"] and cfg["algorithm"]["rnd_cfg"] is not None:
+        # ------------------------------------------------------------------
+        # Resolve classes WITHOUT mutating cfg.
+        #
+        # Do not use .pop() here. The runner/tests may reuse the config,
+        # and the class_name fields are still needed by the construction
+        # logic or other code.
+        # ------------------------------------------------------------------
+        alg_class: type[MultiCriticPPO] = resolve_callable( #type: ignore
+            cfg["algorithm"]["class_name"]
+        )
+        actor_class: type[MLPModel] = resolve_callable( #type: ignore
+            cfg["actor"]["class_name"]
+        )
+        critic_class: type[MLPModel] = resolve_callable( #type: ignore
+            cfg["critic"]["class_name"]
+        )
+
+        # ------------------------------------------------------------------
+        # Number of critics
+        # ------------------------------------------------------------------
+        num_critics = cfg["algorithm"].get("num_critics", 1)
+
+        # ------------------------------------------------------------------
+        # Observation groups
+        #
+        # Actor:
+        #   "actor"
+        #
+        # Critics:
+        #   "critic_0"
+        #   "critic_1"
+        #   ...
+        #
+        # RND:
+        #   "rnd_state"
+        # ------------------------------------------------------------------
+        default_sets = [
+            "actor",
+            *(f"critic_{i}" for i in range(num_critics)),
+        ]
+
+        if (
+            "rnd_cfg" in cfg["algorithm"]
+            and cfg["algorithm"]["rnd_cfg"] is not None
+        ):
             default_sets.append("rnd_state")
-        cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], default_sets)
 
-        # Resolve RND config if used
-        cfg["algorithm"] = resolve_rnd_config(cfg["algorithm"], obs, cfg["obs_groups"], env)
+        cfg["obs_groups"] = resolve_obs_groups(
+            obs,
+            cfg["obs_groups"],
+            default_sets,
+        )
 
-        # Resolve symmetry config if used
-        cfg["algorithm"] = resolve_symmetry_config(cfg["algorithm"], env)
+        # ------------------------------------------------------------------
+        # Resolve extensions
+        # ------------------------------------------------------------------
+        cfg["algorithm"] = resolve_rnd_config(
+            cfg["algorithm"],
+            obs,
+            cfg["obs_groups"],
+            env,
+        )
 
-        # Initialize the policy
-        actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **cfg["actor"]).to(device)
+        cfg["algorithm"] = resolve_symmetry_config(
+            cfg["algorithm"],
+            env,
+        )
+
+        # ------------------------------------------------------------------
+        # Prepare model configs.
+        #
+        # IMPORTANT:
+        # `class_name` is for resolve_callable(), NOT for MLPModel/RNNModel.
+        # Remove it before using **cfg[...] in the constructors.
+        # ------------------------------------------------------------------
+        actor_cfg = {
+            key: value
+            for key, value in cfg["actor"].items()
+            if key != "class_name"
+        }
+
+        critic_cfg = {
+            key: value
+            for key, value in cfg["critic"].items()
+            if key != "class_name"
+        }
+
+        # ------------------------------------------------------------------
+        # Initialize actor
+        # ------------------------------------------------------------------
+        actor: MLPModel = actor_class(
+            obs,
+            cfg["obs_groups"],
+            "actor",
+            env.num_actions,
+            **actor_cfg,
+        ).to(device)
+
         print(f"Actor Model: {actor}")
-        if cfg["algorithm"].pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critics
-            cfg["critic"]["cnns"] = actor.cnns  # type: ignore
 
-        # NOTE: assumes cfg["algorithm"] specifies how many critics to build via "num_critics";
-        # adjust this if your config instead provides a list of per-critic configs.
-        num_critics = cfg["algorithm"].pop("num_critics", 1)
+        # ------------------------------------------------------------------
+        # Optionally share CNN encoders.
+        #
+        # This mutates critic_cfg rather than cfg["critic"], which avoids
+        # accidentally modifying the original configuration.
+        # ------------------------------------------------------------------
+        if cfg["algorithm"].get("share_cnn_encoders", False):
+            critic_cfg["cnns"] = actor.cnns  # type: ignore
+
+        # ------------------------------------------------------------------
+        # Initialize one critic per observation group.
+        #
+        # Critic 0 -> "critic_0"
+        # Critic 1 -> "critic_1"
+        # Critic 2 -> "critic_2"
+        # ...
+        # ------------------------------------------------------------------
         critics: list[MLPModel] = []
+
         for i in range(num_critics):
-            critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **cfg["critic"]).to(device)
-            print(f"Critic {i} Model: {critic}")
+            critic_obs_group = f"critic_{i}"
+
+            critic: MLPModel = critic_class(
+                obs,
+                cfg["obs_groups"],
+                critic_obs_group,
+                1,
+                **critic_cfg,
+            ).to(device)
+
+            print(
+                f"Critic {i} Model "
+                f"(obs_group={critic_obs_group}): {critic}"
+            )
+
             critics.append(critic)
 
-        # Initialize the storage
+        # ------------------------------------------------------------------
+        # Initialize storage
+        # ------------------------------------------------------------------
         storage = MultiCriticRolloutStorage(
-            "rl", env.num_envs, cfg["num_steps_per_env"], obs, [env.num_actions], num_critics=num_critics, device=device
+            "rl",
+            env.num_envs,
+            cfg["num_steps_per_env"],
+            obs,
+            [env.num_actions],
+            num_critics=num_critics,
+            device=device,
         )
 
-        # Initialize the algorithm
+        # ------------------------------------------------------------------
+        # Prepare algorithm config.
+        #
+        # Remove fields that are constructor-selection metadata rather than
+        # MultiCriticPPO.__init__ arguments.
+        # ------------------------------------------------------------------
+        algorithm_cfg = {
+            key: value
+            for key, value in cfg["algorithm"].items()
+            if key not in {
+                "class_name",
+                "num_critics",
+                "share_cnn_encoders",
+            }
+        }
+
+        # ------------------------------------------------------------------
+        # Initialize algorithm
+        # ------------------------------------------------------------------
         alg: MultiCriticPPO = alg_class(
-            actor, critics, storage, device=device, **cfg["algorithm"], multi_gpu_cfg=cfg["multi_gpu"]
+            actor,
+            critics,
+            storage,
+            device=device,
+            **algorithm_cfg,
+            multi_gpu_cfg=cfg["multi_gpu"],
         )
 
-        # Compile the algorithm's models if requested
-        alg.compile(cfg.get("torch_compile_mode"))
+        # ------------------------------------------------------------------
+        # Compile models if requested
+        # ------------------------------------------------------------------
+        alg.compile(
+            cfg.get("torch_compile_mode")
+        )
 
         return alg
 

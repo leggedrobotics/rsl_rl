@@ -3,25 +3,34 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Convergence example/test for MultiCriticPPO across varying critic counts and architectures.
+"""Convergence example/test for MultiCriticPPO with separate critic observations.
 
-This exercises the full act -> process_env_step -> compute_returns -> update loop (the same core
-loop `OnPolicyRunner.learn()` runs, minus logging) across a matrix of configurations:
+This exercises the full act -> process_env_step -> compute_returns -> update loop
+across varying critic counts and architectures.
+
+Each critic has:
+    - its own observation group
+    - its own observation tensor
+    - its own reward stream
+
+For critic i:
+
+    observation_i = critic_i
+    reward_i = -0.02 * observation_i^2
+
+Therefore each critic learns its own value function from its own observation
+and reward stream.
+
+The actor receives the "policy" observation group.
+
+Configurations:
     - number of critics: 1, 2, 4, 5
-    - critic/actor architecture: small MLP, larger MLP, RNN (GRU)
-
-The environment returns i.i.d. observations with a reward that is a deterministic function of the
-*current* observation, independent of the action taken. This gives a well-defined regression target
-for the critic(s): since observations are i.i.d., the true value function is
-    V(s) = r(s) + gamma * E[V]
-i.e. a bounded, learnable function of the current state. That makes "does the value loss go down"
-a meaningful, fast-to-check convergence signal, regardless of how many critics are used or what
-architecture backs them.
+    - architecture: small MLP, larger MLP, RNN (GRU)
 
 Run as a pytest suite:
     pytest test_multi_critic_convergence_example.py -v
 
-Run as a standalone demo (prints per-iteration value loss curves):
+Run as a standalone demo:
     python test_multi_critic_convergence_example.py
 """
 
@@ -31,64 +40,95 @@ import pytest
 import torch
 from tensordict import TensorDict
 
-from rsl_rl.algorithms import MultiCriticPPO
+from rsl_rl.runners import MultiCriticOnPolicyRunner
 from rsl_rl.env import VecEnv
+
 
 NUM_ENVS = 16
 OBS_DIM = 6
 NUM_ACTIONS = 3
-MAX_EP_LEN = 1000  # long enough that termination essentially never happens during a short run
+MAX_EP_LEN = 1000
 NUM_STEPS_PER_ENV = 16
 DEVICE = "cpu"
 
 
 class LearnableRewardEnv(VecEnv):
-    """VecEnv with i.i.d. observations and a distinct reward function per critic.
+    """VecEnv with separate observations and rewards for each critic.
 
-    Each critic receives a different reward stream based on a different observation
-    dimension. Since observations are i.i.d., each critic has a distinct, bounded,
-    learnable value function of the current state.
+    The observation structure is:
 
-    Critic i learns the value corresponding to:
+        policy      -> actor observation
+        critic_0    -> critic 0 observation
+        critic_1    -> critic 1 observation
+        ...
+        critic_N    -> critic N observation
 
-        r_i(s) = -0.02 * s[i]^2
+    Critic i learns:
 
-    Therefore, the critics have distinct targets while maintaining comparable
-    reward scales.
+        r_i(s_i) = -0.02 * s_i^2
+
+    where s_i is the observation provided specifically to critic i.
+
+    Thus each critic has:
+        - a separate input observation
+        - a separate reward stream
+        - a separate value function target
     """
 
-    def __init__(self, num_critics: int, device: str = DEVICE) -> None:  # noqa: D107
+    def __init__(
+        self,
+        num_critics: int,
+        device: str = DEVICE,
+    ) -> None:
         self.num_envs = NUM_ENVS
         self.num_actions = NUM_ACTIONS
         self.num_critics = num_critics
         self.max_episode_length = MAX_EP_LEN
+
         self.episode_length_buf = torch.zeros(
             NUM_ENVS,
             dtype=torch.long,
             device=device,
         )
+
         self.device = device
         self.cfg = {}
 
-        # Keep the current observation so the reward is computed from s_t,
-        # while step() returns a newly sampled s_{t+1}.
+        # Keep the current observation so reward_i is computed from s_t.
         self.obs = self._sample_obs()
 
     def _sample_obs(self) -> TensorDict:
+        """Generate a new observation for actor and every critic."""
+
         data = {
+            # Actor gets its own observation.
             "policy": torch.randn(
                 self.num_envs,
                 OBS_DIM,
                 device=self.device,
-            )
+            ),
         }
+
+        # Each critic gets a separate observation.
+        #
+        # critic_0 -> [num_envs, 1]
+        # critic_1 -> [num_envs, 1]
+        # ...
+        for critic_idx in range(self.num_critics):
+            data[f"critic_{critic_idx}"] = torch.randn(
+                self.num_envs,
+                1,
+                device=self.device,
+            )
+
         return TensorDict(
             data,
             batch_size=[self.num_envs],
             device=self.device,
         )
 
-    def get_observations(self) -> TensorDict:  # noqa: D102
+    def get_observations(self) -> TensorDict:
+        """Return the current observations."""
         return self.obs
 
     def step(
@@ -99,28 +139,34 @@ class LearnableRewardEnv(VecEnv):
         tuple[torch.Tensor, ...],
         torch.Tensor,
         dict,
-    ]:  # noqa: D102
+    ]:
+        """Advance the environment by one step."""
+
         # Current state s_t.
         current_obs = self.obs
-        x = current_obs["policy"]
 
         self.episode_length_buf += 1
+
         dones = (
             self.episode_length_buf >= self.max_episode_length
         ).float()
+
         self.episode_length_buf[dones.bool()] = 0
 
-        # Each critic receives a different reward function.
+        # ---------------------------------------------------------
+        # Each critic gets a reward based on ITS OWN observation.
         #
-        # Critic 0: r_0(s) = -0.02 * s[0]^2
-        # Critic 1: r_1(s) = -0.02 * s[1]^2
-        # Critic 2: r_2(s) = -0.02 * s[2]^2
-        # ...
+        # Critic 0:
+        #   r_0 = -0.02 * critic_0^2
         #
-        # All reward streams have comparable scale, but each critic has a
-        # genuinely different value target.
+        # Critic 1:
+        #   r_1 = -0.02 * critic_1^2
+        #
+        # etc.
+        # ---------------------------------------------------------
         rewards = tuple(
-            -0.02 * x[:, critic_idx].pow(2)
+            -0.02
+            * current_obs[f"critic_{critic_idx}"][:, 0].pow(2)
             for critic_idx in range(self.num_critics)
         )
 
@@ -138,25 +184,29 @@ class LearnableRewardEnv(VecEnv):
 
 
 def _make_cfg(model_type: str, num_critics: int) -> dict:
-    """Build a minimal MultiCriticPPO config for the given actor/critic architecture.
-
-    Args:
-        model_type: One of ``"mlp_small"``, ``"mlp"``, or ``"rnn"``.
-        num_critics: Number of critics for MultiCriticPPO to construct.
-    """
     cfg: dict = {
         "num_steps_per_env": NUM_STEPS_PER_ENV,
-        "obs_groups": {"actor": ["policy"], "critic": ["policy"]},
+
+        "obs_groups": {
+            "actor": ["policy"],
+            **{
+                f"critic_{i}": [f"critic_{i}"]
+                for i in range(num_critics)
+            },
+        },
+
         "algorithm": {
             "class_name": "MultiCriticPPO",
             "num_learning_epochs": 4,
             "num_mini_batches": 4,
             "num_critics": num_critics,
             "learning_rate": 1e-3,
-            "schedule": "fixed",  # keep the learning rate fixed for a cleaner convergence signal
+            "schedule": "fixed",
         },
+
         "multi_gpu": None,
     }
+
     if model_type == "rnn":
         cfg["actor"] = {
             "class_name": "RNNModel",
@@ -164,8 +214,11 @@ def _make_cfg(model_type: str, num_critics: int) -> dict:
             "rnn_type": "gru",
             "rnn_hidden_dim": 16,
             "rnn_num_layers": 1,
-            "distribution_cfg": {"class_name": "GaussianDistribution"},
+            "distribution_cfg": {
+                "class_name": "GaussianDistribution",
+            },
         }
+
         cfg["critic"] = {
             "class_name": "RNNModel",
             "hidden_dims": [32],
@@ -173,30 +226,39 @@ def _make_cfg(model_type: str, num_critics: int) -> dict:
             "rnn_hidden_dim": 16,
             "rnn_num_layers": 1,
         }
+
     elif model_type == "mlp_small":
         cfg["actor"] = {
             "class_name": "MLPModel",
             "hidden_dims": [16],
             "activation": "elu",
-            "distribution_cfg": {"class_name": "GaussianDistribution"},
+            "distribution_cfg": {
+                "class_name": "GaussianDistribution",
+            },
         }
+
         cfg["critic"] = {
             "class_name": "MLPModel",
             "hidden_dims": [16],
             "activation": "elu",
         }
-    else:  # "mlp"
+
+    else:
         cfg["actor"] = {
             "class_name": "MLPModel",
             "hidden_dims": [64, 64],
             "activation": "elu",
-            "distribution_cfg": {"class_name": "GaussianDistribution"},
+            "distribution_cfg": {
+                "class_name": "GaussianDistribution",
+            },
         }
+
         cfg["critic"] = {
             "class_name": "MLPModel",
             "hidden_dims": [64, 64],
             "activation": "elu",
         }
+
     return cfg
 
 
@@ -205,97 +267,129 @@ def _train_and_collect_value_losses(
     num_critics: int,
     num_iterations: int,
 ) -> list[float]:
-    """Build a MultiCriticPPO algorithm and run a short training loop.
+    """Run MultiCriticPPO training and collect mean value losses."""
 
-    Each critic receives a distinct reward stream and therefore learns a distinct
-    value function. The returned loss is the mean value loss across all critics,
-    exactly as `MultiCriticPPO.update()` reports it.
-
-    The rollout/update loop mirrors the core loop in `OnPolicyRunner.learn()`,
-    minus logging.
-    """
     env = LearnableRewardEnv(
         num_critics=num_critics,
         device=DEVICE,
     )
-    cfg = _make_cfg(model_type, num_critics)
-    obs = env.get_observations()
 
-    alg = MultiCriticPPO.construct_algorithm(
-        obs,
-        env,
-        cfg,
-        DEVICE,
+    cfg = _make_cfg(
+        model_type,
+        num_critics,
     )
-    alg.train_mode()
 
-    value_losses: list[float] = []
+    runner = MultiCriticOnPolicyRunner(
+        env=env,
+        train_cfg=cfg,
+        device=DEVICE,
+    )
 
-    for _ in range(num_iterations):
-        with torch.inference_mode():
-            for _ in range(NUM_STEPS_PER_ENV):
-                actions = alg.act(obs)
+    loss_history = runner.learn(
+        num_learning_iterations=num_iterations,
+    )
 
-                obs, rewards, dones, extras = env.step(actions)
-
-                # `rewards` is already a tuple containing one distinct
-                # reward tensor per critic.
-                alg.process_env_step(
-                    obs,
-                    rewards,
-                    dones,
-                    extras,
-                )
-
-            alg.compute_returns(obs)
-
-        loss_dict = alg.update()
-        value_losses.append(loss_dict["value"])
-
-    return value_losses
+    return [
+        loss_dict["value"]
+        for loss_dict in loss_history
+    ]
 
 
 class TestMultiCriticConvergenceAcrossConfigurations:
-    """Value loss should trend downward for a range of critic counts and architectures."""
+    """Value loss should decrease with separate critic observations."""
 
     NUM_ITERATIONS = 60
-    # Convergence threshold: late-training value loss must drop below this fraction of early-training
-    # value loss. Kept at 0.7 (rather than something tighter like 0.5) so the check isn't overtuned to
-    # any one architecture/capacity combination — the point is verifying real, sustained improvement,
-    # not chasing a specific numeric target.
+
     CONVERGENCE_RATIO = 0.7
 
-    @pytest.mark.parametrize("num_critics", [1, 2, 4])
-    @pytest.mark.parametrize("model_type", ["mlp_small", "mlp", "rnn"])
-    def test_value_loss_decreases(self, model_type: str, num_critics: int) -> None:
-        """Mean value loss over the final third of training should be well below the first third."""
+    @pytest.mark.parametrize(
+        "num_critics",
+        [1, 2, 4],
+    )
+    @pytest.mark.parametrize(
+        "model_type",
+        [
+            "mlp_small",
+            "mlp",
+            "rnn",
+        ],
+    )
+    def test_value_loss_decreases(
+        self,
+        model_type: str,
+        num_critics: int,
+    ) -> None:
+        """Mean value loss should decrease during training."""
+
         torch.manual_seed(0)
-        losses = _train_and_collect_value_losses(model_type, num_critics, self.NUM_ITERATIONS)
 
-        third = self.NUM_ITERATIONS // 3
-        early_mean = sum(losses[:third]) / third
-        late_mean = sum(losses[-third:]) / third
-
-        assert late_mean < early_mean * self.CONVERGENCE_RATIO, (
-            f"[{model_type}, num_critics={num_critics}] value loss did not converge: "
-            f"early={early_mean:.4f}, late={late_mean:.4f}"
+        losses = _train_and_collect_value_losses(
+            model_type,
+            num_critics,
+            self.NUM_ITERATIONS,
         )
 
-    def test_more_critics_do_not_break_convergence(self) -> None:
-        """A larger critic ensemble (5 critics) should still converge, just like a single critic."""
-        torch.manual_seed(0)
-        losses = _train_and_collect_value_losses("mlp", num_critics=5, num_iterations=self.NUM_ITERATIONS)
         third = self.NUM_ITERATIONS // 3
-        early_mean = sum(losses[:third]) / third
-        late_mean = sum(losses[-third:]) / third
-        assert late_mean < early_mean * self.CONVERGENCE_RATIO, (
-            f"[mlp, num_critics=5] value loss did not converge: early={early_mean:.4f}, late={late_mean:.4f}"
+
+        early_mean = (
+            sum(losses[:third])
+            / third
+        )
+
+        late_mean = (
+            sum(losses[-third:])
+            / third
+        )
+
+        assert late_mean < (
+            early_mean
+            * self.CONVERGENCE_RATIO
+        ), (
+            f"[{model_type}, "
+            f"num_critics={num_critics}] "
+            f"value loss did not converge: "
+            f"early={early_mean:.4f}, "
+            f"late={late_mean:.4f}"
+        )
+
+    def test_more_critics_do_not_break_convergence(
+        self,
+    ) -> None:
+        """Five critics with separate observations should converge."""
+
+        torch.manual_seed(0)
+
+        losses = _train_and_collect_value_losses(
+            "mlp",
+            num_critics=5,
+            num_iterations=self.NUM_ITERATIONS,
+        )
+
+        third = self.NUM_ITERATIONS // 3
+
+        early_mean = (
+            sum(losses[:third])
+            / third
+        )
+
+        late_mean = (
+            sum(losses[-third:])
+            / third
+        )
+
+        assert late_mean < (
+            early_mean
+            * self.CONVERGENCE_RATIO
+        ), (
+            f"[mlp, num_critics=5] "
+            f"value loss did not converge: "
+            f"early={early_mean:.4f}, "
+            f"late={late_mean:.4f}"
         )
 
 
 if __name__ == "__main__":
-    # Standalone demo: prints the value-loss convergence curve for each configuration so you can
-    # visually confirm that adding critics / changing architecture doesn't break learning.
+    # Standalone demo.
     configs = [
         ("mlp_small", 1),
         ("mlp", 2),
@@ -303,10 +397,27 @@ if __name__ == "__main__":
         ("mlp", 5),
         ("rnn", 2),
     ]
+
     for model_type, num_critics in configs:
         torch.manual_seed(0)
-        print(f"\n=== model_type={model_type}, num_critics={num_critics} ===")
-        losses = _train_and_collect_value_losses(model_type, num_critics, num_iterations=60)
+
+        print(
+            f"\n=== model_type={model_type}, "
+            f"num_critics={num_critics} ==="
+        )
+
+        losses = _train_and_collect_value_losses(
+            model_type,
+            num_critics,
+            num_iterations=60,
+        )
+
         for it, loss in enumerate(losses):
-            if it % 5 == 0 or it == len(losses) - 1:
-                print(f"  iter {it:3d}  value_loss={loss:.4f}")
+            if (
+                it % 5 == 0
+                or it == len(losses) - 1
+            ):
+                print(
+                    f"  iter {it:3d} "
+                    f"value_loss={loss:.4f}"
+                )
