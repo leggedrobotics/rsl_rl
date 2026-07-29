@@ -75,8 +75,25 @@ class MultiCriticPPO:
             self.gpu_global_rank = 0
             self.gpu_world_size = 1
 
-        # RND extension
-        self.rnd = RandomNetworkDistillation(device=self.device, **rnd_cfg) if rnd_cfg else None
+        self.rnd = None
+        self.rnd_target_critics: list[tuple[int, float]] = []
+        if rnd_cfg:
+            rnd_cfg = dict(rnd_cfg)  # copy — don't mutate caller's dict
+            target_critics = rnd_cfg.pop("target_critics", None)
+            if target_critics is None:
+                # Backward-compatible default: previous hardcoded behavior.
+                target_critics = {"critic_0": 1.0}
+
+            critic_names = [f"critic_{i}" for i in range(len(critics))]
+            for name, weight in target_critics.items():
+                if name not in critic_names:
+                    raise ValueError(
+                        f"rnd_cfg['target_critics'] references {name!r}, which is not "
+                        f"a known critic. Available critics: {critic_names}."
+                    )
+                self.rnd_target_critics.append((critic_names.index(name), float(weight)))
+
+            self.rnd = RandomNetworkDistillation(device=self.device, **rnd_cfg)
 
         # Symmetry augmentation is not implemented for multi-critic PPO
         if symmetry_cfg is not None:
@@ -162,7 +179,8 @@ class MultiCriticPPO:
         if self.rnd:
             self.intrinsic_rewards = self.rnd.get_intrinsic_reward(obs)
             rewards_list = list(self.transition.rewards)
-            rewards_list[0] = rewards_list[0] + self.intrinsic_rewards
+            for idx, weight in self.rnd_target_critics:
+                rewards_list[idx] = rewards_list[idx] + weight * self.intrinsic_rewards
             self.transition.rewards = tuple(rewards_list)
 
         # Bootstrapping on time outs — now per-critic, using each critic's own value estimate rather
