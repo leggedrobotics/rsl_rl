@@ -1305,11 +1305,7 @@ class TestConvergence:
 
             loss_dict = ppo.update()
 
-            value_losses.append(
-                float(
-                    loss_dict["value"].detach() #type: ignore
-                )
-            )
+            value_losses.append(float(loss_dict["value"]))
 
         # Compare early vs. late averages rather than a single point-to-point comparison.
         early_avg = (

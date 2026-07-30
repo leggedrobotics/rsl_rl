@@ -324,7 +324,7 @@ class MultiCriticPPO:
                     ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
                 )
                 surrogate_losses.append(torch.max(surrogate, surrogate_clipped).mean())
-            surrogate_loss = sum(surrogate_losses) / len(surrogate_losses)
+            surrogate_loss = torch.stack(surrogate_losses).mean()
 
             # Value function loss — computed per critic, then averaged into a single scalar
             value_losses = []
@@ -338,7 +338,7 @@ class MultiCriticPPO:
                     value_losses.append(torch.max(vl, vl_clipped).mean())
                 else:
                     value_losses.append((batch_returns_c - values_c).pow(2).mean())
-            value_loss = sum(value_losses) / len(value_losses)
+            value_loss = torch.stack(value_losses).mean()
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
 
@@ -367,8 +367,8 @@ class MultiCriticPPO:
                 self.rnd.optimizer.step()
 
             # Store the losses
-            mean_value_loss += value_loss
-            mean_surrogate_loss += surrogate_loss
+            mean_value_loss += value_loss.item()
+            mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy.mean().item()
             # RND loss
             if mean_rnd_loss is not None:
