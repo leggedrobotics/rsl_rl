@@ -182,6 +182,63 @@ class LearnableRewardEnv(VecEnv):
 
         return self.obs, rewards, dones, extras
 
+class ConflictingRewardEnv(VecEnv):
+    """VecEnv where two critics learn from their own bounded, stationary reward
+    targets, but with opposite reward conventions on the same kind of feature —
+    critic 0 penalizes large observation magnitude, critic 1 rewards it.
+
+    Unlike LearnableRewardEnv, this specifically tests that critics with
+    oppositely-signed shaping still each converge independently when trained
+    together, without one critic's gradient direction destabilizing the other.
+
+    Rewards remain bounded and depend only on each critic's own observation
+    (not on the actor's actions), so this isolates critic-vs-critic interaction
+    from actor-stability concerns.
+    """
+
+    def __init__(self, device: str = DEVICE) -> None:
+        self.num_envs = NUM_ENVS
+        self.num_actions = NUM_ACTIONS
+        self.num_critics = 2
+        self.max_episode_length = MAX_EP_LEN
+
+        self.episode_length_buf = torch.zeros(NUM_ENVS, dtype=torch.long, device=device)
+        self.device = device
+        self.cfg = {}
+
+        self.obs = self._sample_obs()
+
+    def _sample_obs(self) -> TensorDict:
+        data = {
+            "policy": torch.randn(self.num_envs, OBS_DIM, device=self.device),
+            "critic_0": torch.randn(self.num_envs, 1, device=self.device),
+            "critic_1": torch.randn(self.num_envs, 1, device=self.device),
+        }
+        return TensorDict(data, batch_size=[self.num_envs], device=self.device)
+
+    def get_observations(self) -> TensorDict:
+        return self.obs
+
+    def step(self, actions: torch.Tensor):
+        current_obs = self.obs
+
+        self.episode_length_buf += 1
+        dones = (self.episode_length_buf >= self.max_episode_length).float()
+        self.episode_length_buf[dones.bool()] = 0
+
+        # Critic 0: standard penalty on its own observation magnitude (bounded, learnable).
+        reward_0 = -0.02 * current_obs["critic_0"][:, 0].pow(2)
+
+        # Critic 1: inverted-sign reward on its own observation magnitude — still
+        # bounded and stationary, but rewards (rather than penalizes) magnitude.
+        reward_1 = 0.02 * current_obs["critic_1"][:, 0].pow(2) - 0.02
+
+        rewards = (reward_0, reward_1)
+
+        self.obs = self._sample_obs()
+        extras = {"time_outs": torch.zeros(self.num_envs, device=self.device)}
+        return self.obs, rewards, dones, extras
+
 
 def _make_cfg(model_type: str, num_critics: int) -> dict:
     cfg: dict = {
@@ -421,3 +478,29 @@ if __name__ == "__main__":
                     f"  iter {it:3d} "
                     f"value_loss={loss:.4f}"
                 )
+
+class TestConflictingRewardConvergence:
+    """Critics with oppositely-signed reward conventions should each still
+    converge independently, without one destabilizing the other."""
+
+    NUM_ITERATIONS = 60
+    CONVERGENCE_RATIO = 0.7
+
+    def test_opposing_critics_both_converge(self) -> None:
+        torch.manual_seed(0)
+
+        env = ConflictingRewardEnv(device=DEVICE)
+        cfg = _make_cfg("mlp", num_critics=2)
+        runner = MultiCriticOnPolicyRunner(env=env, train_cfg=cfg, device=DEVICE)
+
+        loss_history = runner.learn(num_learning_iterations=self.NUM_ITERATIONS)
+        losses = [loss_dict["value"] for loss_dict in loss_history]
+
+        third = self.NUM_ITERATIONS // 3
+        early_mean = sum(losses[:third]) / third
+        late_mean = sum(losses[-third:]) / third
+
+        assert late_mean < (early_mean * self.CONVERGENCE_RATIO), (
+            f"Conflicting-reward critics did not converge: "
+            f"early={early_mean:.4f}, late={late_mean:.4f}"
+        )
