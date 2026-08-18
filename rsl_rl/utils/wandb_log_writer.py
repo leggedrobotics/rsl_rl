@@ -14,7 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 from rsl_rl.utils.log_writer import LogWriter
 
 try:
-    import wandb
+    import wandb  # type: ignore
 except ModuleNotFoundError:
     wandb = None
 

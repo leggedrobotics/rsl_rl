@@ -217,5 +217,5 @@ class TestComputeLoss:
         def odd_actor(obs: TensorDict) -> torch.Tensor:
             return obs["policy"] @ weight.t()
 
-        loss = sym.compute_loss(odd_actor, batch, NUM_ENVS)  # type: ignore[arg-type]
+        loss = sym.compute_loss(odd_actor, batch, NUM_ENVS)  # type: ignore
         assert loss.item() < 1e-6

@@ -20,8 +20,6 @@ repos:
     rev: v2.2.6
     hooks:
       - id: codespell
-        additional_dependencies:
-        - tomli
   - repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.1
     hooks:

@@ -26,7 +26,6 @@ classifiers = [
 ]
 dependencies = [
     "torch>=2.6.0",
-    "torchvision>=0.5.0",
     "tensordict>=0.7.0",
     "numpy>=1.16.4",
     "tensorboard",
@@ -34,6 +33,11 @@ dependencies = [
     "onnx",
     "onnxscript>=0.5.4",
 ]
+
+[project.optional-dependencies]
+test = ["pytest"]
+wandb = ["wandb"]
+neptune = ["neptune"]
 
 [project.urls]
 Homepage = "https://github.com/leggedrobotics/rsl_rl"
@@ -53,12 +57,4 @@ license-files = [
 include = ["rsl_rl"]
 typeCheckingMode = "basic"
 pythonVersion = "3.9"
-pythonPlatform = "Linux"
-enableTypeIgnoreComments = true
-# This is required as the CI pre-commit does not download the module (i.e. numpy, torch, prettytable)
-reportMissingImports = "none"
-# This is required to ignore type checks of modules with stubs missing.
-reportMissingModuleSource = "none"  # -> most common: prettytable in mdp managers
-reportGeneralTypeIssues = "none"  # -> usage of literal MISSING in dataclasses
 reportOptionalMemberAccess = "none"
-reportPrivateUsage = "warning"

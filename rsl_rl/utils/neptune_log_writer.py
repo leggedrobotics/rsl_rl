@@ -13,7 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 from rsl_rl.utils.log_writer import LogWriter
 
 try:
-    import neptune
+    import neptune  # type: ignore
 except ModuleNotFoundError:
     neptune = None
 
