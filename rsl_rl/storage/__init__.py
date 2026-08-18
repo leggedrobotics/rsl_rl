@@ -6,5 +6,6 @@
 """Storage for the learning algorithms."""
 
 from .rollout_storage import RolloutStorage
+from .multi_critic_rollout_storage import MultiCriticRolloutStorage
 
 __all__ = ["RolloutStorage"]

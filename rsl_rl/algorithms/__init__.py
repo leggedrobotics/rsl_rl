@@ -7,5 +7,6 @@
 
 from .distillation import Distillation
 from .ppo import PPO
+from .multi_critic_ppo import MultiCriticPPO
 
 __all__ = ["PPO", "Distillation"]
