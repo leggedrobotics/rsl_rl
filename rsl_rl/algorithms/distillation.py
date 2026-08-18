@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import warnings
 from tensordict import TensorDict
 
 from rsl_rl.env import VecEnv
@@ -61,8 +62,7 @@ class Distillation:
         self.student = student.to(self.device)
         self.teacher = teacher.to(self.device)
 
-        # Handles to the uncompiled modules for state_dict operations and export. If compilation is disabled, these
-        # simply alias ``self.student`` / ``self.teacher``.
+        # Handles to the uncompiled modules for state_dict operations and export
         self._raw_student = self.student
         self._raw_teacher = self.teacher
 
@@ -79,6 +79,17 @@ class Distillation:
         self.gradient_length = gradient_length
         self.learning_rate = learning_rate
         self.max_grad_norm = max_grad_norm
+
+        # Warn about rollout steps not used for optimization
+        total_steps = num_learning_epochs * storage.num_transitions_per_env
+        if total_steps % gradient_length != 0:
+            warnings.warn(
+                f"The product of 'num_learning_epochs' ({num_learning_epochs}) and 'num_steps_per_env'"
+                f" ({storage.num_transitions_per_env}) is not divisible by 'gradient_length' ({gradient_length})."
+                f" The last {total_steps % gradient_length} of {total_steps} steps per update are accumulated but"
+                f" never backpropagated. Consider setting 'gradient_length' to a divisor of {total_steps}.",
+                stacklevel=2,
+            )
 
         # Initialize the loss function
         loss_fn_dict = {

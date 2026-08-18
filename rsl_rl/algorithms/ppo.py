@@ -83,8 +83,7 @@ class PPO:
         self.actor = actor.to(self.device)
         self.critic = critic.to(self.device)
 
-        # Handles to the uncompiled modules for state_dict operations and export. If compilation is disabled, these
-        # simply alias ``self.actor`` / ``self.critic``.
+        # Handles to the uncompiled modules for state_dict operations and export
         self._raw_actor = self.actor
         self._raw_critic = self.critic
 

@@ -8,7 +8,10 @@
 from __future__ import annotations
 
 import torch
+import warnings
 from tensordict import TensorDict
+
+import pytest
 
 from rsl_rl.algorithms.distillation import Distillation
 from rsl_rl.models import MLPModel
@@ -112,3 +115,27 @@ class TestDistillationLoss:
 
         for name, p in alg.teacher.named_parameters():
             assert torch.equal(p, teacher_before[name]), f"Teacher parameter {name} changed during student update"
+
+
+class TestGradientBudgetWarning:
+    """Tests for the construction-time check on the gradient accumulation budget."""
+
+    def test_warns_when_budget_is_not_divisible(self) -> None:
+        """A gradient_length of 5 leaves 2 of the 12 rollout steps in an accumulation that is never backpropagated."""
+        with pytest.warns(UserWarning, match="The last 2 of 12 steps"):
+            _make_distillation_setup(gradient_length=5)
+
+    @pytest.mark.parametrize(
+        ("gradient_length", "num_learning_epochs"),
+        [(3, 1), (4, 1), (12, 1), (5, 5), (8, 2)],
+    )
+    def test_no_warning_when_budget_is_divisible(self, gradient_length: int, num_learning_epochs: int) -> None:
+        """No warning is raised when the budget divides evenly by gradient_length.
+
+        The budget is num_learning_epochs * num_transitions_per_env, so 5 epochs of 12 steps fit a gradient_length
+        of 5 even though a single rollout does not.
+        """
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _make_distillation_setup(gradient_length=gradient_length, num_learning_epochs=num_learning_epochs)
+        assert not [w for w in caught if "gradient_length" in str(w.message)]
