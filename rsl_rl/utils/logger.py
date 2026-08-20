@@ -56,7 +56,7 @@ class Logger:
         self.cur_episode_length = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # Create RND buffers
-        if self.cfg["algorithm"]["rnd_cfg"]:
+        if self.cfg["algorithm"].get("rnd_cfg"):
             self.erewbuffer = deque(maxlen=100)
             self.irewbuffer = deque(maxlen=100)
             self.cur_ereward_sum = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -218,7 +218,7 @@ class Logger:
 
             # Log rewards and episode length
             if len(self.rewbuffer) > 0:
-                if self.cfg["algorithm"]["rnd_cfg"]:
+                if self.cfg["algorithm"].get("rnd_cfg"):
                     self.writer.add_scalar("Rnd/mean_extrinsic_reward", statistics.mean(self.erewbuffer), it)
                     self.writer.add_scalar("Rnd/mean_intrinsic_reward", statistics.mean(self.irewbuffer), it)
                     self.writer.add_scalar("Rnd/weight", rnd_weight, it)  # type: ignore
@@ -254,7 +254,7 @@ class Logger:
 
             # Print rewards and episode length
             if len(self.rewbuffer) > 0:
-                if self.cfg["algorithm"]["rnd_cfg"]:
+                if self.cfg["algorithm"].get("rnd_cfg"):
                     log_string += f"""{"Mean extrinsic reward:":>{pad}} {statistics.mean(self.erewbuffer):.2f}\n"""
                     log_string += f"""{"Mean intrinsic reward:":>{pad}} {statistics.mean(self.irewbuffer):.2f}\n"""
                 log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(self.rewbuffer):.2f}\n"""
