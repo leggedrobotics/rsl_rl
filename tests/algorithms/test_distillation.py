@@ -24,12 +24,16 @@ OBS_DIM = 8
 NUM_ACTIONS = 4
 
 
-def _make_distillation_setup(gradient_length: int = 3, num_learning_epochs: int = 1) -> tuple:
+def _make_distillation_setup(
+    gradient_length: int = 3, num_learning_epochs: int = 1, obs_normalization: bool = False
+) -> tuple:
     """Build a Distillation instance with small networks."""
     obs = make_obs(NUM_ENVS, OBS_DIM)
     obs_groups = {"student": ["policy"], "teacher": ["policy"]}
 
-    student = MLPModel(obs, obs_groups, "student", NUM_ACTIONS, hidden_dims=[32, 32])
+    student = MLPModel(
+        obs, obs_groups, "student", NUM_ACTIONS, hidden_dims=[32, 32], obs_normalization=obs_normalization
+    )
     teacher = MLPModel(obs, obs_groups, "teacher", NUM_ACTIONS, hidden_dims=[32, 32])
 
     storage = RolloutStorage("distillation", NUM_ENVS, NUM_STEPS, obs, [NUM_ACTIONS])
@@ -115,6 +119,26 @@ class TestDistillationLoss:
 
         for name, p in alg.teacher.named_parameters():
             assert torch.equal(p, teacher_before[name]), f"Teacher parameter {name} changed during student update"
+
+    def test_normalization_uses_rollout_after_student_update(self) -> None:
+        """Student normalization should stay fixed during collection and update once from stored observations."""
+        alg, _obs, storage = _make_distillation_setup(obs_normalization=True)
+
+        for step in range(NUM_STEPS):
+            rollout_obs = TensorDict(
+                {"policy": torch.full((NUM_ENVS, OBS_DIM), float(step + 1))}, batch_size=[NUM_ENVS]
+            )
+            next_obs = TensorDict({"policy": torch.full((NUM_ENVS, OBS_DIM), float(step + 2))}, batch_size=[NUM_ENVS])
+            alg.act(rollout_obs)
+            alg.process_env_step(next_obs, torch.ones(NUM_ENVS), torch.zeros(NUM_ENVS), {})
+
+        assert alg.student.obs_normalizer.count == 0
+
+        expected_mean = storage.observations["policy"].flatten(0, 1).mean(dim=0)
+        alg.update()
+
+        assert alg.student.obs_normalizer.count == NUM_ENVS * NUM_STEPS
+        assert torch.allclose(alg.student.obs_normalizer.mean, expected_mean)
 
 
 class TestGradientBudgetWarning:

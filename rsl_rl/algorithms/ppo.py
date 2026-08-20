@@ -127,13 +127,7 @@ class PPO:
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
     ) -> None:
-        """Record one environment step and update the normalizers."""
-        # Update the normalizers
-        self.actor.update_normalization(obs)
-        self.critic.update_normalization(obs)
-        if self.rnd:
-            self.rnd.update_normalization(obs)
-
+        """Record one environment step."""
         # Record the rewards and dones
         # Note: We clone here because later on we bootstrap the rewards based on timeouts
         self.transition.rewards = rewards.clone()
@@ -336,6 +330,14 @@ class PPO:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
+
+        # Update normalizers with the rollout observations after optimization so that the normalization statistics stay
+        # fixed while computing the probability ratio and losses.
+        rollout_obs = self.storage.observations.flatten(0, 1)
+        self.actor.update_normalization(rollout_obs)
+        self.critic.update_normalization(rollout_obs)
+        if self.rnd:
+            self.rnd.update_normalization(rollout_obs)
 
         # Clear the storage
         self.storage.clear()

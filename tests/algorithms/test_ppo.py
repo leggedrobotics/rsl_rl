@@ -225,6 +225,45 @@ class TestTimeoutBootstrapping:
         assert abs(stored_reward_env1 - 1.0) < 1e-5
 
 
+class TestNormalizationUpdates:
+    """Tests for observation-normalization update timing."""
+
+    def test_normalization_uses_rollout_after_policy_update(self) -> None:
+        """Normalization statistics should stay fixed during a rollout and update from stored observations."""
+        obs = make_obs(NUM_ENVS, OBS_DIM)
+        obs_groups = {"actor": ["policy"], "critic": ["policy"]}
+        actor = _make_actor(obs, obs_groups, NUM_ACTIONS, obs_normalization=True)
+        critic = _make_critic(obs, obs_groups, obs_normalization=True)
+        storage = RolloutStorage("rl", NUM_ENVS, NUM_STEPS, obs, [NUM_ACTIONS])
+        ppo = PPO(actor, critic, storage, num_learning_epochs=1, num_mini_batches=1, schedule="fixed")
+
+        for step in range(NUM_STEPS):
+            rollout_obs = TensorDict(
+                {"policy": torch.full((NUM_ENVS, OBS_DIM), float(step + 1))}, batch_size=[NUM_ENVS]
+            )
+            next_obs = TensorDict({"policy": torch.full((NUM_ENVS, OBS_DIM), float(step + 2))}, batch_size=[NUM_ENVS])
+            ppo.act(rollout_obs)
+            ppo.process_env_step(next_obs, torch.ones(NUM_ENVS), torch.zeros(NUM_ENVS), {})
+
+        assert actor.obs_normalizer.count == 0
+        assert critic.obs_normalizer.count == 0
+
+        actor(storage.observations[0], stochastic_output=True)
+        current_log_prob = actor.get_output_log_prob(storage.actions[0])
+        ratio = torch.exp(current_log_prob - storage.actions_log_prob[0].squeeze(-1))
+        assert torch.allclose(ratio, torch.ones_like(ratio), atol=1e-6)
+
+        expected_mean = storage.observations["policy"].flatten(0, 1).mean(dim=0)
+        ppo.compute_returns(next_obs)
+        ppo.update()
+
+        expected_count = NUM_ENVS * NUM_STEPS
+        assert actor.obs_normalizer.count == expected_count
+        assert critic.obs_normalizer.count == expected_count
+        assert torch.allclose(actor.obs_normalizer.mean, expected_mean)
+        assert torch.allclose(critic.obs_normalizer.mean, expected_mean)
+
+
 class TestPPOLosses:
     """Tests for PPO loss computation correctness."""
 
