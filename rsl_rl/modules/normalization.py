@@ -55,11 +55,24 @@ class EmpiricalNormalization(nn.Module):
         if self.until is not None and self.count >= self.until:
             return
 
-        count_x = x.shape[0]
-        self.count += count_x
-        rate = count_x / self.count
+        count_x = torch.tensor(x.shape[0], dtype=self.count.dtype, device=self.count.device)
         var_x = torch.var(x, dim=0, unbiased=False, keepdim=True)
         mean_x = torch.mean(x, dim=0, keepdim=True)
+
+        if torch.distributed.is_initialized():
+            # Compute the global mean first, then combine the local variances around that mean. Summing local variances
+            # alone would omit the variation between ranks with different means.
+            local_mean = mean_x
+            torch.distributed.all_reduce(count_x)
+            mean_x = local_mean * x.shape[0]
+            torch.distributed.all_reduce(mean_x)
+            mean_x /= count_x
+            var_x = x.shape[0] * (var_x + (local_mean - mean_x).square())
+            torch.distributed.all_reduce(var_x)
+            var_x /= count_x
+
+        self.count += count_x
+        rate = count_x / self.count
         delta_mean = mean_x - self._mean
         self._mean += rate * delta_mean
         self._var += rate * (var_x - self._var + delta_mean * (mean_x - self._mean))
