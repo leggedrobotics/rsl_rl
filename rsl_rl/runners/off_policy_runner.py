@@ -76,9 +76,18 @@ class OffPolicyRunner(OnPolicyRunner):
 
             # Gradient phase: several optimization steps over sampled replay batches.
             num_grad_steps = round(num_steps_per_env * updates_per_step)
-            loss_dict: dict[str, float] = {}
+            # Aggregate metrics across the iteration's updates by averaging each
+            # key over the updates that reported it. This ensures metrics that
+            # only appear on delayed-actor steps (actor/entropy/temperature) are
+            # still surfaced, rather than being dropped by keeping only the last
+            # update's dict.
+            loss_sums: dict[str, float] = {}
+            loss_counts: dict[str, int] = {}
             for _ in range(num_grad_steps):
-                loss_dict = self.alg.update()
+                for key, value in self.alg.update().items():
+                    loss_sums[key] = loss_sums.get(key, 0.0) + value
+                    loss_counts[key] = loss_counts.get(key, 0) + 1
+            loss_dict = {key: loss_sums[key] / loss_counts[key] for key in loss_sums}
 
             learn_time = time.time() - start
             self.current_learning_iteration = it
