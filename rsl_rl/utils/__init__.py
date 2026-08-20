@@ -15,6 +15,7 @@ from .utils import (
     resolve_nn_activation,
     resolve_obs_groups,
     resolve_optimizer,
+    resolve_sac_obs_groups,
     split_and_pad_trajectories,
     unpad_trajectories,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "resolve_nn_activation",
     "resolve_obs_groups",
     "resolve_optimizer",
+    "resolve_sac_obs_groups",
     "split_and_pad_trajectories",
     "unpad_trajectories",
 ]
