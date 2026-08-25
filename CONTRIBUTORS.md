@@ -41,5 +41,6 @@ Please keep the lists sorted alphabetically.
 * Özhan Özen
 * Pascal Roth
 * Shaoshu Su
+* tandede
 * Zhang Chong
 * Ziqi Fan
