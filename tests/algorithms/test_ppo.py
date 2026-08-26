@@ -400,8 +400,3 @@ class TestMixedPrecision:
         assert all(torch.isfinite(torch.tensor(v)) for v in loss_dict.values())
         after = list(ppo.actor.parameters())
         assert any(not torch.equal(b, a) for b, a in zip(before, after)), "actor params should change"
-
-    def test_auto_resolves_to_false_on_cpu(self) -> None:
-        """'auto' must resolve to False on the cpu test fixtures."""
-        ppo, _obs = _build_ppo(use_mixed_precision="auto")
-        assert ppo.use_mixed_precision is False

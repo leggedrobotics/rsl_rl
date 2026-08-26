@@ -192,8 +192,3 @@ class TestDistillationMixedPrecision:
         assert torch.isfinite(torch.tensor(loss_dict["behavior"]))
         after = list(alg.student.parameters())
         assert any(not torch.equal(b, a) for b, a in zip(before, after)), "student params should change"
-
-    def test_auto_resolves_to_false_on_cpu(self) -> None:
-        """'auto' must resolve to False on the cpu test fixtures."""
-        alg, _obs, _storage = _make_distillation_setup(use_mixed_precision="auto")
-        assert alg.use_mixed_precision is False

@@ -15,7 +15,7 @@ from rsl_rl.env import VecEnv
 from rsl_rl.extensions import RandomNetworkDistillation, Symmetry, resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import compile_model, resolve_class, resolve_mixed_precision, resolve_obs_groups, resolve_optimizer
+from rsl_rl.utils import compile_model, resolve_class, resolve_obs_groups, resolve_optimizer
 
 
 class PPO:
@@ -24,10 +24,8 @@ class PPO:
     Reference:
         - Schulman et al. "Proximal policy optimization algorithms." arXiv preprint arXiv:1707.06347 (2017).
 
-    Set ``use_mixed_precision`` to run the forward pass and loss computation in
-    bfloat16 autocast (backward, gradient clipping, and the optimizer step stay in
-    fp32). Accepts ``True`` (force on), ``False`` (default, off), or ``"auto"``
-    (enable only on bfloat16-capable CUDA devices, otherwise fp32).
+    Set ``use_mixed_precision`` to run the forward pass and loss computation in bfloat16 autocast (backward,
+    gradient clipping, and the optimizer step stay in fp32).
     """
 
     actor: MLPModel
@@ -55,7 +53,7 @@ class PPO:
         schedule: str = "adaptive",
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
-        use_mixed_precision: bool | str = False,
+        use_mixed_precision: bool = False,
         device: str = "cpu",
         # RND parameters
         rnd_cfg: dict | None = None,
@@ -117,9 +115,8 @@ class PPO:
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
         # Mixed precision: bf16 autocast over forward+loss, no GradScaler needed.
-        # "auto" enables bf16 only on hardware that supports it; otherwise fp32.
         self.device_type = torch.device(device).type
-        self.use_mixed_precision = resolve_mixed_precision(use_mixed_precision, self.device_type)
+        self.use_mixed_precision = use_mixed_precision
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Sample actions and store transition data."""
