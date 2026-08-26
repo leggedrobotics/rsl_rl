@@ -228,6 +228,11 @@ PPO
      - bool
      - ``False``
      - Whether to normalize advantages for each mini-batch instead of across the entire rollout.
+   * - ``use_mixed_precision``
+     - bool
+     - ``False``
+     - Whether to run the forward pass and loss computation in bfloat16 autocast. Backward, gradient clipping, and
+       the optimizer step always stay in fp32.
    * - ``share_cnn_encoders``
      - bool
      - ``False``
@@ -281,6 +286,11 @@ Distillation
      - str
      - ``"mse"``
      - Loss type. Valid values: ``"mse"``, ``"huber"``.
+   * - ``use_mixed_precision``
+     - bool
+     - ``False``
+     - Whether to run the forward pass and loss computation in bfloat16 autocast. Backward, gradient clipping, and
+       the optimizer step always stay in fp32.
 
 Model Configuration
 -------------------
