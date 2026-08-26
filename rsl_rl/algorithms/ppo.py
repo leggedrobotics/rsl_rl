@@ -23,9 +23,6 @@ class PPO:
 
     Reference:
         - Schulman et al. "Proximal policy optimization algorithms." arXiv preprint arXiv:1707.06347 (2017).
-
-    Set ``use_mixed_precision`` to run the forward pass and loss computation in bfloat16 autocast (backward,
-    gradient clipping, and the optimizer step stay in fp32).
     """
 
     actor: MLPModel
@@ -114,8 +111,6 @@ class PPO:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
-        # Mixed precision: bf16 autocast over forward+loss, no GradScaler needed.
-        self.device_type = torch.device(device).type
         self.use_mixed_precision = use_mixed_precision
 
     def act(self, obs: TensorDict) -> torch.Tensor:
@@ -216,8 +211,9 @@ class PPO:
             if self.symmetry:
                 self.symmetry.augment_batch(batch, original_batch_size)
 
-            with torch.amp.autocast(
-                device_type=self.device_type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
+            # Optionally use mixed precision for the forward pass and loss computation
+            with torch.amp.autocast(  # type: ignore
+                device_type=torch.device(self.device).type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
             ):
                 # Recompute actions log prob and entropy for current batch of transitions
                 # Note: We need to do this because we updated the policy with new parameters

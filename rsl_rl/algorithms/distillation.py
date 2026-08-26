@@ -18,11 +18,7 @@ from rsl_rl.utils import compile_model, resolve_class, resolve_obs_groups, resol
 
 
 class Distillation:
-    """Distillation algorithm for training a student model to mimic a teacher model.
-
-    Set ``use_mixed_precision`` to run the forward pass and loss computation in bfloat16 autocast (backward,
-    gradient clipping, and the optimizer step stay in fp32).
-    """
+    """Distillation algorithm for training a student model to mimic a teacher model."""
 
     student: MLPModel
     """The student model."""
@@ -53,9 +49,6 @@ class Distillation:
         """Initialize the algorithm with models, storage, and optimization settings."""
         # Device-related parameters
         self.device = device
-        # Mixed precision: bf16 autocast over forward+loss, no GradScaler needed.
-        self.device_type = torch.device(device).type
-        self.use_mixed_precision = use_mixed_precision
         self.is_multi_gpu = multi_gpu_cfg is not None
 
         # Multi-GPU parameters
@@ -87,6 +80,7 @@ class Distillation:
         self.gradient_length = gradient_length
         self.learning_rate = learning_rate
         self.max_grad_norm = max_grad_norm
+        self.use_mixed_precision = use_mixed_precision
 
         # Warn about rollout steps not used for optimization
         total_steps = num_learning_epochs * storage.num_transitions_per_env
@@ -150,11 +144,12 @@ class Distillation:
             self.teacher.reset(hidden_state=self.last_hidden_states[1])
             self.student.detach_hidden_state()
             for batch in self.storage.generator():
-                # Inference of the student for gradient computation
-                with torch.amp.autocast(
-                    device_type=self.device_type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
+                # Inference of the student for gradient computation, optionally using mixed precision
+                with torch.amp.autocast(  # type: ignore
+                    device_type=torch.device(self.device).type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
                 ):
                     actions = self.student(batch.observations)
+
                     # Behavior cloning loss
                     behavior_loss = self.loss_fn(actions, batch.privileged_actions)
 

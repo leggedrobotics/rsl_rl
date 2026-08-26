@@ -176,7 +176,6 @@ class TestDistillationMixedPrecision:
         """Mixed precision must be opt-in."""
         alg, _obs, _storage = _make_distillation_setup()
         assert alg.use_mixed_precision is False
-        assert alg.device_type == "cpu"
 
     def test_update_runs_with_mixed_precision(self) -> None:
         """update() with the flag on returns a finite loss and changes student params."""
