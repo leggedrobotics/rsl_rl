@@ -60,16 +60,15 @@ class EmpiricalNormalization(nn.Module):
         mean_x = torch.mean(x, dim=0, keepdim=True)
 
         if torch.distributed.is_initialized():
-            # Compute the global mean first, then combine the local variances around that mean. Summing local variances
-            # alone would omit the variation between ranks with different means.
-            local_mean = mean_x
+            # Compute the global mean first, then combine the local variances around that mean
+            local_mean_x = mean_x
             torch.distributed.all_reduce(count_x)
-            mean_x = local_mean * x.shape[0]
-            torch.distributed.all_reduce(mean_x)
-            mean_x /= count_x
-            var_x = x.shape[0] * (var_x + (local_mean - mean_x).square())
-            torch.distributed.all_reduce(var_x)
-            var_x /= count_x
+            mean_sum_x = mean_x * x.shape[0]
+            torch.distributed.all_reduce(mean_sum_x)
+            mean_x = mean_sum_x / count_x
+            var_sum_x = x.shape[0] * (var_x + (local_mean_x - mean_x).square())
+            torch.distributed.all_reduce(var_sum_x)
+            var_x = var_sum_x / count_x
 
         self.count += count_x
         rate = count_x / self.count
