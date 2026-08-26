@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib
 import pkgutil
 import torch
@@ -172,6 +173,19 @@ def resolve_callable(callable_or_name: type | Callable | str) -> Callable:
         f"Could not resolve '{callable_or_name}'. Use qualified name like 'module.path:ClassName' "
         f"or pass the class directly."
     )
+
+
+def resolve_class(cfg: dict) -> tuple[Callable, dict]:
+    """Resolve the class referenced by ``cfg["class_name"]`` without mutating ``cfg``.
+
+    Args:
+        cfg: Configuration dictionary with a ``"class_name"`` key and the constructor arguments of that class.
+
+    Returns:
+        The resolved class and a deep copy of ``cfg`` with ``"class_name"`` removed.
+    """
+    class_cfg = copy.deepcopy(cfg)
+    return resolve_callable(class_cfg.pop("class_name")), class_cfg
 
 
 def resolve_obs_groups(

@@ -294,9 +294,9 @@ class RolloutStorage:
                         .contiguous()
                         for saved_hidden_state in self.saved_hidden_state_a
                     ]
-                    # Remove the tuple for GRU
+                    # Unwrap the single state of a GRU, keep the pair of an LSTM as a tuple
                     hidden_state_a_batch = (
-                        hidden_state_a_batch[0] if len(hidden_state_a_batch) == 1 else hidden_state_a_batch
+                        hidden_state_a_batch[0] if len(hidden_state_a_batch) == 1 else tuple(hidden_state_a_batch)
                     )
                 else:
                     hidden_state_a_batch = None
@@ -308,7 +308,7 @@ class RolloutStorage:
                         for saved_hidden_state in self.saved_hidden_state_c
                     ]
                     hidden_state_c_batch = (
-                        hidden_state_c_batch[0] if len(hidden_state_c_batch) == 1 else hidden_state_c_batch
+                        hidden_state_c_batch[0] if len(hidden_state_c_batch) == 1 else tuple(hidden_state_c_batch)
                     )
                 else:
                     hidden_state_c_batch = None

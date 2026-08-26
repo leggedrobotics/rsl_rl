@@ -15,7 +15,7 @@ from rsl_rl.env import VecEnv
 from rsl_rl.extensions import RandomNetworkDistillation, Symmetry, resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import compile_model, resolve_callable, resolve_obs_groups, resolve_optimizer
+from rsl_rl.utils import compile_model, resolve_class, resolve_obs_groups, resolve_optimizer
 
 
 class PPO:
@@ -412,36 +412,36 @@ class PPO:
     @staticmethod
     def construct_algorithm(obs: TensorDict, env: VecEnv, cfg: dict, device: str) -> PPO:
         """Construct the PPO algorithm."""
-        # Resolve class callables
-        alg_class: type[PPO] = resolve_callable(cfg["algorithm"].pop("class_name"))  # type: ignore
-        actor_class: type[MLPModel] = resolve_callable(cfg["actor"].pop("class_name"))  # type: ignore
-        critic_class: type[MLPModel] = resolve_callable(cfg["critic"].pop("class_name"))  # type: ignore
+        # Resolve class callables and configs
+        alg_class, alg_cfg = resolve_class(cfg["algorithm"])
+        actor_class, actor_cfg = resolve_class(cfg["actor"])
+        critic_class, critic_cfg = resolve_class(cfg["critic"])
 
         # Resolve observation groups
         default_sets = ["actor", "critic"]
-        if "rnd_cfg" in cfg["algorithm"] and cfg["algorithm"]["rnd_cfg"] is not None:
+        if "rnd_cfg" in alg_cfg and alg_cfg["rnd_cfg"] is not None:
             default_sets.append("rnd_state")
         cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], default_sets)
 
         # Resolve RND config if used
-        cfg["algorithm"] = resolve_rnd_config(cfg["algorithm"], obs, cfg["obs_groups"], env)
+        alg_cfg = resolve_rnd_config(alg_cfg, obs, cfg["obs_groups"], env)
 
         # Resolve symmetry config if used
-        cfg["algorithm"] = resolve_symmetry_config(cfg["algorithm"], env)
+        alg_cfg = resolve_symmetry_config(alg_cfg, env)
 
         # Initialize the policy
-        actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **cfg["actor"]).to(device)
+        actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **actor_cfg).to(device)
         print(f"Actor Model: {actor}")
-        if cfg["algorithm"].pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critic
-            cfg["critic"]["cnns"] = actor.cnns  # type: ignore
-        critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **cfg["critic"]).to(device)
+        if alg_cfg.pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critic
+            critic_cfg["cnns"] = actor.cnns
+        critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **critic_cfg).to(device)
         print(f"Critic Model: {critic}")
 
         # Initialize the storage
         storage = RolloutStorage("rl", env.num_envs, cfg["num_steps_per_env"], obs, [env.num_actions], device)
 
         # Initialize the algorithm
-        alg: PPO = alg_class(actor, critic, storage, device=device, **cfg["algorithm"], multi_gpu_cfg=cfg["multi_gpu"])
+        alg: PPO = alg_class(actor, critic, storage, device=device, **alg_cfg, multi_gpu_cfg=cfg["multi_gpu"])
 
         # Compile the algorithm's models if requested
         alg.compile(cfg.get("torch_compile_mode"))
