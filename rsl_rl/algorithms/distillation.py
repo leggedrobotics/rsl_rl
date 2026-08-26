@@ -115,9 +115,7 @@ class Distillation:
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
     ) -> None:
-        """Record one environment step and update the normalizers."""
-        # Update the normalizers
-        self.student.update_normalization(obs)
+        """Record one environment step."""
         # Record the rewards and dones
         self.transition.rewards = rewards
         self.transition.dones = dones
@@ -172,13 +170,21 @@ class Distillation:
                 self.teacher.reset(batch.dones.view(-1))
                 self.student.detach_hidden_state(batch.dones.view(-1))
 
-        mean_behavior_loss /= cnt
-        self.storage.clear()
+        # Store the last hidden states for the next update
         self.last_hidden_states = (self.student.get_hidden_state(), self.teacher.get_hidden_state())
         self.student.detach_hidden_state()
 
+        # Update the normalizer
+        self.student.update_normalization(self.storage.observations.flatten(0, 1))  # type: ignore
+
+        # Divide the loss by the number of updates
+        mean_behavior_loss /= cnt
+
         # Construct the loss dictionary
         loss_dict = {"behavior": mean_behavior_loss}
+
+        # Clear the storage
+        self.storage.clear()
 
         return loss_dict
 

@@ -127,13 +127,7 @@ class PPO:
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
     ) -> None:
-        """Record one environment step and update the normalizers."""
-        # Update the normalizers
-        self.actor.update_normalization(obs)
-        self.critic.update_normalization(obs)
-        if self.rnd:
-            self.rnd.update_normalization(obs)
-
+        """Record one environment step."""
         # Record the rewards and dones
         # Note: We clone here because later on we bootstrap the rewards based on timeouts
         self.transition.rewards = rewards.clone()
@@ -315,6 +309,13 @@ class PPO:
             # Symmetry loss
             if mean_symmetry_loss is not None:
                 mean_symmetry_loss += symmetry_loss.item()
+
+        # Update the normalizers
+        obs = self.storage.observations.flatten(0, 1)
+        self.actor.update_normalization(obs)  # type: ignore
+        self.critic.update_normalization(obs)  # type: ignore
+        if self.rnd:
+            self.rnd.update_normalization(obs)  # type: ignore
 
         # Divide the losses by the number of updates
         num_updates = self.num_learning_epochs * self.num_mini_batches
