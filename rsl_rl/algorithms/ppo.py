@@ -310,6 +310,13 @@ class PPO:
             if mean_symmetry_loss is not None:
                 mean_symmetry_loss += symmetry_loss.item()
 
+        # Update the normalizers
+        obs = self.storage.observations.flatten(0, 1)
+        self.actor.update_normalization(obs)  # type: ignore
+        self.critic.update_normalization(obs)  # type: ignore
+        if self.rnd:
+            self.rnd.update_normalization(obs)  # type: ignore
+
         # Divide the losses by the number of updates
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
@@ -330,14 +337,6 @@ class PPO:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
-
-        # Update normalizers with the rollout observations after optimization so that the normalization statistics stay
-        # fixed while computing the probability ratio and losses.
-        rollout_obs = self.storage.observations.flatten(0, 1)
-        self.actor.update_normalization(rollout_obs)
-        self.critic.update_normalization(rollout_obs)
-        if self.rnd:
-            self.rnd.update_normalization(rollout_obs)
 
         # Clear the storage
         self.storage.clear()

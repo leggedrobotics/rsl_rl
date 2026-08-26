@@ -170,15 +170,21 @@ class Distillation:
                 self.teacher.reset(batch.dones.view(-1))
                 self.student.detach_hidden_state(batch.dones.view(-1))
 
-        mean_behavior_loss /= cnt
-        # Update the normalizer after optimization so that its statistics stay fixed throughout the update.
-        self.student.update_normalization(self.storage.observations.flatten(0, 1))
-        self.storage.clear()
+        # Store the last hidden states for the next update
         self.last_hidden_states = (self.student.get_hidden_state(), self.teacher.get_hidden_state())
         self.student.detach_hidden_state()
 
+        # Update the normalizer
+        self.student.update_normalization(self.storage.observations.flatten(0, 1))  # type: ignore
+
+        # Divide the loss by the number of updates
+        mean_behavior_loss /= cnt
+
         # Construct the loss dictionary
         loss_dict = {"behavior": mean_behavior_loss}
+
+        # Clear the storage
+        self.storage.clear()
 
         return loss_dict
 
