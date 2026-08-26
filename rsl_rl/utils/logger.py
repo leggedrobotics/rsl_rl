@@ -17,7 +17,8 @@ from collections import deque
 
 import rsl_rl
 from rsl_rl.utils.log_writer import LogWriter
-from rsl_rl.utils.utils import resolve_callable
+from rsl_rl.utils.utils import resolve_class
+from rsl_rl.utils.wandb_log_writer import WandbLogWriter
 
 
 class Logger:
@@ -46,7 +47,6 @@ class Logger:
         self.tot_time = 0
 
         self.writer: LogWriter | None = None
-        self.logger_type: str | None = None
 
         # Create buffers
         self.ep_extras = []
@@ -56,7 +56,7 @@ class Logger:
         self.cur_episode_length = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # Create RND buffers
-        if self.cfg["algorithm"]["rnd_cfg"]:
+        if self.cfg["algorithm"].get("rnd_cfg"):
             self.erewbuffer = deque(maxlen=100)
             self.irewbuffer = deque(maxlen=100)
             self.cur_ereward_sum = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -77,35 +77,35 @@ class Logger:
         """
         if self.log_dir is not None and not self.disable_logs:
             logger_cfg = self.cfg.get("logger", "tensorboard")
-            self.logger_type = logger_cfg if isinstance(logger_cfg, str) else logger_cfg.pop("class_name")
+            writer_name = logger_cfg if isinstance(logger_cfg, str) else logger_cfg["class_name"]
 
             # Handle deprecated plain string logger types for W&B and Neptune
-            if self.logger_type == "wandb" and isinstance(logger_cfg, str):
+            if writer_name == "wandb" and isinstance(logger_cfg, str):
                 warnings.warn(
                     "cfg['logger'] = 'wandb' is deprecated. "
                     "Use cfg['logger'] = {'class_name': 'WandbLogWriter', 'project_name': ...} instead.",
                     DeprecationWarning,
                     stacklevel=2,
                 )
-                self.logger_type = "WandbLogWriter"
-                logger_cfg = {"project_name": self.cfg.get("wandb_project")}
-            elif self.logger_type == "neptune" and isinstance(logger_cfg, str):
+                writer_name = "WandbLogWriter"
+                logger_cfg = {"class_name": writer_name, "project_name": self.cfg.get("wandb_project")}
+            elif writer_name == "neptune" and isinstance(logger_cfg, str):
                 warnings.warn(
                     "cfg['logger'] = 'neptune' is deprecated. "
                     "Use cfg['logger'] = {'class_name': 'NeptuneLogWriter', 'project_name': ...} instead.",
                     DeprecationWarning,
                     stacklevel=2,
                 )
-                self.logger_type = "NeptuneLogWriter"
-                logger_cfg = {"project_name": self.cfg.get("neptune_project")}
+                writer_name = "NeptuneLogWriter"
+                logger_cfg = {"class_name": writer_name, "project_name": self.cfg.get("neptune_project")}
 
-            if self.logger_type == "tensorboard":
+            if writer_name == "tensorboard":
                 from torch.utils.tensorboard import SummaryWriter
 
                 self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)  # type: ignore
             else:
-                writer_class = resolve_callable(self.logger_type)
-                self.writer = writer_class(log_dir=self.log_dir, **logger_cfg)  # type: ignore
+                writer_class, writer_cfg = resolve_class(logger_cfg)  # type: ignore
+                self.writer = writer_class(log_dir=self.log_dir, **writer_cfg)  # type: ignore
         else:
             self.writer = None
 
@@ -218,13 +218,13 @@ class Logger:
 
             # Log rewards and episode length
             if len(self.rewbuffer) > 0:
-                if self.cfg["algorithm"]["rnd_cfg"]:
+                if self.cfg["algorithm"].get("rnd_cfg"):
                     self.writer.add_scalar("Rnd/mean_extrinsic_reward", statistics.mean(self.erewbuffer), it)
                     self.writer.add_scalar("Rnd/mean_intrinsic_reward", statistics.mean(self.irewbuffer), it)
                     self.writer.add_scalar("Rnd/weight", rnd_weight, it)  # type: ignore
                 self.writer.add_scalar("Train/mean_reward", statistics.mean(self.rewbuffer), it)
                 self.writer.add_scalar("Train/mean_episode_length", statistics.mean(self.lenbuffer), it)
-                if self.logger_type != "WandbLogWriter":
+                if not isinstance(self.writer, WandbLogWriter):
                     self.writer.add_scalar(
                         "Train/mean_reward/time", statistics.mean(self.rewbuffer), int(self.tot_time)
                     )
@@ -254,7 +254,7 @@ class Logger:
 
             # Print rewards and episode length
             if len(self.rewbuffer) > 0:
-                if self.cfg["algorithm"]["rnd_cfg"]:
+                if self.cfg["algorithm"].get("rnd_cfg"):
                     log_string += f"""{"Mean extrinsic reward:":>{pad}} {statistics.mean(self.erewbuffer):.2f}\n"""
                     log_string += f"""{"Mean intrinsic reward:":>{pad}} {statistics.mean(self.irewbuffer):.2f}\n"""
                 log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(self.rewbuffer):.2f}\n"""
