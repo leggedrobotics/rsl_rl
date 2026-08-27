@@ -144,10 +144,11 @@ class Distillation:
             self.teacher.reset(hidden_state=self.last_hidden_states[1])
             self.student.detach_hidden_state()
             for batch in self.storage.generator():
-                # Inference of the student for gradient computation, optionally using mixed precision
+                # Optionally use mixed precision for the forward pass and loss computation
                 with torch.amp.autocast(  # type: ignore
                     device_type=torch.device(self.device).type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
                 ):
+                    # Inference of the student for gradient computation
                     actions = self.student(batch.observations)
 
                     # Behavior cloning loss
