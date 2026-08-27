@@ -40,6 +40,7 @@ class Distillation:
         max_grad_norm: float | None = None,
         loss_type: str = "mse",
         optimizer: str = "adam",
+        use_mixed_precision: bool = False,
         device: str = "cpu",
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
@@ -79,6 +80,7 @@ class Distillation:
         self.gradient_length = gradient_length
         self.learning_rate = learning_rate
         self.max_grad_norm = max_grad_norm
+        self.use_mixed_precision = use_mixed_precision
 
         # Warn about rollout steps not used for optimization
         total_steps = num_learning_epochs * storage.num_transitions_per_env
@@ -142,11 +144,15 @@ class Distillation:
             self.teacher.reset(hidden_state=self.last_hidden_states[1])
             self.student.detach_hidden_state()
             for batch in self.storage.generator():
-                # Inference of the student for gradient computation
-                actions = self.student(batch.observations)
+                # Optionally use mixed precision for the forward pass and loss computation
+                with torch.amp.autocast(  # type: ignore
+                    device_type=torch.device(self.device).type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
+                ):
+                    # Inference of the student for gradient computation
+                    actions = self.student(batch.observations)
 
-                # Behavior cloning loss
-                behavior_loss = self.loss_fn(actions, batch.privileged_actions)
+                    # Behavior cloning loss
+                    behavior_loss = self.loss_fn(actions, batch.privileged_actions)
 
                 # Total loss
                 loss = loss + behavior_loss
