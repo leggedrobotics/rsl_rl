@@ -29,6 +29,7 @@ def _make_distillation_setup(
     num_learning_epochs: int = 1,
     obs_normalization: bool = False,
     use_mixed_precision: bool = False,
+    multi_gpu_cfg: dict | None = None,
 ) -> tuple:
     """Build a Distillation instance with small networks."""
     obs = make_obs(NUM_ENVS, OBS_DIM)
@@ -49,6 +50,7 @@ def _make_distillation_setup(
         gradient_length=gradient_length,
         learning_rate=1e-3,
         use_mixed_precision=use_mixed_precision,
+        multi_gpu_cfg=multi_gpu_cfg,
     )
     return alg, obs, storage
 

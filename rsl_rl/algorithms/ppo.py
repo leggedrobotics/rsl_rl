@@ -17,6 +17,9 @@ from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import compile_model, resolve_class, resolve_obs_groups, resolve_optimizer
 
+# Maximum packed-buffer size for multi-GPU gradient reduction.
+_GRAD_REDUCE_BUCKET_BYTES = 25 * 1024 * 1024
+
 
 class PPO:
     """Proximal Policy Optimization algorithm.
@@ -479,16 +482,36 @@ class PPO:
             all_params = chain(all_params, self.rnd.parameters())
         all_params = list(all_params)
         grads = [param.grad.view(-1) for param in all_params if param.grad is not None]
-        all_grads = torch.cat(grads)
-        # Average the gradients across all GPUs
-        torch.distributed.all_reduce(all_grads, op=torch.distributed.ReduceOp.SUM)
-        all_grads /= self.gpu_world_size
-        # Update the gradients for all parameters with the reduced gradients
-        offset = 0
-        for param in all_params:
-            if param.grad is not None:
-                numel = param.numel()
-                # Copy data back from shared buffer
-                param.grad.data.copy_(all_grads[offset : offset + numel].view_as(param.grad.data))
-                # Update the offset for the next parameter
+        # Average the gradients across all GPUs in bounded buckets
+        start = 0
+        while start < len(grads):
+            nbytes = grads[start].numel() * grads[start].element_size()
+            if nbytes > _GRAD_REDUCE_BUCKET_BYTES:
+                # A single gradient larger than the bucket is reduced in contiguous slices
+                flat_grad = grads[start]
+                chunk_numel = max(1, _GRAD_REDUCE_BUCKET_BYTES // flat_grad.element_size())
+                for offset in range(0, flat_grad.numel(), chunk_numel):
+                    chunk = flat_grad.narrow(0, offset, min(chunk_numel, flat_grad.numel() - offset))
+                    torch.distributed.all_reduce(chunk, op=torch.distributed.ReduceOp.SUM)
+                    chunk /= self.gpu_world_size
+                start += 1
+                continue
+
+            filled_bytes = 0
+            end = start
+            while end < len(grads):
+                grad_bytes = grads[end].numel() * grads[end].element_size()
+                if filled_bytes + grad_bytes > _GRAD_REDUCE_BUCKET_BYTES:
+                    break
+                filled_bytes += grad_bytes
+                end += 1
+
+            packed = torch.cat(grads[start:end])
+            torch.distributed.all_reduce(packed, op=torch.distributed.ReduceOp.SUM)
+            packed /= self.gpu_world_size
+            offset = 0
+            for flat_grad in grads[start:end]:
+                numel = flat_grad.numel()
+                flat_grad.copy_(packed[offset : offset + numel])
                 offset += numel
+            start = end
