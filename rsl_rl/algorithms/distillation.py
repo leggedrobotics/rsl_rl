@@ -14,10 +14,13 @@ from tensordict import TensorDict
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import compile_model, resolve_class, resolve_obs_groups, resolve_optimizer
-
-# Maximum packed-buffer size for multi-GPU gradient reduction.
-_GRAD_REDUCE_BUCKET_BYTES = 25 * 1024 * 1024
+from rsl_rl.utils import (
+    compile_model,
+    reduce_gradients_in_buckets,
+    resolve_class,
+    resolve_obs_groups,
+    resolve_optimizer,
+)
 
 
 class Distillation:
@@ -47,6 +50,7 @@ class Distillation:
         device: str = "cpu",
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        grad_reduce_bucket_mb: float = 25,
         **kwargs: dict,  # handle unused config parameters
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
@@ -61,6 +65,7 @@ class Distillation:
         else:
             self.gpu_global_rank = 0
             self.gpu_world_size = 1
+        self.grad_reduce_bucket_mb = grad_reduce_bucket_mb
 
         # Distillation components
         self.student = student.to(self.device)
@@ -307,38 +312,5 @@ class Distillation:
 
         This function is called after the backward pass to synchronize the gradients across all GPUs.
         """
-        # Create a tensor to store the gradients
-        grads = [param.grad.view(-1) for param in self.student.parameters() if param.grad is not None]
         # Average the gradients across all GPUs in bounded buckets
-        start = 0
-        while start < len(grads):
-            nbytes = grads[start].numel() * grads[start].element_size()
-            if nbytes > _GRAD_REDUCE_BUCKET_BYTES:
-                # A single gradient larger than the bucket is reduced in contiguous slices
-                flat_grad = grads[start]
-                chunk_numel = max(1, _GRAD_REDUCE_BUCKET_BYTES // flat_grad.element_size())
-                for offset in range(0, flat_grad.numel(), chunk_numel):
-                    chunk = flat_grad.narrow(0, offset, min(chunk_numel, flat_grad.numel() - offset))
-                    torch.distributed.all_reduce(chunk, op=torch.distributed.ReduceOp.SUM)
-                    chunk /= self.gpu_world_size
-                start += 1
-                continue
-
-            filled_bytes = 0
-            end = start
-            while end < len(grads):
-                grad_bytes = grads[end].numel() * grads[end].element_size()
-                if filled_bytes + grad_bytes > _GRAD_REDUCE_BUCKET_BYTES:
-                    break
-                filled_bytes += grad_bytes
-                end += 1
-
-            packed = torch.cat(grads[start:end])
-            torch.distributed.all_reduce(packed, op=torch.distributed.ReduceOp.SUM)
-            packed /= self.gpu_world_size
-            offset = 0
-            for flat_grad in grads[start:end]:
-                numel = flat_grad.numel()
-                flat_grad.copy_(packed[offset : offset + numel])
-                offset += numel
-            start = end
+        reduce_gradients_in_buckets(self.student.parameters(), self.gpu_world_size, self.grad_reduce_bucket_mb)

@@ -19,10 +19,9 @@ from typing import Any
 
 import pytest
 
-import rsl_rl.algorithms.distillation as distillation_mod
-import rsl_rl.algorithms.ppo as ppo_mod
 from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.storage import RolloutStorage
+from rsl_rl.utils import reduce_gradients_in_buckets
 from tests.algorithms.test_distillation import _fill_distillation_storage, _make_distillation_setup
 from tests.algorithms.test_ppo import NUM_ENVS, NUM_STEPS, OBS_DIM, _build_ppo
 from tests.conftest import make_obs
@@ -31,6 +30,7 @@ _GLOO_AVAILABLE = torch.distributed.is_available() and torch.distributed.is_gloo
 
 # Small enough that the test models mix packed buckets and oversized slices.
 _TINY_BUCKET_BYTES = 256
+_TINY_BUCKET_MB = _TINY_BUCKET_BYTES / (1024 * 1024)
 
 
 def spawn_gloo(worker: Callable[..., None], *extra_args: Any, world_size: int = 2) -> None:
@@ -131,9 +131,6 @@ def _fill_ppo_storage(ppo: PPO, obs: TensorDict) -> None:
 def _reduce_compare_worker(rank: int, world_size: int, store_file: str) -> None:
     init_gloo(rank, world_size, store_file)
     try:
-        ppo_mod._GRAD_REDUCE_BUCKET_BYTES = _TINY_BUCKET_BYTES
-        distillation_mod._GRAD_REDUCE_BUCKET_BYTES = _TINY_BUCKET_BYTES
-
         torch.manual_seed(0)
         ppo, _obs = _build_ppo(multi_gpu_cfg={"global_rank": rank, "world_size": world_size})
         ppo_params = list(chain(ppo.actor.parameters(), ppo.critic.parameters()))
@@ -142,7 +139,7 @@ def _reduce_compare_worker(rank: int, world_size: int, store_file: str) -> None:
         assert any(size > _TINY_BUCKET_BYTES for size in grad_bytes)
         assert any(size <= _TINY_BUCKET_BYTES for size in grad_bytes)
         ppo_ref = _clone_params_with_grads(ppo_params)
-        ppo.reduce_parameters()
+        reduce_gradients_in_buckets(ppo_params, world_size, bucket_mb=_TINY_BUCKET_MB)
         _reduce_with_full_concat(ppo_ref, world_size)
         _assert_param_grads_equal(ppo_params, ppo_ref)
         assert ppo_params[0].grad is None
@@ -152,7 +149,7 @@ def _reduce_compare_worker(rank: int, world_size: int, store_file: str) -> None:
         student_params = list(alg.student.parameters())
         _assign_mixed_grads(student_params, rank + 2)
         student_ref = _clone_params_with_grads(student_params)
-        alg.reduce_parameters()
+        reduce_gradients_in_buckets(student_params, world_size, bucket_mb=_TINY_BUCKET_MB)
         _reduce_with_full_concat(student_ref, world_size)
         _assert_param_grads_equal(student_params, student_ref)
         assert student_params[0].grad is None
