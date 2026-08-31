@@ -1,0 +1,32 @@
+# Chrono + Gymnasium PPO — rsl-rl-lib 2.3.x (ActorCritic schema)
+#
+# Example training config for Chrono-Gymnasium-style locomotion reproducers
+# (e.g. gym-chrono ChronoViperWalk-v0, Chrono::Ray quadruped workflows).
+#
+#   import yaml
+#   train_cfg = yaml.safe_load(open("config/examples/chrono_gymnasium_ppo_2x.yaml"))
+
+algorithm:
+  class_name: PPO
+  value_loss_coef: 1.0
+  use_clipped_value_loss: true
+  clip_param: 0.2
+  entropy_coef: 0.005
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  learning_rate: 0.001
+  schedule: adaptive
+  gamma: 0.99
+  lam: 0.95
+  desired_kl: 0.01
+  max_grad_norm: 1.0
+policy:
+  class_name: ActorCritic
+  actor_hidden_dims: [512, 256, 128]
+  critic_hidden_dims: [512, 256, 128]
+  activation: elu
+  init_noise_std: 1.0
+num_steps_per_env: 24
+save_interval: 50
+empirical_normalization: false
+max_iterations: 1000000
