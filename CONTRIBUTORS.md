@@ -43,6 +43,7 @@ Please keep the lists sorted alphabetically.
 * Özhan Özen
 * Pascal Roth
 * Shaoshu Su
+* Shiqi Ren
 * Zeng Qingcheng
 * Zhang Chong
 * Ziqi Fan

@@ -246,6 +246,12 @@ PPO
      - dict | None
      - ``None``
      - Optional symmetry extension configuration.
+   * - ``grad_reduce_bucket_mb``
+     - float
+     - ``25``
+     - Maximum size, in megabytes, of a single packed gradient buffer used when reducing gradients
+       across GPUs during multi-GPU training. Matches
+       :class:`torch.nn.parallel.DistributedDataParallel`'s default ``bucket_cap_mb``.
 
 Distillation
 ^^^^^^^^^^^^
@@ -291,6 +297,12 @@ Distillation
      - ``False``
      - Whether to run the forward pass and loss computation in bfloat16 autocast. Backward, gradient clipping, and
        the optimizer step always stay in fp32.
+   * - ``grad_reduce_bucket_mb``
+     - float
+     - ``25``
+     - Maximum size, in megabytes, of a single packed gradient buffer used when reducing gradients
+       across GPUs during multi-GPU training. Matches
+       :class:`torch.nn.parallel.DistributedDataParallel`'s default ``bucket_cap_mb``.
 
 Model Configuration
 -------------------

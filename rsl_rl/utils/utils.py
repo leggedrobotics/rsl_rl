@@ -11,6 +11,7 @@ import importlib
 import pkgutil
 import torch
 import warnings
+from collections.abc import Iterable
 from tensordict import TensorDict
 from typing import Any, Callable
 
@@ -330,6 +331,56 @@ def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.M
             f"forward pattern. Use 'default' or 'max-autotune-no-cudagraphs', or set to None to disable."
         )
     return torch.compile(model, mode=mode)  # type: ignore
+
+
+def reduce_gradients_in_buckets(params: Iterable[torch.nn.Parameter], world_size: int, bucket_mb: float) -> None:
+    """Average gradients across GPUs in bounded-size buckets.
+
+    Gradients are packed into buffers of at most ``bucket_mb`` and reduced with a single
+    ``all_reduce`` call per buffer. A gradient larger than the bucket on its own is reduced in
+    contiguous slices instead. This bounds the size of the temporary packed buffer while still
+    batching small gradients together to limit the number of collective calls.
+
+    Args:
+        params: Parameters whose gradients should be reduced. Parameters with no gradient are skipped.
+        world_size: Number of distributed processes to average the summed gradients over.
+        bucket_mb: Maximum size, in megabytes, of a single packed buffer.
+    """
+    bucket_bytes = int(bucket_mb * 1024 * 1024)
+    grads = [param.grad.view(-1) for param in params if param.grad is not None]
+    start = 0
+    while start < len(grads):
+        nbytes = grads[start].numel() * grads[start].element_size()
+        if nbytes > bucket_bytes:
+            # A single gradient larger than the bucket is reduced in contiguous slices
+            flat_grad = grads[start]
+            chunk_numel = max(1, bucket_bytes // flat_grad.element_size())
+            for offset in range(0, flat_grad.numel(), chunk_numel):
+                chunk = flat_grad.narrow(0, offset, min(chunk_numel, flat_grad.numel() - offset))
+                torch.distributed.all_reduce(chunk, op=torch.distributed.ReduceOp.SUM)
+                chunk /= world_size
+            start += 1
+            continue
+
+        filled_bytes = 0
+        end = start
+        while end < len(grads):
+            # A smaller gradient is packed with others until the bucket is full
+            grad_bytes = grads[end].numel() * grads[end].element_size()
+            if filled_bytes + grad_bytes > bucket_bytes:
+                break
+            filled_bytes += grad_bytes
+            end += 1
+
+        packed = torch.cat(grads[start:end])
+        torch.distributed.all_reduce(packed, op=torch.distributed.ReduceOp.SUM)
+        packed /= world_size
+        offset = 0
+        for flat_grad in grads[start:end]:
+            numel = flat_grad.numel()
+            flat_grad.copy_(packed[offset : offset + numel])
+            offset += numel
+        start = end
 
 
 def split_and_pad_trajectories(

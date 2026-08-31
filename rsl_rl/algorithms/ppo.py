@@ -15,7 +15,13 @@ from rsl_rl.env import VecEnv
 from rsl_rl.extensions import RandomNetworkDistillation, Symmetry, resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import compile_model, resolve_class, resolve_obs_groups, resolve_optimizer
+from rsl_rl.utils import (
+    compile_model,
+    reduce_gradients_in_buckets,
+    resolve_class,
+    resolve_obs_groups,
+    resolve_optimizer,
+)
 
 
 class PPO:
@@ -58,6 +64,7 @@ class PPO:
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        grad_reduce_bucket_mb: float = 25,
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
         # Device-related parameters
@@ -71,6 +78,7 @@ class PPO:
         else:
             self.gpu_global_rank = 0
             self.gpu_world_size = 1
+        self.grad_reduce_bucket_mb = grad_reduce_bucket_mb
 
         # RND extension
         self.rnd = RandomNetworkDistillation(device=self.device, **rnd_cfg) if rnd_cfg else None
@@ -469,21 +477,8 @@ class PPO:
         This function is called after the backward pass to synchronize the gradients across all GPUs.
         """
         # Create a tensor to store the gradients
-        all_params = chain(self.actor.parameters(), self.critic.parameters())
+        params = chain(self.actor.parameters(), self.critic.parameters())
         if self.rnd:
-            all_params = chain(all_params, self.rnd.parameters())
-        all_params = list(all_params)
-        grads = [param.grad.view(-1) for param in all_params if param.grad is not None]
-        all_grads = torch.cat(grads)
-        # Average the gradients across all GPUs
-        torch.distributed.all_reduce(all_grads, op=torch.distributed.ReduceOp.SUM)
-        all_grads /= self.gpu_world_size
-        # Update the gradients for all parameters with the reduced gradients
-        offset = 0
-        for param in all_params:
-            if param.grad is not None:
-                numel = param.numel()
-                # Copy data back from shared buffer
-                param.grad.data.copy_(all_grads[offset : offset + numel].view_as(param.grad.data))
-                # Update the offset for the next parameter
-                offset += numel
+            params = chain(params, self.rnd.parameters())
+        # Average the gradients across all GPUs in bounded buckets
+        reduce_gradients_in_buckets(params, self.gpu_world_size, self.grad_reduce_bucket_mb)
