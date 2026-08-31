@@ -33,6 +33,7 @@ Please keep the lists sorted alphabetically.
 * Emilio Palma
 * Eric Vollenweider
 * Fabian Jenelten
+* Jichuan Hu
 * Kohei Sendai
 * Lorenzo Terenzi
 * Marko Bjelonic
