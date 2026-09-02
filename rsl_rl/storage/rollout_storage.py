@@ -227,8 +227,12 @@ class RolloutStorage:
         if self.training_type != "rl":
             raise ValueError("This function is only available for reinforcement learning training.")
         batch_size = self.num_envs * self.num_transitions_per_env
-        mini_batch_size = batch_size // num_mini_batches
-        indices = torch.randperm(num_mini_batches * mini_batch_size, requires_grad=False, device=self.device)
+        if num_mini_batches < 1:
+            raise ValueError("num_mini_batches must be at least 1.")
+        if num_mini_batches > batch_size:
+            raise ValueError("num_mini_batches cannot be greater than the number of collected transitions.")
+        mini_batch_size, remainder = divmod(batch_size, num_mini_batches)
+        indices = torch.randperm(batch_size, requires_grad=False, device=self.device)
 
         # Flatten the data
         observations = self.observations.flatten(0, 1)
@@ -242,8 +246,8 @@ class RolloutStorage:
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
                 # Select the indices for the mini-batch
-                start = i * mini_batch_size
-                stop = (i + 1) * mini_batch_size
+                start = i * mini_batch_size + min(i, remainder)
+                stop = start + mini_batch_size + (i < remainder)
                 batch_idx = indices[start:stop]
 
                 # Yield the mini-batch
@@ -264,15 +268,19 @@ class RolloutStorage:
         """Yield trajectory mini-batches with masks and recurrent hidden states."""
         if self.training_type != "rl":
             raise ValueError("This function is only available for reinforcement learning training.")
+        if num_mini_batches < 1:
+            raise ValueError("num_mini_batches must be at least 1.")
+        if num_mini_batches > self.num_envs:
+            raise ValueError("num_mini_batches cannot be greater than the number of environments.")
         padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.observations, self.dones)
-        mini_batch_size = self.num_envs // num_mini_batches
+        mini_batch_size, remainder = divmod(self.num_envs, num_mini_batches)
 
         for ep in range(num_epochs):
             first_traj = 0
             for i in range(num_mini_batches):
                 # Select the indices for the mini-batch
-                start = i * mini_batch_size
-                stop = (i + 1) * mini_batch_size
+                start = i * mini_batch_size + min(i, remainder)
+                stop = start + mini_batch_size + (i < remainder)
 
                 dones = self.dones.squeeze(-1)
                 last_was_done = torch.zeros_like(dones, dtype=torch.bool)

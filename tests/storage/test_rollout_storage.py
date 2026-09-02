@@ -115,6 +115,35 @@ class TestMiniBatchGenerator:
                 "Actions and values should index the same transitions"
             )
 
+    def test_non_divisible_rollout_keeps_every_transition(self) -> None:
+        """A remainder transition must not be silently dropped when batches are uneven."""
+        num_envs, num_steps, num_mini_batches = 5, 2, 3
+        obs = make_obs(num_envs, OBS_DIM)
+        storage = RolloutStorage("rl", num_envs, num_steps, obs, [NUM_ACTIONS])
+
+        for step in range(num_steps):
+            t = RolloutStorage.Transition()
+            t.observations = obs
+            t.hidden_states = (None, None)
+            # Encode both dimensions so every flattened transition is unique.
+            ids = torch.arange(num_envs, dtype=torch.float32) + step * num_envs
+            t.actions = ids.unsqueeze(-1).expand(-1, NUM_ACTIONS)
+            t.values = ids.unsqueeze(-1)
+            t.actions_log_prob = ids
+            t.distribution_params = (t.actions.clone(), torch.ones_like(t.actions))
+            t.rewards = ids
+            t.dones = torch.zeros(num_envs)
+            storage.add_transition(t)
+
+        storage.returns = torch.zeros_like(storage.returns)
+        storage.advantages = torch.zeros_like(storage.advantages)
+        batches = list(storage.mini_batch_generator(num_mini_batches, num_epochs=1))
+
+        collected = torch.cat([batch.actions[:, 0] for batch in batches])
+        expected = torch.arange(num_envs * num_steps, dtype=torch.float32)
+        assert collected.numel() == expected.numel()
+        assert torch.equal(torch.sort(collected).values, expected)
+
 
 class TestRecurrentMiniBatchGenerator:
     """Tests for ``recurrent_mini_batch_generator`` — trajectory counting, env/trajectory alignment."""
@@ -233,6 +262,44 @@ class TestRecurrentMiniBatchGenerator:
         h1 = batches[1].hidden_states[0]
         assert h1 is not None
         assert torch.allclose(h1, torch.zeros_like(h1)), "Envs without dones should all have step-0 hidden states"
+
+    def test_non_divisible_env_count_keeps_every_environment(self) -> None:
+        """Uneven recurrent environment splits must retain actions and trajectory state for the remainder envs."""
+        num_envs, num_steps, num_mini_batches = 5, 4, 2
+        obs = make_obs(num_envs, OBS_DIM)
+        storage = RolloutStorage("rl", num_envs, num_steps, obs, [NUM_ACTIONS])
+
+        for step in range(num_steps):
+            t = RolloutStorage.Transition()
+            t.observations = TensorDict(
+                {"policy": torch.arange(num_envs).float().unsqueeze(1).expand(-1, OBS_DIM)},
+                batch_size=[num_envs],
+            )
+            t.hidden_states = (torch.full((1, num_envs, 2), float(step)), None)
+            env_ids = torch.arange(num_envs, dtype=torch.float32)
+            t.actions = env_ids.unsqueeze(-1).expand(-1, NUM_ACTIONS)
+            t.values = torch.zeros(num_envs, 1)
+            t.actions_log_prob = torch.zeros(num_envs)
+            t.distribution_params = (torch.zeros(num_envs, NUM_ACTIONS), torch.ones(num_envs, NUM_ACTIONS))
+            t.rewards = torch.zeros(num_envs)
+            t.dones = torch.zeros(num_envs)
+            if step == 1:
+                t.dones[-1] = 1.0
+            storage.add_transition(t)
+
+        storage.returns = torch.zeros_like(storage.returns)
+        storage.advantages = torch.zeros_like(storage.advantages)
+        batches = list(storage.recurrent_mini_batch_generator(num_mini_batches, num_epochs=1))
+
+        collected_env_ids = torch.cat([batch.actions[0, :, 0] for batch in batches])
+        assert torch.equal(torch.sort(collected_env_ids).values, torch.arange(num_envs, dtype=torch.float32))
+
+        # The final environment has two trajectories; its restart hidden state must be retained in its batch.
+        final_batch = batches[-1]
+        assert final_batch.observations["policy"].shape[1] == 3
+        assert final_batch.hidden_states[0] is not None
+        assert final_batch.hidden_states[0].shape[1] == 3
+        assert torch.allclose(final_batch.hidden_states[0][0, 2], torch.full((2,), 2.0))
 
 
 class TestDistillationStorage:
