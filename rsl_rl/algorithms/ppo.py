@@ -127,7 +127,7 @@ class PPO:
         self.transition.hidden_states = (self.actor.get_hidden_state(), self.critic.get_hidden_state())
         # Compute the actions and values
         self.transition.actions = self.actor(obs, stochastic_output=True).detach()
-        self.transition.values = self.critic(obs).detach()
+        self.transition.values = self.compute_value_estimate(obs)
         self.transition.actions_log_prob = self.actor.get_output_log_prob(self.transition.actions).detach()  # type: ignore
         self.transition.distribution_params = tuple(p.detach() for p in self.actor.output_distribution_params)
         # Record observations before env.step()
@@ -168,7 +168,7 @@ class PPO:
         st = self.storage
         # Compute values for the last step
         critic_hidden_state = self.critic.get_hidden_state()
-        last_values = self.critic(obs).detach()
+        last_values = self.compute_value_estimate(obs)
         # Restore the critic's hidden state so the next rollout is not affected by the forward pass
         self.critic.reset(hidden_state=critic_hidden_state)
         # Compute returns and advantages
@@ -189,6 +189,48 @@ class PPO:
         # Normalize the advantages if per minibatch normalization is not used
         if not self.normalize_advantage_per_mini_batch:
             st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
+
+    def compute_value_estimate(self, obs: TensorDict) -> torch.Tensor:
+        """Compute scalar value estimate from observations.
+
+        Subclasses (e.g. distributional critics or ensemble critics) can override
+        this method to customize how scalar value estimates are computed for
+        GAE advantage estimation.
+
+        Args:
+            obs: Observation dictionary.
+
+        Returns:
+            Scalar value estimate tensor.
+        """
+        return self.critic(obs).detach()
+
+    def compute_critic_loss(
+        self,
+        value_preds: torch.Tensor,
+        returns: torch.Tensor,
+        old_value_preds: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute value function loss.
+
+        Subclasses can override this method to implement custom critic objectives
+        (e.g., Quantile Huber loss for distributional critics).
+
+        Args:
+            value_preds: Current value predictions from the critic.
+            returns: Target returns.
+            old_value_preds: Value predictions from rollout before update.
+
+        Returns:
+            Scalar value loss tensor.
+        """
+        if self.use_clipped_value_loss:
+            value_clipped = old_value_preds + (value_preds - old_value_preds).clamp(-self.clip_param, self.clip_param)
+            value_losses = (value_preds - returns).pow(2)
+            value_losses_clipped = (value_clipped - returns).pow(2)
+            return torch.max(value_losses, value_losses_clipped).mean()
+        else:
+            return (returns - value_preds).pow(2).mean()
 
     def update(self) -> dict[str, float]:
         """Run optimization epochs over stored batches and return mean losses."""
@@ -274,13 +316,7 @@ class PPO:
                 surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
                 # Value function loss
-                if self.use_clipped_value_loss:
-                    value_clipped = batch.values + (values - batch.values).clamp(-self.clip_param, self.clip_param)
-                    value_losses = (values - batch.returns).pow(2)
-                    value_losses_clipped = (value_clipped - batch.returns).pow(2)
-                    value_loss = torch.max(value_losses, value_losses_clipped).mean()
-                else:
-                    value_loss = (batch.returns - values).pow(2).mean()
+                value_loss = self.compute_critic_loss(values, batch.returns, batch.values)
 
                 loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
 
@@ -448,7 +484,9 @@ class PPO:
         print(f"Actor Model: {actor}")
         if alg_cfg.pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critic
             critic_cfg["cnns"] = actor.cnns
-        critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **critic_cfg).to(device)
+        critic: MLPModel = critic_class(
+            obs, cfg["obs_groups"], "critic", critic_cfg.pop("output_dim", 1), **critic_cfg
+        ).to(device)
         print(f"Critic Model: {critic}")
 
         # Initialize the storage
