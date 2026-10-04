@@ -67,7 +67,7 @@ OnPolicyRunner
    * - ``check_for_nan``
      - bool
      - ``True``
-     - Whether to check for NaN values coming from the environment.
+     - Whether to check for NaN or Inf values coming from the environment.
    * - ``torch_compile_mode``
      - str | None
      - ``None``
