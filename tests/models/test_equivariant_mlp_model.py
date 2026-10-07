@@ -103,3 +103,16 @@ class TestEquivariantMLPModel:
             EquivariantMLPModel(
                 make_obs(), OBS_GROUPS, "actor", ACT_DIM, hidden_dims=HIDDEN, symmetry_cfg={"obs": ACT_CFG}
             )
+
+    def test_rejects_structured_distribution(self) -> None:
+        """Distributions with a structured MLP output are reported as unsupported, not as a size mismatch."""
+        with pytest.raises(NotImplementedError, match="HeteroscedasticGaussianDistribution"):
+            EquivariantMLPModel(
+                make_obs(),
+                OBS_GROUPS,
+                "actor",
+                ACT_DIM,
+                hidden_dims=HIDDEN,
+                distribution_cfg={"class_name": "HeteroscedasticGaussianDistribution"},
+                symmetry_cfg={"obs": OBS_CFG, "output": ACT_CFG},
+            )

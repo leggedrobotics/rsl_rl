@@ -98,6 +98,14 @@ class TestEquivariantLinear:
         with torch.no_grad():
             assert torch.allclose(layer(obs), layer.fold()(obs), atol=1e-6)
 
+    def test_initial_scale_matches_plain_linear(self) -> None:
+        """The projected weight starts at the scale of an nn.Linear, so deep networks do not start shrunk."""
+        torch.manual_seed(0)
+        layer = EquivariantLinear(SignedPermutation.regular(512), SignedPermutation.regular(512))
+        weight, _ = layer.equivariant_weight()
+        plain = torch.nn.Linear(512, 512).weight
+        assert weight.std().item() == pytest.approx(plain.std().item(), rel=0.05)
+
 
 class TestEquivariantMLP:
     """Tests for ``EquivariantMLP``."""

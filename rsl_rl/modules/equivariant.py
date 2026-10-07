@@ -146,6 +146,14 @@ class EquivariantLinear(nn.Module):
         self.weight = nn.Parameter(torch.empty(len(rep_out), len(rep_in)))
         self.bias = nn.Parameter(torch.zeros(len(rep_out)))
         nn.init.kaiming_uniform_(self.weight, a=5**0.5)
+        # The projection averages each entry with its independently initialized mirror partner, which halves its
+        # variance. Compensate so the projected weight starts at the scale of a plain nn.Linear; entries that are
+        # their own partner are left unchanged by the projection (or zeroed by it) and need no correction.
+        self_paired = (rep_out.perm.unsqueeze(1) == torch.arange(len(rep_out)).unsqueeze(1)) & (
+            rep_in.perm.unsqueeze(0) == torch.arange(len(rep_in)).unsqueeze(0)
+        )
+        with torch.no_grad():
+            self.weight[~self_paired] *= 2**0.5
 
     @property
     def in_features(self) -> int:

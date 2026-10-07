@@ -73,6 +73,9 @@ class EquivariantMLPModel(MLPModel):
         Raises:
             ValueError: If ``symmetry_cfg`` is missing, if ``obs_normalization`` is requested, or if the
                 observation representation does not match the observation dimension.
+            NotImplementedError: If the distribution expects a structured MLP output, e.g.
+                :class:`~rsl_rl.modules.HeteroscedasticGaussianDistribution` or
+                :class:`~rsl_rl.modules.BetaDistribution`.
         """
         if symmetry_cfg is None or "obs" not in symmetry_cfg:
             raise ValueError("EquivariantMLPModel requires symmetry_cfg with an 'obs' representation")
@@ -94,6 +97,11 @@ class EquivariantMLPModel(MLPModel):
             )
 
         mlp_output_dim = self.distribution.input_dim if self.distribution is not None else output_dim
+        if not isinstance(mlp_output_dim, int):
+            raise NotImplementedError(
+                f"{type(self.distribution).__name__} expects a structured MLP output of shape {mlp_output_dim}, which"
+                " EquivariantMLPModel does not support. Use EquivariantGaussianDistribution instead."
+            )
         if "output" in symmetry_cfg:
             rep_out = SignedPermutation(**symmetry_cfg["output"])
             if len(rep_out) != mlp_output_dim:
