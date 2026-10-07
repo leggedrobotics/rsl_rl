@@ -9,7 +9,7 @@ from __future__ import annotations
 from tensordict import TensorDict
 
 from rsl_rl.models.mlp_model import MLPModel
-from rsl_rl.modules.equivariant import EquivariantMLP, SignedPermutation
+from rsl_rl.modules.equivariant import EquivariantMLP, SignedPermutation, SymmetricEmpiricalNormalization
 
 __all__ = ["EquivariantMLPModel"]
 
@@ -32,8 +32,9 @@ class EquivariantMLPModel(MLPModel):
     normalization, distribution handling, export and hidden-state management are inherited unchanged.
 
     .. note::
-        Observation normalization is not compatible with equivariance, because per-dimension statistics are
-        generally not symmetric. Passing ``obs_normalization=True`` therefore raises.
+        With ``obs_normalization=True`` the observations are normalized by
+        :class:`~rsl_rl.modules.SymmetricEmpiricalNormalization`, whose statistics are symmetrized so that
+        normalization does not break equivariance.
     """
 
     def __init__(
@@ -58,7 +59,7 @@ class EquivariantMLPModel(MLPModel):
             hidden_dims: Hidden dimensions of the MLP. Each must be even, since the hidden layers carry the
                 regular representation of the order-two group.
             activation: Activation function of the MLP.
-            obs_normalization: Must be False; normalization would break equivariance.
+            obs_normalization: Whether to normalize the observations with symmetrized running statistics.
             distribution_cfg: Configuration dictionary for the output distribution. To keep *sampling*
                 equivariant and not only the mean, use
                 :class:`~rsl_rl.modules.EquivariantGaussianDistribution`.
@@ -71,19 +72,14 @@ class EquivariantMLPModel(MLPModel):
                     }
 
         Raises:
-            ValueError: If ``symmetry_cfg`` is missing, if ``obs_normalization`` is requested, or if the
-                observation representation does not match the observation dimension.
+            ValueError: If ``symmetry_cfg`` is missing, or if the observation representation does not match the
+                observation dimension.
             NotImplementedError: If the distribution expects a structured MLP output, e.g.
                 :class:`~rsl_rl.modules.HeteroscedasticGaussianDistribution` or
                 :class:`~rsl_rl.modules.BetaDistribution`.
         """
         if symmetry_cfg is None or "obs" not in symmetry_cfg:
             raise ValueError("EquivariantMLPModel requires symmetry_cfg with an 'obs' representation")
-        if obs_normalization:
-            raise ValueError(
-                "obs_normalization breaks equivariance: the running statistics are not symmetric. "
-                "Disable it, or normalize with symmetry-aware statistics outside the model."
-            )
 
         super().__init__(
             obs, obs_groups, obs_set, output_dim, hidden_dims, activation, obs_normalization, distribution_cfg
@@ -113,7 +109,9 @@ class EquivariantMLPModel(MLPModel):
             # No output representation: the model is invariant, which is what a critic needs.
             rep_out = SignedPermutation.identity(mlp_output_dim)
 
-        # Replace the MLP head. Everything else in MLPModel is reused as is.
+        # Replace the normalizer and the MLP head. Everything else in MLPModel is reused as is.
+        if obs_normalization:
+            self.obs_normalizer = SymmetricEmpiricalNormalization(rep_in)
         self.mlp = EquivariantMLP(rep_in, rep_out, hidden_dims, activation)
         if self.distribution is not None:
             self.distribution.init_mlp_weights(self.mlp)

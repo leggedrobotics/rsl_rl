@@ -84,18 +84,30 @@ class TestEquivariantMLPModel:
         with pytest.raises(ValueError, match="symmetry_cfg"):
             EquivariantMLPModel(make_obs(), OBS_GROUPS, "actor", ACT_DIM, hidden_dims=HIDDEN)
 
-    def test_rejects_observation_normalization(self) -> None:
-        """Running observation statistics are not symmetric, so normalization is refused."""
-        with pytest.raises(ValueError, match="obs_normalization"):
-            EquivariantMLPModel(
-                make_obs(),
-                OBS_GROUPS,
-                "actor",
-                ACT_DIM,
-                hidden_dims=HIDDEN,
-                obs_normalization=True,
-                symmetry_cfg={"obs": OBS_CFG},
-            )
+    def test_normalized_model_stays_equivariant(self) -> None:
+        """With asymmetric data, the normalization statistics stay symmetric and the model equivariant."""
+        obs = make_obs()
+        model = EquivariantMLPModel(
+            obs,
+            OBS_GROUPS,
+            "actor",
+            ACT_DIM,
+            hidden_dims=HIDDEN,
+            obs_normalization=True,
+            symmetry_cfg={"obs": OBS_CFG, "output": ACT_CFG},
+        )
+        # Data that is strongly biased towards one side of the robot.
+        for _ in range(5):
+            biased = make_obs()
+            biased["policy"] = biased["policy"] * torch.linspace(0.5, 3.0, OBS_DIM) + torch.linspace(-2.0, 2.0, OBS_DIM)
+            model.update_normalization(biased)
+        rep_in = SignedPermutation(OBS_PERM, OBS_SIGN)
+        rep_out = SignedPermutation(ACT_PERM, ACT_SIGN)
+        normalizer = model.obs_normalizer
+        assert torch.equal(rep_in(normalizer.mean), normalizer.mean)
+        assert torch.equal(normalizer.std[rep_in.perm], normalizer.std)
+        with torch.no_grad():
+            assert torch.allclose(rep_out(model(obs)), model(mirror_obs(obs)), atol=1e-5)
 
     def test_rejects_mismatched_representation(self) -> None:
         """A representation whose size does not match the observation is an error, not a silent reshape."""

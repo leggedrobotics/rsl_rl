@@ -9,9 +9,10 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from rsl_rl.modules.normalization import EmpiricalNormalization
 from rsl_rl.utils import resolve_nn_activation
 
-__all__ = ["EquivariantLinear", "EquivariantMLP", "SignedPermutation"]
+__all__ = ["EquivariantLinear", "EquivariantMLP", "SignedPermutation", "SymmetricEmpiricalNormalization"]
 
 
 class SignedPermutation:
@@ -239,3 +240,35 @@ class EquivariantMLP(nn.Sequential):
     def fold(self) -> nn.Sequential:
         """Return an ordinary :class:`torch.nn.Sequential` computing the same function."""
         return nn.Sequential(*[m.fold() if isinstance(m, EquivariantLinear) else m for m in self])
+
+
+class SymmetricEmpiricalNormalization(EmpiricalNormalization):
+    """Empirical normalization whose statistics are symmetric, so that it commutes with the symmetry.
+
+    Normalization satisfies ``N(M x) = M N(x)`` only if mirrored entries share their standard deviation and the
+    mean satisfies ``mean == M mean``. Running statistics of real data violate both as soon as the policy or the
+    environment is slightly asymmetric. This normalizer therefore learns the statistics of the data together with
+    its mirror image, and projects them onto the symmetric subspace after every update, so the constraint holds
+    exactly rather than up to the floating-point error of the running average.
+    """
+
+    def __init__(self, rep: SignedPermutation, eps: float = 1e-2, until: int | None = None) -> None:
+        """Initialize the normalizer.
+
+        Args:
+            rep: Representation acting on the normalized values.
+            eps: Small value for stability.
+            until: If specified, the module learns input values until the sum of batch sizes exceeds it.
+        """
+        # Every update also learns the mirrored batch, which doubles the sample count.
+        super().__init__(len(rep), eps, None if until is None else 2 * until)
+        self.register_buffer("perm", rep.perm)
+        self.register_buffer("sign", rep.sign)
+
+    @torch.jit.unused
+    def update(self, x: torch.Tensor) -> None:
+        """Learn the input values and their mirror image."""
+        super().update(torch.cat([x, x.index_select(-1, self.perm) * self.sign], dim=0))
+        self._mean.copy_(0.5 * (self._mean + self._mean.index_select(-1, self.perm) * self.sign))
+        self._var.copy_(0.5 * (self._var + self._var.index_select(-1, self.perm)))
+        self._std = torch.sqrt(self._var)
