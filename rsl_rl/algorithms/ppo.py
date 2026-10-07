@@ -381,6 +381,7 @@ class PPO:
         if self.rnd:
             saved_dict["rnd_state_dict"] = self.rnd.state_dict()
             saved_dict["rnd_optimizer_state_dict"] = self.rnd.optimizer.state_dict()
+            saved_dict["rnd_update_counter"] = self.rnd.update_counter
         return saved_dict
 
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
@@ -406,6 +407,7 @@ class PPO:
         if load_cfg.get("rnd") and self.rnd:
             self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
             self.rnd.optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
+            self.rnd.update_counter = loaded_dict.get("rnd_update_counter", 0)
         return load_cfg.get("iteration", False)
 
     def get_policy(self) -> MLPModel:
