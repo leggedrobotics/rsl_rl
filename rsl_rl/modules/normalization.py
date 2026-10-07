@@ -137,7 +137,7 @@ class _DiscountedAverage:
     def update(self, rew: torch.Tensor) -> torch.Tensor:
         """Update and return the discounted running average."""
         if self.avg is None:
-            self.avg = rew
+            self.avg = rew.clone()
         else:
             self.avg = self.avg * self.gamma + rew
         return self.avg
