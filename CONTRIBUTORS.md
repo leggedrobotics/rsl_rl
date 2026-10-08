@@ -33,7 +33,6 @@ Please keep the lists sorted alphabetically.
 * Emilio Palma
 * Eric Vollenweider
 * Fabian Jenelten
-* Hugo
 * Jichuan Hu
 * Kohei Sendai
 * Lorenzo Terenzi
@@ -45,6 +44,7 @@ Please keep the lists sorted alphabetically.
 * Pascal Roth
 * Shaoshu Su
 * Shiqi Ren
+* Yuguo Shan
 * Zeng Qingcheng
 * Zhang Chong
 * Ziqi Fan
