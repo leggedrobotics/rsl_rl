@@ -19,6 +19,15 @@ NUM_ENVS = 4
 NUM_STEPS = 8
 OBS_DIM = 8
 NUM_ACTIONS = 4
+RND_CFG = {
+    "num_states": OBS_DIM,
+    "obs_groups": {"rnd_state": ["policy"]},
+    "num_outputs": 4,
+    "predictor_hidden_dims": [32],
+    "target_hidden_dims": [32],
+    "weight": 2.0,
+    "weight_schedule": {"mode": "step", "final_step": 4, "final_value": 0.25},
+}
 
 
 def _make_actor(obs: TensorDict, obs_groups: dict, num_actions: int = 4, **kwargs: object) -> MLPModel:
@@ -382,3 +391,27 @@ class TestMixedPrecision:
         assert all(torch.isfinite(torch.tensor(v)) for v in loss_dict.values())
         after = list(ppo.actor.parameters())
         assert any(not torch.equal(b, a) for b, a in zip(before, after)), "actor params should change"
+
+
+class TestCheckpoint:
+    """Tests for saving and loading PPO checkpoints."""
+
+    def test_rnd_weight_schedule_resumes(self) -> None:
+        """Loading a checkpoint should continue the RND weight schedule where it stopped."""
+        source, obs = _build_ppo(rnd_cfg=RND_CFG)
+        for _ in range(3):
+            source.rnd.get_intrinsic_reward(obs)
+        restored, _ = _build_ppo(rnd_cfg=RND_CFG)
+        restored.load(source.save(), load_cfg=None, strict=True)
+        assert restored.rnd.update_counter == 3
+        restored.rnd.get_intrinsic_reward(obs)
+        assert restored.rnd.weight == 0.25
+
+    def test_legacy_checkpoint_without_rnd_counter_loads(self) -> None:
+        """Checkpoints saved before the RND counter was stored should still load."""
+        source, _ = _build_ppo(rnd_cfg=RND_CFG)
+        checkpoint = source.save()
+        del checkpoint["rnd_update_counter"]
+        restored, _ = _build_ppo(rnd_cfg=RND_CFG)
+        restored.load(checkpoint, load_cfg=None, strict=True)
+        assert restored.rnd.update_counter == 0
