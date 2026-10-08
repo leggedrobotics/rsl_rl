@@ -5,6 +5,12 @@ researchers to prototype and test new ideas without the overhead of modifying la
 be used out-of-the-box by installing it via [PyPI](https://pypi.org/project/rsl-rl-lib/), supports multi-GPU training,
 and features common algorithms for robot learning.
 
+> [!NOTE]
+> Additional algorithms, models, and more, mainly contributed by the community, can be found on the
+> [`extras`](https://github.com/leggedrobotics/rsl_rl/tree/extras) branch. This allows us to keep the core library on
+> `main` minimal and easy to start with. To see a list of the additional features, please check the
+> [Extras Documentation](https://leggedrobotics.github.io/rsl_rl/extras/).
+
 ## Key Features
 
 - **Minimal, readable codebase** with clear extension points for rapid prototyping.
