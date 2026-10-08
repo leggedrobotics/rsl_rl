@@ -12,17 +12,13 @@ Library Features
 ----------------
 
 RSL-RL is intentionally kept minimal and focuses on a small set of components that cover common robotics workflows while
-remaining easy to adapt. The following sections summarize the main features currently available.
+remaining easy to adapt. The following sections summarize the main features, as well as the additional features of the
+``extras`` branch.
 
 .. note::
    Adding new algorithms, models, or loggers is straightforward and does not require modifying the library itself.
    Custom classes can simply be passed as part of the configuration, enabling users to work with the pip version of the
    library.
-
-.. note::
-   More features are available on the ``extras`` branch. This allows us to keep the core library on ``main`` minimal 
-   and easy to start with. To see a list of the additional features, please check the 
-   `Extras Documentation <https://leggedrobotics.github.io/rsl_rl/extras/>`_.
 
 Algorithms
 ^^^^^^^^^^

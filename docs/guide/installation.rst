@@ -10,13 +10,13 @@ Installing RSL-RL as a dependency
 
 .. code-block:: bash
 
-   pip install rsl-rl-lib
+   pip install git+https://github.com/leggedrobotics/rsl_rl.git@extras
 
 Installing RSL-RL for development
 ---------------------------------
 
 .. code-block:: bash
 
-   git clone https://github.com/leggedrobotics/rsl_rl
+   git clone -b extras https://github.com/leggedrobotics/rsl_rl
    cd rsl_rl
    pip install -e .

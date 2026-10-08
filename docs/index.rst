@@ -31,26 +31,22 @@ RSL-RL Documentation
    :caption: Project Links
 
    GitHub Repository <https://github.com/leggedrobotics/rsl_rl>
-   PyPI Package <https://pypi.org/project/rsl-rl-lib/>
-   Extras Documentation <https://leggedrobotics.github.io/rsl_rl/extras/>
+   PyPI Package (Core Library) <https://pypi.org/project/rsl-rl-lib/>
+   Main Documentation <https://leggedrobotics.github.io/rsl_rl/>
 
-**RSL-RL** is a GPU-accelerated, lightweight learning library for robotics research. Its compact design allows 
-researchers to prototype and test new ideas without the overhead of modifying large, complex libraries. RSL-RL can also 
-be used out-of-the-box by installing it via `PyPI <https://pypi.org/project/rsl-rl-lib/>`_, supports multi-GPU training 
-and features common algorithms for robot learning.
+**RSL-RL** is a GPU-accelerated, lightweight learning library for robotics research. Its compact design allows
+researchers to prototype and test new ideas without the overhead of modifying large, complex libraries. RSL-RL supports
+multi-GPU training and features common algorithms for robot learning. The core library, without the additional features
+of this branch, is also available via `PyPI <https://pypi.org/project/rsl-rl-lib/>`_.
 
-.. note::
-   Additional algorithms, models, and more, mainly contributed by the community, can be found on the ``extras`` branch. 
-   This allows us to keep the core library on ``main`` minimal and easy to start with. To see a list of the additional 
-   features, please check the `Extras Documentation <https://leggedrobotics.github.io/rsl_rl/extras/>`_.
+Additional Features
+-------------------
 
-Key Features
-------------
+This is the documentation for the ``extras`` branch of RSL-RL, which contains additional features that are not part of
+the core library. These features, mostly contributed by the community, are listed below and described in the
+:ref:`overview <library-features>`.
 
-- **Minimal, readable codebase** with clear extension points for rapid prototyping.
-- **Robotics-first methods** including PPO and Student-Teacher Distillation.
-- **High-throughput training** with native Multi-GPU support.
-- **Proven performance** in numerous research publications.
+- No additional features yet :(
 
 Learning Environments
 ---------------------

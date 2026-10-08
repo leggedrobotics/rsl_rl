@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "RSL-RL"
 author = "The RSL-RL Developers"
 copyright = "2021-2026, ETH Zurich and NVIDIA CORPORATION"
-html_title = "RSL-RL"
+html_title = "RSL-RL Extras"
 
 # Extensions
 extensions = [
@@ -37,6 +37,10 @@ html_theme = "furo"
 html_css_files = ["custom.css"]
 html_theme_options = {
     "sidebar_hide_name": True,
+    "announcement": (
+        "You are viewing the documentation of the <b>extras</b> branch. "
+        '<a href="https://leggedrobotics.github.io/rsl_rl/">Go to the main documentation</a>.'
+    ),
     "light_logo": "rsl_rl_logo_light.svg",
     "dark_logo": "rsl_rl_logo_dark.svg",
     "light_css_variables": {
