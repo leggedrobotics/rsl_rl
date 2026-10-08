@@ -26,7 +26,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Pull requests: build only the PR commit as a check.
       - name: Checkout PR
         if: github.event_name == 'pull_request'
         uses: actions/checkout@v4
@@ -39,7 +38,6 @@ jobs:
           pip install -r pr/docs/requirements.txt
           sphinx-build -b html pr/docs _site
 
-      # Deploy: always build both branches, main at the root and extras under /extras/.
       - name: Checkout main
         if: github.event_name != 'pull_request'
         uses: actions/checkout@v4
