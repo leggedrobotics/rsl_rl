@@ -19,6 +19,11 @@ remaining easy to adapt. The following sections summarize the main features curr
    Custom classes can simply be passed as part of the configuration, enabling users to work with the pip version of the
    library.
 
+.. note::
+   More features are available on the ``extras`` branch. This allows us to keep the core library on ``main`` minimal 
+   and easy to start with. To see a list of the additional features, please check the 
+   `Extras Documentation <https://leggedrobotics.github.io/rsl_rl/extras/>`_.
+
 Algorithms
 ^^^^^^^^^^
 

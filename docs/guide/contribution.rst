@@ -1,8 +1,9 @@
 Contribution
 ============
 
-We welcome contributions from the community. For new features, we recommend first opening an issue to discuss the 
-proposed contribution before opening a pull request.
+We welcome contributions from the community. Bug fixes and improvements to the core library should target the ``main`` 
+branch. For new features, we recommend first opening an issue to discuss the proposed contribution before opening a pull 
+request to the ``extras`` branch.
 
 Code Style
 ----------
@@ -15,12 +16,14 @@ Code Style
 Workflow
 --------
 1. For new features, open an issue to discuss the proposed contribution.
-2. Fork the repository and implement the contribution.
-3. Add yourself to the `CONTRIBUTORS.md <https://github.com/leggedrobotics/rsl_rl/blob/main/CONTRIBUTORS.md>`_ file.
-4. Run `pre-commit <https://pre-commit.com/>`_ to format and lint code with:
+2. Fork the repository and create a branch from ``main`` for bug fixes, or from ``extras`` for new features.
+3. Implement the contribution. New features should extend the core library rather than modify it. Document the new
+   feature in the docs of the ``extras`` branch and add it to the list of features.
+4. Add yourself to the `CONTRIBUTORS.md <https://github.com/leggedrobotics/rsl_rl/blob/main/CONTRIBUTORS.md>`_ file.
+5. Run `pre-commit <https://pre-commit.com/>`_ to format and lint code with:
 
-.. code-block:: bash
+   .. code-block:: bash
 
-   pre-commit run --all-files
+      pre-commit run --all-files
 
-5. Open a pull request to the main branch.
+6. Open a pull request to the ``main`` branch for bug fixes, or to the ``extras`` branch for new features.
