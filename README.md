@@ -1,21 +1,15 @@
 # RSL-RL
 
 **RSL-RL** is a GPU-accelerated, lightweight learning library for robotics research. Its compact design allows
-researchers to prototype and test new ideas without the overhead of modifying large, complex libraries. RSL-RL can also
-be used out-of-the-box by installing it via [PyPI](https://pypi.org/project/rsl-rl-lib/), supports multi-GPU training,
-and features common algorithms for robot learning.
+researchers to prototype and test new ideas without the overhead of modifying large, complex libraries. RSL-RL supports
+multi-GPU training and features common algorithms for robot learning. The core library, without the additional features
+of this branch, is also available via [PyPI](https://pypi.org/project/rsl-rl-lib/).
 
-> Additional algorithms, models, and more, mainly contributed by the community, can be found on the
-> [`extras`](https://github.com/leggedrobotics/rsl_rl/tree/extras) branch. This allows us to keep the core library on
-> `main` minimal and easy to start with. To see a list of the additional features, please check the
-> [Extras Documentation](https://leggedrobotics.github.io/rsl_rl/extras/).
+## Additional Features
 
-## Key Features
-
-- **Minimal, readable codebase** with clear extension points for rapid prototyping.
-- **Robotics-first methods** including PPO and Student-Teacher Distillation.
-- **High-throughput training** with native Multi-GPU support.
-- **Proven performance** in numerous research publications.
+You are currently on the `extras` branch of RSL-RL, which contains additional features that are not part of the core
+library. These features are mostly contributed by the community. For a list of the additional features, please check the
+[Extras Documentation](https://leggedrobotics.github.io/rsl_rl/extras/).
 
 ## Learning Environments
 
@@ -35,13 +29,13 @@ Isaac Lab). If so, make sure to activate it before installing RSL-RL.
 ### Installing RSL-RL as a dependency
 
 ```bash
-pip install rsl-rl-lib
+pip install git+https://github.com/leggedrobotics/rsl_rl.git@extras
 ```
 
 ### Installing RSL-RL for development
 
 ```bash
-git clone https://github.com/leggedrobotics/rsl_rl
+git clone -b extras https://github.com/leggedrobotics/rsl_rl
 cd rsl_rl
 pip install -e .
 ```
