@@ -152,3 +152,12 @@ class TestEmpiricalDiscountedVariationNormalization:
         result = norm(reward)
         # In eval mode with no prior updates, std defaults to 1, so it normalizes by 1
         assert torch.isfinite(result).all()
+
+    def test_in_place_scaling_of_output_does_not_change_history(self) -> None:
+        """Scaling the returned raw reward in place should not modify the discounted average."""
+        norm = EmpiricalDiscountedVariationNormalization(shape=[], gamma=0.5)
+        norm.train()
+        # Identical rewards give zero std, so the first call returns the raw reward
+        result = norm(torch.tensor([2.0, 2.0]))
+        result.mul_(3.0)
+        assert torch.equal(norm.disc_avg.avg, torch.tensor([2.0, 2.0]))
