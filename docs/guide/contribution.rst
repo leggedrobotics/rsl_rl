@@ -22,8 +22,8 @@ Workflow
 4. Add yourself to the `CONTRIBUTORS.md <https://github.com/leggedrobotics/rsl_rl/blob/main/CONTRIBUTORS.md>`_ file.
 5. Run `pre-commit <https://pre-commit.com/>`_ to format and lint code with:
 
-.. code-block:: bash
+   .. code-block:: bash
 
-  pre-commit run --all-files
+      pre-commit run --all-files
 
 6. Open a pull request to the ``main`` branch for bug fixes, or to the ``extras`` branch for new features.
