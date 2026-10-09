@@ -452,3 +452,71 @@ def unpad_trajectories(trajectories: torch.Tensor | TensorDict, masks: torch.Ten
     else:
         # For standard Tensors, we must explicitly handle feature dimensions in view()
         return valid_steps.view(-1, trajectories.shape[0], *trajectories.shape[2:]).transpose(1, 0)
+
+
+def _require(cfg: dict, section: str, *keys: str) -> None:
+    """Assert that ``cfg`` contains every key in ``keys``, else raise ``KeyError``.
+
+    Used by fail-loud algorithms (e.g. SAC) that never substitute a hidden
+    default for a missing configuration term.
+
+    Args:
+        cfg: Configuration dictionary to validate.
+        section: Human-readable name of the section being validated (for the error message).
+        keys: Required keys.
+
+    Raises:
+        KeyError: If any of ``keys`` is missing, naming the missing keys and the present ones.
+    """
+    missing = [key for key in keys if key not in cfg]
+    if missing:
+        raise KeyError(f"{section}: missing required key(s) {missing}. Available: {sorted(cfg.keys())}.")
+
+
+def resolve_sac_obs_groups(
+    obs: TensorDict, obs_groups: dict[str, list[str]], required_sets: list[str]
+) -> dict[str, list[str]]:
+    """Validate observation sets strictly for off-policy (SAC) models.
+
+    This is the fail-loud sibling of :func:`resolve_obs_groups`. Unlike that
+    function, it does **not** warn-and-default: a missing required set, an empty
+    set, or a reference to an unknown observation group each raise
+    ``ValueError`` naming the offending set/group and the available groups.
+
+    Args:
+        obs: Observations from the environment.
+        obs_groups: Mapping from observation sets to lists of observation groups.
+        required_sets: Observation sets that must be present (e.g. ``["actor", "critic"]``).
+
+    Returns:
+        The validated ``obs_groups`` (unchanged).
+
+    Raises:
+        ValueError: If a required set is missing/empty, or references an unknown group.
+    """
+    available = list(obs.keys())
+    for set_name in required_sets:
+        if set_name not in obs_groups:
+            raise ValueError(
+                f"The 'obs_groups' dictionary is missing the required '{set_name}' observation set. "
+                f"Provided sets: {sorted(obs_groups.keys())}. This must be configured explicitly for SAC "
+                "(no default is substituted)."
+            )
+        groups = obs_groups[set_name]
+        if len(groups) == 0:
+            raise ValueError(f"The '{set_name}' observation set in 'obs_groups' must be a non-empty list.")
+        for group in groups:
+            if group not in obs:
+                raise ValueError(
+                    f"Observation '{group}' in set '{set_name}' is not present in the environment observations. "
+                    f"Available observations: {available}."
+                )
+
+    # Print the resolved sets for parity with resolve_obs_groups.
+    print("-" * 80)
+    print("Resolved observation sets (SAC): ")
+    for set_name in required_sets:
+        print("\t", set_name, ": ", obs_groups[set_name])
+    print("-" * 80)
+
+    return obs_groups
