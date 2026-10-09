@@ -11,7 +11,7 @@ from tensordict import TensorDict
 import pytest
 
 from rsl_rl.models import EquivariantMLPModel
-from rsl_rl.modules import SignedPermutation
+from rsl_rl.modules import SignedPermutation, symmetry_cfg_from_augmentation
 
 ACT_PERM = [1, 0, 3, 2]
 ACT_SIGN = [1.0, 1.0, -1.0, -1.0]
@@ -78,6 +78,25 @@ class TestEquivariantMLPModel:
         rep_out = SignedPermutation(ACT_PERM, ACT_SIGN)
         with torch.no_grad():
             assert torch.allclose(rep_out(model(obs)), model(mirror_obs(obs)), atol=1e-5)
+
+    def test_symmetry_cfg_from_augmentation(self) -> None:
+        """A model configured from an augmentation function is equivariant under that function."""
+        rep_out = SignedPermutation(ACT_PERM, ACT_SIGN)
+
+        def augment(
+            env: object, obs: TensorDict | None = None, actions: torch.Tensor | None = None
+        ) -> tuple[TensorDict | None, torch.Tensor | None]:
+            obs_aug = None if obs is None else torch.cat([obs, mirror_obs(obs)])
+            actions_aug = None if actions is None else torch.cat([actions, rep_out(actions)])
+            return obs_aug, actions_aug
+
+        obs = make_obs()
+        symmetry_cfg = symmetry_cfg_from_augmentation(augment, None, obs, OBS_GROUPS["actor"], ACT_DIM)
+        model = EquivariantMLPModel(obs, OBS_GROUPS, "actor", ACT_DIM, hidden_dims=HIDDEN, symmetry_cfg=symmetry_cfg)
+        with torch.no_grad():
+            obs_aug, _ = augment(None, obs)
+            _, actions_aug = augment(None, None, model(obs))
+            assert torch.allclose(model(obs_aug[NUM_ENVS:]), actions_aug[NUM_ENVS:], atol=1e-5)
 
     def test_requires_symmetry_cfg(self) -> None:
         """The model cannot be built without a symmetry representation."""

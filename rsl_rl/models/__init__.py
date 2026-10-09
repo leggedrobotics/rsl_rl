@@ -6,8 +6,8 @@
 """Neural models for the learning algorithm."""
 
 from .cnn_model import CNNModel
-from .equivariant_mlp_model import EquivariantMLPModel
 from .mlp_model import MLPModel
+from .mlp_model_equivariant import EquivariantMLPModel
 from .rnn_model import RNNModel
 
 __all__ = [

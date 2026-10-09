@@ -7,8 +7,14 @@
 
 from .cnn import CNN
 from .distribution import BetaDistribution, Distribution, GaussianDistribution, HeteroscedasticGaussianDistribution
-from .equivariant import EquivariantLinear, EquivariantMLP, SignedPermutation, SymmetricEmpiricalNormalization
-from .equivariant_distribution import EquivariantGaussianDistribution
+from .equivariant import (
+    EquivariantGaussianDistribution,
+    EquivariantLinear,
+    EquivariantMLP,
+    SignedPermutation,
+    SymmetricEmpiricalNormalization,
+    symmetry_cfg_from_augmentation,
+)
 from .mlp import MLP
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
 from .rnn import RNN, HiddenState
@@ -29,4 +35,5 @@ __all__ = [
     "HiddenState",
     "SignedPermutation",
     "SymmetricEmpiricalNormalization",
+    "symmetry_cfg_from_augmentation",
 ]

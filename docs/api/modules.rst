@@ -40,3 +40,10 @@ Distribution
    :members:
    :undoc-members:
 
+
+Equivariant
+-----------
+
+.. automodule:: rsl_rl.modules.equivariant
+   :members:
+   :undoc-members:

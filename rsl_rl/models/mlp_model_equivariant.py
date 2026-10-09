@@ -24,16 +24,16 @@ class EquivariantMLPModel(MLPModel):
     .. math::
         \pi(M s) = M \pi(s), \qquad V(M s) = V(s)
 
-    hold by construction at every step of training. Mittal et al., *Leveraging Symmetry in RL-based Legged
+    hold by construction at every step of training. Su et al., *Leveraging Symmetry in RL-based Legged
     Locomotion Control* (IROS 2024), report that a strictly equivariant network outperforms augmentation in
     sample efficiency, task performance, gait quality and zero-shot transfer.
 
-    The model only replaces the MLP head of :class:`~rsl_rl.models.MLPModel`; observation selection,
+    The model only replaces the MLP head of :class:`~rsl_rl.models.mlp_model.MLPModel`; observation selection,
     normalization, distribution handling, export and hidden-state management are inherited unchanged.
 
     .. note::
         With ``obs_normalization=True`` the observations are normalized by
-        :class:`~rsl_rl.modules.SymmetricEmpiricalNormalization`, whose statistics are symmetrized so that
+        :class:`~rsl_rl.modules.equivariant.SymmetricEmpiricalNormalization`, whose statistics are symmetrized so that
         normalization does not break equivariance.
     """
 
@@ -62,7 +62,7 @@ class EquivariantMLPModel(MLPModel):
             obs_normalization: Whether to normalize the observations with symmetrized running statistics.
             distribution_cfg: Configuration dictionary for the output distribution. To keep *sampling*
                 equivariant and not only the mean, use
-                :class:`~rsl_rl.modules.EquivariantGaussianDistribution`.
+                :class:`~rsl_rl.modules.equivariant.EquivariantGaussianDistribution`.
             symmetry_cfg: Dictionary with the symmetry representations::
 
                     {
@@ -75,8 +75,8 @@ class EquivariantMLPModel(MLPModel):
             ValueError: If ``symmetry_cfg`` is missing, or if the observation representation does not match the
                 observation dimension.
             NotImplementedError: If the distribution expects a structured MLP output, e.g.
-                :class:`~rsl_rl.modules.HeteroscedasticGaussianDistribution` or
-                :class:`~rsl_rl.modules.BetaDistribution`.
+                :class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution` or
+                :class:`~rsl_rl.modules.distribution.BetaDistribution`.
         """
         if symmetry_cfg is None or "obs" not in symmetry_cfg:
             raise ValueError("EquivariantMLPModel requires symmetry_cfg with an 'obs' representation")
