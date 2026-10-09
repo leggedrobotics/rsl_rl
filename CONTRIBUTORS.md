@@ -45,6 +45,7 @@ Please keep the lists sorted alphabetically.
 * Shantian Zhou
 * Shaoshu Su
 * Shiqi Ren
+* Yuguo Shan
 * Zeng Qingcheng
 * Zhang Chong
 * Ziqi Fan

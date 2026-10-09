@@ -47,6 +47,10 @@ class VecEnv(ABC):
 
         Returns:
             The observations from the environment.
+
+        .. note::
+            The returned TensorDict and its tensors must remain unchanged until the transition associated with the next
+            environment step has been copied into rollout storage.
         """
         raise NotImplementedError
 
@@ -77,6 +81,11 @@ class VecEnv(ABC):
 
             Incomplete or incorrect configurations are handled in the `resolve_obs_groups()` function in
             `rsl_rl/utils/utils.py`, which provides detailed information on the expected configuration.
+
+            .. note::
+                Do not modify the TensorDict or tensors returned by the previous `step()` call in place. The algorithm
+                retains that observation reference until `process_env_step()` copies it into rollout storage after this
+                method returns.
 
         Extras:
             The extras dictionary includes metrics such as the episode reward, episode length, etc. The following
