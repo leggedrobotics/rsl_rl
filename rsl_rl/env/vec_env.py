@@ -83,9 +83,9 @@ class VecEnv(ABC):
             `rsl_rl/utils/utils.py`, which provides detailed information on the expected configuration.
 
             .. note::
-                Do not modify the TensorDict or tensors returned by the previous `get_observations()` call in place.
-                The algorithm retains that observation reference until `process_env_step()` copies it into rollout
-                storage after this method returns.
+                Do not modify the TensorDict or tensors returned by the previous `step()` call in place.
+                The algorithm retains that observation reference until `process_env_step()` copies it into
+                rollout storage after this method returns.
 
         Extras:
             The extras dictionary includes metrics such as the episode reward, episode length, etc. The following
