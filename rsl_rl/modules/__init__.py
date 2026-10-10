@@ -13,7 +13,6 @@ from .equivariant import (
     EquivariantMLP,
     SignedPermutation,
     SymmetricEmpiricalNormalization,
-    symmetry_cfg_from_augmentation,
 )
 from .mlp import MLP
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
@@ -35,5 +34,4 @@ __all__ = [
     "HiddenState",
     "SignedPermutation",
     "SymmetricEmpiricalNormalization",
-    "symmetry_cfg_from_augmentation",
 ]

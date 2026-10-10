@@ -10,19 +10,13 @@ bad policy, so the constraint is checked numerically at every level: the represe
 layer, and the assembled network before and after optimization.
 """
 
+from __future__ import annotations
+
 import torch
-from tensordict import TensorDict
-from types import SimpleNamespace
 
 import pytest
 
-from rsl_rl.modules import (
-    EquivariantGaussianDistribution,
-    EquivariantLinear,
-    EquivariantMLP,
-    SignedPermutation,
-    symmetry_cfg_from_augmentation,
-)
+from rsl_rl.modules import EquivariantGaussianDistribution, EquivariantLinear, EquivariantMLP, SignedPermutation
 
 # A toy four-joint biped: joints are (left_a, right_a, left_b, right_b). The "b" pair flips sign under the
 # reflection, as a roll or yaw joint would; the "a" pair does not, as a pitch joint would.
@@ -178,83 +172,3 @@ class TestEquivariantGaussianDistribution:
             dist.std_param.copy_(raw)
             dist.update(torch.zeros(8, ACT_DIM))
         assert torch.allclose(dist.std_param, raw)
-
-
-def augment(env: object, obs: TensorDict | None = None, actions: torch.Tensor | None = None) -> tuple:
-    """Toy augmentation function in the style of the symmetry extension.
-
-    Like the Isaac Lab functions, it reads the environment, only mirrors the ``policy`` group, and returns the
-    original samples followed by the mirrored ones.
-    """
-    rep_in, rep_out = SignedPermutation(OBS_PERM, OBS_SIGN), SignedPermutation(ACT_PERM, ACT_SIGN)
-    obs_aug = actions_aug = None
-    if obs is not None:
-        obs_aug = obs.repeat(2)
-        obs_aug["policy"][obs.batch_size[0] :] = rep_in(obs["policy"]) * env.scale
-    if actions is not None:
-        actions_aug = torch.cat([actions, rep_out(actions)])
-    return obs_aug, actions_aug
-
-
-ENV = SimpleNamespace(scale=1.0)
-
-
-def make_aug_obs() -> TensorDict:
-    """Create observations with a mirrored group, an untouched group, and a 2D group outside the model."""
-    return TensorDict(
-        {
-            "policy": torch.randn(BATCH, OBS_DIM),
-            "critic": torch.randn(BATCH, OBS_DIM),
-            "image": torch.randn(BATCH, 1, 4, 4),
-        },
-        batch_size=[BATCH],
-    )
-
-
-class TestSymmetryCfgFromAugmentation:
-    """Tests for ``symmetry_cfg_from_augmentation``."""
-
-    def test_recovers_representations(self) -> None:
-        """The derived representations are exactly the ones the function applies."""
-        cfg = symmetry_cfg_from_augmentation(augment, ENV, make_aug_obs(), ["policy"], ACT_DIM)
-        assert cfg == {"obs": {"perm": OBS_PERM, "sign": OBS_SIGN}, "output": {"perm": ACT_PERM, "sign": ACT_SIGN}}
-
-    def test_critic_has_no_output(self) -> None:
-        """Without the action dimension only the observation representation is derived, as for a critic."""
-        cfg = symmetry_cfg_from_augmentation(augment, ENV, make_aug_obs(), ["policy"])
-        assert set(cfg) == {"obs"}
-
-    def test_matches_function_on_data(self) -> None:
-        """Applying the derived representation equals applying the function."""
-        obs = make_aug_obs()
-        cfg = symmetry_cfg_from_augmentation(augment, ENV, obs, ["policy"], ACT_DIM)
-        obs_aug, _ = augment(ENV, obs)
-        assert torch.equal(SignedPermutation(**cfg["obs"])(obs["policy"]), obs_aug["policy"][BATCH:])
-
-    def test_rejects_unmirrored_group(self) -> None:
-        """A group the function leaves unchanged is an error, not a silently unconstrained model."""
-        with pytest.raises(ValueError, match="unchanged"):
-            symmetry_cfg_from_augmentation(augment, ENV, make_aug_obs(), ["critic"])
-
-    @pytest.mark.parametrize("scale", [2.0, 0.5])
-    def test_rejects_non_signed_permutation(self, scale: float) -> None:
-        """A function that scales entries is not a signed permutation."""
-        with pytest.raises(ValueError, match="signed permutation"):
-            symmetry_cfg_from_augmentation(augment, SimpleNamespace(scale=scale), make_aug_obs(), ["policy"])
-
-    def test_rejects_affine_function(self) -> None:
-        """A function with an offset is not linear."""
-
-        def shifted(env: object, obs: TensorDict | None = None, actions: torch.Tensor | None = None) -> tuple:
-            obs_aug, actions_aug = augment(env, obs, actions)
-            obs_aug["policy"][obs.batch_size[0] :] += 1.0
-            return obs_aug, actions_aug
-
-        with pytest.raises(ValueError, match="zero"):
-            symmetry_cfg_from_augmentation(shifted, ENV, make_aug_obs(), ["policy"])
-
-    def test_rejects_invalid_aug_index(self) -> None:
-        """The original slice and slices beyond the augmentation are rejected."""
-        for aug_index in (0, 2):
-            with pytest.raises(ValueError, match="aug_index"):
-                symmetry_cfg_from_augmentation(augment, ENV, make_aug_obs(), ["policy"], aug_index=aug_index)

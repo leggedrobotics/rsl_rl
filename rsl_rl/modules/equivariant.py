@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from tensordict import TensorDict
 from torch.distributions import Normal
-from typing import Any, Callable
+from typing import Any
 
 from rsl_rl.modules.distribution import GaussianDistribution
 from rsl_rl.modules.normalization import EmpiricalNormalization
-from rsl_rl.utils import resolve_callable, resolve_nn_activation
+from rsl_rl.utils import resolve_nn_activation
 
 __all__ = [
     "EquivariantGaussianDistribution",
@@ -22,7 +21,6 @@ __all__ = [
     "EquivariantMLP",
     "SignedPermutation",
     "SymmetricEmpiricalNormalization",
-    "symmetry_cfg_from_augmentation",
 ]
 
 
@@ -79,13 +77,6 @@ class SignedPermutation:
         """
         return x.index_select(-1, self.perm.to(x.device)) * self.sign.to(x.device, x.dtype)
 
-    def to(self, device: torch.device | str) -> SignedPermutation:
-        """Return a copy with the buffers moved to ``device``."""
-        out = SignedPermutation.__new__(SignedPermutation)
-        out.perm = self.perm.to(device)
-        out.sign = self.sign.to(device)
-        return out
-
     @staticmethod
     def identity(dim: int) -> SignedPermutation:
         """Return the trivial representation, under which ``M`` acts as the identity.
@@ -102,28 +93,23 @@ class SignedPermutation:
         return SignedPermutation(torch.arange(dim))
 
     @staticmethod
-    def regular(dim: int, group_order: int = 2) -> SignedPermutation:
-        """Return the regular representation used on hidden layers.
+    def regular(dim: int) -> SignedPermutation:
+        """Return the regular representation of the reflection group, used on hidden layers.
 
-        The units are split into ``group_order`` blocks that are exchanged, with no sign flips. Because it
-        is a pure permutation, any pointwise activation commutes with it, so equivariance survives the
-        nonlinearities.
+        The units are split into two halves that are exchanged, with no sign flips. Because it is a pure
+        permutation, any pointwise activation commutes with it, so equivariance survives the nonlinearities.
 
         Args:
-            dim: Hidden dimension, which must be divisible by the group order.
-            group_order: Order of the symmetry group. Only ``2`` (a reflection) is supported.
+            dim: Hidden dimension, which must be even.
 
         Returns:
             The regular representation.
 
         Raises:
-            NotImplementedError: If ``group_order`` is not 2.
-            ValueError: If ``dim`` is not divisible by the group order.
+            ValueError: If ``dim`` is odd.
         """
-        if group_order != 2:
-            raise NotImplementedError("only order-2 groups (reflections) are supported")
-        if dim % group_order != 0:
-            raise ValueError(f"hidden dimension must be divisible by {group_order}, got {dim}")
+        if dim % 2 != 0:
+            raise ValueError(f"hidden dimension must be even, got {dim}")
         half = dim // 2
         return SignedPermutation(torch.cat([torch.arange(half, dim), torch.arange(0, half)]))
 
@@ -200,11 +186,11 @@ class EquivariantLinear(nn.Module):
         """Return a plain :class:`torch.nn.Linear` computing the same function.
 
         The projection is a fixed linear map, so a trained equivariant layer is exactly equal to an ordinary
-        layer with the projected weight baked in. Use this for deployment or export to drop the per-forward
-        index operations.
+        layer with the projected weight baked in. It is used for export to drop the per-forward index
+        operations.
         """
-        layer = nn.Linear(self.in_features, self.out_features)
         weight, bias = self.equivariant_weight()
+        layer = nn.Linear(self.in_features, self.out_features, device=weight.device, dtype=weight.dtype)
         with torch.no_grad():
             layer.weight.copy_(weight)
             layer.bias.copy_(bias)
@@ -236,7 +222,7 @@ class EquivariantMLP(nn.Sequential):
             rep_in: Representation acting on the input.
             rep_out: Representation acting on the output. Use
                 :meth:`SignedPermutation.identity` for an invariant output, e.g. a critic value.
-            hidden_dims: Hidden layer dimensions. Each must be divisible by the group order.
+            hidden_dims: Hidden layer dimensions. Each must be even.
             activation: Activation function between layers.
         """
         activation_mod = resolve_nn_activation(activation)
@@ -331,98 +317,3 @@ class EquivariantGaussianDistribution(GaussianDistribution):
         else:
             raise ValueError(f"Unknown standard deviation type: {self.std_type}. Should be 'scalar' or 'log'.")
         self._distribution = Normal(mean, std)
-
-
-@torch.no_grad()
-def symmetry_cfg_from_augmentation(
-    data_augmentation_func: str | Callable,
-    env: Any,
-    obs: TensorDict,
-    obs_groups: list[str],
-    num_actions: int | None = None,
-    aug_index: int = 1,
-) -> dict:
-    """Derive the ``symmetry_cfg`` of an equivariant model from a data augmentation function.
-
-    The function is the one used by the :class:`~rsl_rl.extensions.symmetry.Symmetry` extension, and the result is
-    passed to :class:`~rsl_rl.models.mlp_model_equivariant.EquivariantMLPModel`.
-
-    The augmentation function is a signed permutation, so its representation is read off by passing the basis
-    vectors through it. This avoids defining the same symmetry twice. Since augmentation functions typically
-    need the environment, call this once after creating the environment and before creating the runner::
-
-        obs = env.get_observations()
-        agent_cfg["actor"]["symmetry_cfg"] = symmetry_cfg_from_augmentation(
-            compute_symmetric_states, env, obs, agent_cfg["obs_groups"]["actor"], env.num_actions
-        )
-
-    Args:
-        data_augmentation_func: The function used by the symmetry extension, with the signature
-            ``func(env, obs, actions) -> (obs_aug, actions_aug)``. Resolved using
-            :func:`~rsl_rl.utils.utils.resolve_callable`.
-        env: Environment object, passed to the augmentation function.
-        obs: Observation dictionary, used for the observation groups and their shapes.
-        obs_groups: Observation groups of the model, in the order they are concatenated.
-        num_actions: Action dimension. If given, the output representation is derived as well, as needed by an
-            actor. Omit it for a critic, whose value is invariant.
-        aug_index: Index of the augmented slice that holds the reflection. The original samples are at index 0.
-
-    Returns:
-        The ``symmetry_cfg`` dictionary with ``perm`` and ``sign`` as lists.
-
-    Raises:
-        ValueError: If the augmentation is not a signed involution on the observation groups, if it leaves them
-            unchanged, or if ``aug_index`` is out of range.
-    """
-    func = resolve_callable(data_augmentation_func)
-    dims = [obs[g].shape[-1] for g in obs_groups]
-    total = sum(dims)
-    ref = obs[obs_groups[0]]
-
-    # Row i of the probe is the i-th basis vector of the concatenated observation. Groups outside the model are
-    # zero, so that 2D observations or groups the function does not touch do not matter.
-    eye = torch.eye(total, device=ref.device, dtype=ref.dtype)
-    probe = TensorDict(
-        {k: torch.zeros(total, *v.shape[1:], device=v.device, dtype=v.dtype) for k, v in obs.items()},
-        batch_size=[total],
-    )
-    for g, part in zip(obs_groups, torch.split(eye, dims, dim=-1)):
-        probe[g] = part
-    zero_aug, _ = func(env=env, obs=probe.clone().zero_(), actions=None)
-    probe_aug, _ = func(env=env, obs=probe, actions=None)
-
-    num_aug = probe_aug.batch_size[0] // total
-    if not 0 < aug_index < num_aug:
-        raise ValueError(f"aug_index must be in [1, {num_aug}), got {aug_index}")
-    if any(zero_aug[g].abs().max() > 0 for g in obs_groups):
-        raise ValueError("the augmentation maps zero to nonzero values, so it is not a signed permutation")
-    rows = slice(aug_index * total, (aug_index + 1) * total)
-    rep_obs = _signed_permutation_from_images(torch.cat([probe_aug[g][rows] for g in obs_groups], dim=-1))
-    if torch.equal(rep_obs.perm, torch.arange(total)) and torch.all(rep_obs.sign == 1):
-        raise ValueError(
-            f"the augmentation leaves the observation groups {obs_groups} unchanged. Check that the function"
-            " mirrors these groups, e.g. a critic using a group the function does not transform."
-        )
-    symmetry_cfg = {"obs": {"perm": rep_obs.perm.tolist(), "sign": rep_obs.sign.tolist()}}
-
-    if num_actions is not None:
-        eye = torch.eye(num_actions, device=ref.device, dtype=ref.dtype)
-        _, actions_aug = func(env=env, obs=None, actions=eye)
-        rep_act = _signed_permutation_from_images(actions_aug[aug_index * num_actions : (aug_index + 1) * num_actions])
-        symmetry_cfg["output"] = {"perm": rep_act.perm.tolist(), "sign": rep_act.sign.tolist()}
-    return symmetry_cfg
-
-
-def _signed_permutation_from_images(images: torch.Tensor) -> SignedPermutation:
-    """Recover ``M x = sign * x[perm]`` from the images ``images[i] = M e_i`` of the basis vectors."""
-    nonzero = images.abs() > 0.5
-    if not (
-        torch.allclose(images.abs(), nonzero.to(images.dtype))
-        and torch.all(nonzero.sum(0) == 1)
-        and torch.all(nonzero.sum(1) == 1)
-    ):
-        raise ValueError("the augmentation is not a signed permutation, i.e. it scales or mixes entries")
-    # Column j holds its single nonzero entry at row perm[j], with value sign[j].
-    perm = nonzero.to(torch.long).argmax(0)
-    sign = images[perm, torch.arange(images.shape[1], device=images.device)]
-    return SignedPermutation(perm.cpu(), sign.cpu())

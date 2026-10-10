@@ -35,7 +35,7 @@ Please keep the lists sorted alphabetically.
 * Fabian Jenelten
 * Jichuan Hu
 * Kohei Sendai
-* Lee Myong Ii
+* Lee Myong Il
 * Lorenzo Terenzi
 * Marko Bjelonic
 * Markus Portugall

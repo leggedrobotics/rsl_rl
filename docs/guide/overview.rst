@@ -60,11 +60,9 @@ Models
    every linear layer is projected onto the equivariant subspace, so that the policy satisfies
    :math:`\pi(Ms) = M\pi(s)` and the value function satisfies :math:`V(Ms) = V(s)` by construction throughout training.
    Unlike the :class:`~rsl_rl.extensions.symmetry.Symmetry` extension, which encourages symmetry through data
-   augmentation or a mirror loss, the constraint cannot be traded away against the task reward. The representations
-   can be derived from the extension's data augmentation function with
-   :func:`~rsl_rl.modules.equivariant.symmetry_cfg_from_augmentation`, so the symmetry is defined only once. Observation
-   normalization uses symmetrized running statistics to preserve equivariance, and trained layers can be folded into
-   plain ``torch.nn.Linear`` modules. For more details, please check `this paper <https://arxiv.org/abs/2403.17320>`__.
+   augmentation or a mirror loss, the constraint cannot be traded away against the task reward. Observation
+   normalization uses symmetrized running statistics to preserve equivariance, and for export the network is folded
+   into a plain MLP without runtime overhead. For more details, please check `this paper <https://arxiv.org/abs/2403.17320>`__.
 
 Distributions
 ^^^^^^^^^^^^^

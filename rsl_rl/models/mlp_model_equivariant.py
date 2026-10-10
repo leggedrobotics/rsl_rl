@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import torch.nn as nn
 from tensordict import TensorDict
 
 from rsl_rl.models.mlp_model import MLPModel
@@ -29,7 +30,8 @@ class EquivariantMLPModel(MLPModel):
     sample efficiency, task performance, gait quality and zero-shot transfer.
 
     The model only replaces the MLP head of :class:`~rsl_rl.models.mlp_model.MLPModel`; observation selection,
-    normalization, distribution handling, export and hidden-state management are inherited unchanged.
+    normalization, distribution handling and hidden-state management are inherited unchanged. For export, the
+    equivariant MLP is folded into a plain MLP, so the exported policy has no overhead.
 
     .. note::
         With ``obs_normalization=True`` the observations are normalized by
@@ -47,7 +49,7 @@ class EquivariantMLPModel(MLPModel):
         activation: str = "elu",
         obs_normalization: bool = False,
         distribution_cfg: dict | None = None,
-        symmetry_cfg: dict | None = None,
+        equivariance_cfg: dict | None = None,
     ) -> None:
         """Initialize the equivariant MLP model.
 
@@ -63,7 +65,7 @@ class EquivariantMLPModel(MLPModel):
             distribution_cfg: Configuration dictionary for the output distribution. To keep *sampling*
                 equivariant and not only the mean, use
                 :class:`~rsl_rl.modules.equivariant.EquivariantGaussianDistribution`.
-            symmetry_cfg: Dictionary with the symmetry representations::
+            equivariance_cfg: Dictionary with the symmetry representations::
 
                     {
                         "obs":    {"perm": [...], "sign": [...]},   # acts on the concatenated observation
@@ -72,23 +74,23 @@ class EquivariantMLPModel(MLPModel):
                     }
 
         Raises:
-            ValueError: If ``symmetry_cfg`` is missing, or if the observation representation does not match the
+            ValueError: If ``equivariance_cfg`` is missing, or if the observation representation does not match the
                 observation dimension.
             NotImplementedError: If the distribution expects a structured MLP output, e.g.
                 :class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution` or
                 :class:`~rsl_rl.modules.distribution.BetaDistribution`.
         """
-        if symmetry_cfg is None or "obs" not in symmetry_cfg:
-            raise ValueError("EquivariantMLPModel requires symmetry_cfg with an 'obs' representation")
+        if equivariance_cfg is None or "obs" not in equivariance_cfg:
+            raise ValueError("EquivariantMLPModel requires equivariance_cfg with an 'obs' representation")
 
         super().__init__(
             obs, obs_groups, obs_set, output_dim, hidden_dims, activation, obs_normalization, distribution_cfg
         )
 
-        rep_in = SignedPermutation(**symmetry_cfg["obs"])
+        rep_in = SignedPermutation(**equivariance_cfg["obs"])
         if len(rep_in) != self._get_latent_dim():
             raise ValueError(
-                f"symmetry_cfg['obs'] acts on {len(rep_in)} dimensions but the '{obs_set}' observation is"
+                f"equivariance_cfg['obs'] acts on {len(rep_in)} dimensions but the '{obs_set}' observation is"
                 f" {self._get_latent_dim()}-dimensional"
             )
 
@@ -98,11 +100,11 @@ class EquivariantMLPModel(MLPModel):
                 f"{type(self.distribution).__name__} expects a structured MLP output of shape {mlp_output_dim}, which"
                 " EquivariantMLPModel does not support. Use EquivariantGaussianDistribution instead."
             )
-        if "output" in symmetry_cfg:
-            rep_out = SignedPermutation(**symmetry_cfg["output"])
+        if "output" in equivariance_cfg:
+            rep_out = SignedPermutation(**equivariance_cfg["output"])
             if len(rep_out) != mlp_output_dim:
                 raise ValueError(
-                    f"symmetry_cfg['output'] acts on {len(rep_out)} dimensions but the MLP output is"
+                    f"equivariance_cfg['output'] acts on {len(rep_out)} dimensions but the MLP output is"
                     f" {mlp_output_dim}-dimensional. Note that a stochastic model may widen the output."
                 )
         else:
@@ -115,3 +117,15 @@ class EquivariantMLPModel(MLPModel):
         self.mlp = EquivariantMLP(rep_in, rep_out, hidden_dims, activation)
         if self.distribution is not None:
             self.distribution.init_mlp_weights(self.mlp)
+
+    def as_jit(self) -> nn.Module:
+        """Return a version of the model compatible with Torch JIT export, with the equivariant MLP folded."""
+        exported = super().as_jit()
+        exported.mlp = self.mlp.fold()
+        return exported
+
+    def as_onnx(self, verbose: bool) -> nn.Module:
+        """Return a version of the model compatible with ONNX export, with the equivariant MLP folded."""
+        exported = super().as_onnx(verbose)
+        exported.mlp = self.mlp.fold()
+        return exported
