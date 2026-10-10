@@ -310,8 +310,9 @@ Model Configuration
 Different algorithms use models for different purposes. For example, :class:`~rsl_rl.algorithms.ppo.PPO` uses an actor
 and a critic, while :class:`~rsl_rl.algorithms.distillation.Distillation` uses a student and a teacher. Even though
 their function might be different, they can all use the same underlying model classes. RSL-RL currently implements
-three different models: :class:`~rsl_rl.models.mlp_model.MLPModel`, :class:`~rsl_rl.models.rnn_model.RNNModel`, and
-:class:`~rsl_rl.models.cnn_model.CNNModel`, which are configured as follows.
+four different models: :class:`~rsl_rl.models.mlp_model.MLPModel`, :class:`~rsl_rl.models.rnn_model.RNNModel`,
+:class:`~rsl_rl.models.cnn_model.CNNModel`, and :class:`~rsl_rl.models.mlp_model_equivariant.EquivariantMLPModel`,
+which are configured as follows.
 
 MLPModel
 ^^^^^^^^
@@ -469,14 +470,81 @@ configuration includes the following parameters:
      - ``True``
      - Whether to flatten the output tensor.
 
+EquivariantMLPModel
+^^^^^^^^^^^^^^^^^^^
+
+The :class:`~rsl_rl.models.mlp_model_equivariant.EquivariantMLPModel` inherits from the
+:class:`~rsl_rl.models.mlp_model.MLPModel` and thus shares the same configuration keys as the
+:class:`~rsl_rl.models.mlp_model.MLPModel`, with the addition of the following keys:
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - Model class name. Valid values: ``"EquivariantMLPModel"``.
+   * - ...
+     - ...
+     - ...
+     - ...
+   * - ``hidden_dims``
+     - tuple[int] | list[int]
+     - ``[256, 256, 256]``
+     - Hidden dimensions of the MLP. Each must be even, since the hidden layers are split into two mirrored halves.
+   * - ``equivariance_cfg``
+     - dict
+     - required
+     - Representations of the reflection, given as signed permutations ``M x = sign * x[perm]``. The key ``"obs"``
+       acts on the concatenated observation and the optional key ``"output"`` on the model output, each as a dict
+       with a ``"perm"`` list and an optional ``"sign"`` list of ``+1``/``-1`` entries (default all ``+1``). Both
+       must be involutions, i.e. applying them twice gives the identity. If ``"output"`` is omitted, the model is
+       invariant, as needed for a critic.
+
+With ``obs_normalization`` enabled, the observations are normalized with symmetrized statistics so that normalization
+preserves equivariance. To make the sampled actions equivariant and not only the action mean, the model should be used
+with the :ref:`EquivariantGaussianDistribution <equivariant-gaussian-distribution>`. Distributions whose MLP output is
+structured, i.e. :class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution` and
+:class:`~rsl_rl.modules.distribution.BetaDistribution`, are not supported.
+
+For example, for a robot with two mirrored joints whose observation consists of the base angular velocity and the two
+joint positions, the configuration of the actor and the critic is:
+
+.. code-block:: yaml
+
+   actor:
+     class_name: EquivariantMLPModel
+     hidden_dims: [256, 256, 256]
+     equivariance_cfg:
+       obs:
+         perm: [0, 1, 2, 4, 3]
+         sign: [-1, 1, -1, 1, 1]
+       output:
+         perm: [1, 0]
+     distribution_cfg:
+       class_name: EquivariantGaussianDistribution
+       perm: [1, 0]
+   critic:
+     class_name: EquivariantMLPModel
+     hidden_dims: [256, 256, 256]
+     equivariance_cfg:
+       obs:
+         perm: [0, 1, 2, 4, 3]
+         sign: [-1, 1, -1, 1, 1]
 
 Distribution Configuration
 --------------------------
 
-RSL-RL implements three distributions that enable stochastic model outputs:
+RSL-RL implements four distributions that enable stochastic model outputs:
 :class:`~rsl_rl.modules.distribution.GaussianDistribution`,
-:class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution` with state-dependent standard deviation, and
-:class:`~rsl_rl.modules.distribution.BetaDistribution` for naturally bounded action spaces, which may be configured as
+:class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution` with state-dependent standard deviation,
+:class:`~rsl_rl.modules.distribution.BetaDistribution` for naturally bounded action spaces, and
+:class:`~rsl_rl.modules.equivariant.EquivariantGaussianDistribution` for equivariant models, which may be configured as
 follows.
 
 GaussianDistribution
@@ -559,6 +627,38 @@ BetaDistribution
      - ``(-1.0, 1.0)``
      - Interval ``(min, max)`` to which samples are linearly rescaled. The Beta distribution naturally produces samples
        in ``[0, 1]``, which are rescaled to this range.
+
+.. _equivariant-gaussian-distribution:
+
+EquivariantGaussianDistribution
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The :class:`~rsl_rl.modules.equivariant.EquivariantGaussianDistribution` inherits from the
+:class:`~rsl_rl.modules.distribution.GaussianDistribution` and thus shares the same configuration keys as the
+:class:`~rsl_rl.modules.distribution.GaussianDistribution`, with the addition of the following keys. It is intended
+for the :class:`~rsl_rl.models.mlp_model_equivariant.EquivariantMLPModel`.
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - Distribution class name. Valid values: ``"EquivariantGaussianDistribution"``.
+   * - ...
+     - ...
+     - ...
+     - ...
+   * - ``perm``
+     - list[int]
+     - required
+     - Permutation pairing mirrored action dimensions, the same as ``equivariance_cfg["output"]["perm"]`` of the
+       model. The standard deviation is averaged over each pair so that both receive the same exploration noise.
 
 Extension Configuration
 -----------------------

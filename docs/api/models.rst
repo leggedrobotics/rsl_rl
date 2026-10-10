@@ -24,3 +24,10 @@ CNN Model
    :members:
    :undoc-members:
 
+
+Equivariant MLP Model
+---------------------
+
+.. automodule:: rsl_rl.models.mlp_model_equivariant
+   :members:
+   :undoc-members:
