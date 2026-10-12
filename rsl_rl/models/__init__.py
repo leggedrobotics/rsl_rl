@@ -7,10 +7,12 @@
 
 from .cnn_model import CNNModel
 from .mlp_model import MLPModel
+from .mlp_model_equivariant import EquivariantMLPModel
 from .rnn_model import RNNModel
 
 __all__ = [
     "CNNModel",
+    "EquivariantMLPModel",
     "MLPModel",
     "RNNModel",
 ]

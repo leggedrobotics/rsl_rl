@@ -46,7 +46,7 @@ This is the documentation for the ``extras`` branch of RSL-RL, which contains ad
 the core library. These features, mostly contributed by the community, are listed below and described in the
 :ref:`overview <library-features>`.
 
-- No additional features yet :(
+- **Equivariant MLP model** that enforces robot symmetries (e.g. left-right mirroring) by construction.
 
 Learning Environments
 ---------------------

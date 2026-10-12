@@ -54,6 +54,16 @@ Models
    independently. When used in conjunction with :class:`~rsl_rl.algorithms.ppo.PPO`, the encoders may be shared between
    actor and critic to save memory.
 
+:class:`~rsl_rl.models.mlp_model_equivariant.EquivariantMLPModel`
+   An :class:`~rsl_rl.models.mlp_model.MLPModel` whose network is strictly equivariant under a reflection of the robot,
+   e.g. a left-right mirroring. The symmetry is specified as signed permutations of the observations and outputs, and
+   every linear layer is projected onto the equivariant subspace, so that the policy satisfies
+   :math:`\pi(Ms) = M\pi(s)` and the value function satisfies :math:`V(Ms) = V(s)` by construction throughout training.
+   Unlike the :class:`~rsl_rl.extensions.symmetry.Symmetry` extension, which encourages symmetry through data
+   augmentation or a mirror loss, the constraint cannot be traded away against the task reward. Observation
+   normalization uses symmetrized running statistics to preserve equivariance, and for export the network is folded
+   into a plain MLP without runtime overhead. For more details, please check `this paper <https://arxiv.org/abs/2403.17320>`__.
+
 Distributions
 ^^^^^^^^^^^^^
 
@@ -71,6 +81,11 @@ Distributions
    A Beta distribution for bounded action spaces. Samples are naturally constrained to [0, 1] and linearly rescaled to a
    configurable action range. The concentration parameters are predicted by the model's MLP and constrained to guarantee
    a unimodal distribution.
+
+:class:`~rsl_rl.modules.equivariant.EquivariantGaussianDistribution`
+   A :class:`~rsl_rl.modules.distribution.GaussianDistribution` whose standard deviation is shared between mirrored
+   action dimensions. Used together with the :class:`~rsl_rl.models.mlp_model_equivariant.EquivariantMLPModel`, it
+   makes the sampled actions equivariant and not only the action mean.
 
 Extensions
 ^^^^^^^^^^
