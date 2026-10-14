@@ -186,8 +186,8 @@ class PPO:
             st.returns[step] = advantage + st.values[step]
         # Compute the advantages
         st.advantages = st.returns - st.values
-        # Normalize the advantages if per minibatch normalization is not used
-        if not self.normalize_advantage_per_mini_batch:
+        # A singleton has no sample standard deviation; keep its unnormalized learning signal.
+        if not self.normalize_advantage_per_mini_batch and st.advantages.numel() > 1:
             st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
 
     def update(self) -> dict[str, float]:
@@ -210,8 +210,8 @@ class PPO:
         for batch in generator:
             original_batch_size = batch.observations.batch_size[0]
 
-            # Check if we should normalize advantages per mini-batch
-            if self.normalize_advantage_per_mini_batch:
+            # Only normalize when the sample standard deviation is defined.
+            if self.normalize_advantage_per_mini_batch and batch.advantages.numel() > 1:
                 with torch.no_grad():
                     batch.advantages = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)  # type: ignore
 
