@@ -29,6 +29,7 @@ Please keep the lists sorted alphabetically.
 
 ## Contributors
 
+* Afloat16
 * Bikram Pandit
 * Emilio Palma
 * Eric Vollenweider
