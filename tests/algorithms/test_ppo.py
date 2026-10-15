@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 import torch
+import warnings
+from itertools import chain
 from tensordict import TensorDict
 
 from rsl_rl.algorithms.ppo import PPO
-from rsl_rl.models import MLPModel
+from rsl_rl.models import CNNModel, MLPModel
 from rsl_rl.storage import RolloutStorage
 from tests.conftest import make_obs
 
@@ -72,6 +74,27 @@ def _build_ppo(**overrides: object) -> tuple[PPO, TensorDict]:
     defaults.update(overrides)
     ppo = PPO(actor, critic, storage, **defaults)
     return ppo, obs
+
+
+def _build_ppo_with_shared_cnn() -> PPO:
+    """Build a PPO instance whose actor and critic share a CNN encoder."""
+    obs = TensorDict(
+        {"policy": torch.randn(NUM_ENVS, OBS_DIM), "image": torch.randn(NUM_ENVS, 1, 8, 8)}, batch_size=[NUM_ENVS]
+    )
+    obs_groups = {"actor": ["policy", "image"], "critic": ["policy", "image"]}
+    cnn_cfg = {"image": {"output_channels": [4], "kernel_size": 3, "stride": 1, "activation": "elu"}}
+    actor = CNNModel(
+        obs,
+        obs_groups,
+        "actor",
+        NUM_ACTIONS,
+        hidden_dims=[32],
+        cnn_cfg=cnn_cfg,
+        distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0},
+    )
+    critic = CNNModel(obs, obs_groups, "critic", 1, hidden_dims=[32], cnns=actor.cnns)
+    storage = RolloutStorage("rl", NUM_ENVS, NUM_STEPS, obs, [NUM_ACTIONS])
+    return PPO(actor, critic, storage, learning_rate=1e-3)
 
 
 class TestGAEComputation:
@@ -415,3 +438,43 @@ class TestCheckpoint:
         restored, _ = _build_ppo(rnd_cfg=RND_CFG)
         restored.load(checkpoint, load_cfg=None, strict=True)
         assert restored.rnd.update_counter == 0
+
+
+class TestSharedCNNEncoders:
+    """Tests for actor and critic sharing CNN encoders."""
+
+    def test_shared_parameters_are_stepped_once(self) -> None:
+        """Each shared parameter should appear once in the optimizer and receive a single Adam step."""
+        ppo = _build_ppo_with_shared_cnn()
+        params = ppo.optimizer.param_groups[0]["params"]
+        assert len(params) == len({id(p) for p in params})
+
+        shared = next(ppo.actor.cnns.parameters())
+        before = shared.detach().clone()
+        for p in params:
+            p.grad = torch.ones_like(p)
+        ppo.optimizer.step()
+        assert ppo.optimizer.state[shared]["step"] == 1
+        # The first Adam step moves each parameter by the learning rate
+        torch.testing.assert_close((before - shared.detach()).abs().max().item(), 1e-3, atol=1e-6, rtol=0)
+
+    def test_legacy_checkpoint_with_duplicate_parameters_loads(self) -> None:
+        """Optimizer states that list shared parameters twice should still load."""
+        source = _build_ppo_with_shared_cnn()
+        with warnings.catch_warnings():  # Older versions passed the shared parameters to the optimizer twice
+            warnings.simplefilter("ignore")
+            legacy_optimizer = torch.optim.Adam(chain(source.actor.parameters(), source.critic.parameters()), lr=5e-4)
+        for p in source.optimizer.param_groups[0]["params"]:
+            p.grad = torch.ones_like(p)
+        legacy_optimizer.step()
+        checkpoint = source.save()
+        checkpoint["optimizer_state_dict"] = legacy_optimizer.state_dict()
+
+        restored = _build_ppo_with_shared_cnn()
+        restored.load(checkpoint, load_cfg=None, strict=True)
+        assert restored.learning_rate == 5e-4
+        restored_params = restored.optimizer.param_groups[0]["params"]
+        for source_param, restored_param in zip(source.optimizer.param_groups[0]["params"], restored_params):
+            torch.testing.assert_close(
+                restored.optimizer.state[restored_param]["exp_avg"], legacy_optimizer.state[source_param]["exp_avg"]
+            )
