@@ -149,7 +149,6 @@ class Distillation:
 
         for epoch in range(self.num_learning_epochs):
             self.student.reset(hidden_state=self.last_hidden_states[0])
-            self.teacher.reset(hidden_state=self.last_hidden_states[1])
             self.student.detach_hidden_state()
             for batch in self.storage.generator():
                 # Optionally use mixed precision for the forward pass and loss computation
@@ -181,7 +180,6 @@ class Distillation:
 
                 # Reset dones
                 self.student.reset(batch.dones.view(-1))
-                self.teacher.reset(batch.dones.view(-1))
                 self.student.detach_hidden_state(batch.dones.view(-1))
 
         # Store the last hidden states for the next update
