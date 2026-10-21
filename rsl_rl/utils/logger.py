@@ -47,6 +47,7 @@ class Logger:
         self.tot_time = 0
 
         self.writer: LogWriter | None = None
+        self.uploaded_videos: set[pathlib.Path] = set()
 
         # Create buffers
         self.ep_extras = []
@@ -279,10 +280,13 @@ class Logger:
             )
             print(log_string)
 
-            # Upload available videos to external logging service if supported
+            # Upload new videos to external logging service if supported
             if isinstance(self.writer, LogWriter):
                 for video in pathlib.Path(self.log_dir).rglob("*.mp4"):  # type: ignore
+                    if video in self.uploaded_videos:
+                        continue
                     self.writer.save_video(video, it)
+                    self.uploaded_videos.add(video)
 
             # Clear extras buffer
             self.ep_extras.clear()
