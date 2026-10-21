@@ -84,3 +84,7 @@ class WandbLogWriter(SummaryWriter, LogWriter):
     def stop(self) -> None:
         """Finish the active W&B run."""
         wandb.finish()
+
+    def abort(self) -> None:
+        """Finish the active W&B run and mark it as failed."""
+        wandb.finish(exit_code=1)
