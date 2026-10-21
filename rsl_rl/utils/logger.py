@@ -18,7 +18,6 @@ from collections import deque
 import rsl_rl
 from rsl_rl.utils.log_writer import LogWriter
 from rsl_rl.utils.utils import resolve_class
-from rsl_rl.utils.wandb_log_writer import WandbLogWriter
 
 
 class Logger:
@@ -225,7 +224,7 @@ class Logger:
                     self.writer.add_scalar("Rnd/weight", rnd_weight, it)  # type: ignore
                 self.writer.add_scalar("Train/mean_reward", statistics.mean(self.rewbuffer), it)
                 self.writer.add_scalar("Train/mean_episode_length", statistics.mean(self.lenbuffer), it)
-                if not isinstance(self.writer, WandbLogWriter):
+                if not isinstance(self.writer, LogWriter):
                     self.writer.add_scalar(
                         "Train/mean_reward/time", statistics.mean(self.rewbuffer), int(self.tot_time)
                     )

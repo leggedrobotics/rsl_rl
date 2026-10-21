@@ -15,13 +15,14 @@ from rsl_rl.utils.logger import Logger
 
 
 class RecordingWriter(LogWriter):
-    """LogWriter that records uploaded videos."""
+    """LogWriter that records scalar tags and uploaded videos."""
 
     def __init__(self) -> None:  # noqa: D107
+        self.tags: list[str] = []
         self.videos: list[tuple[pathlib.Path, int]] = []
 
     def add_scalar(self, tag: str, scalar_value: float, global_step: int) -> None:  # noqa: D102
-        pass
+        self.tags.append(tag)
 
     def save_video(self, video: pathlib.Path, it: int) -> None:  # noqa: D102
         self.videos.append((video, it))
@@ -73,3 +74,18 @@ class TestVideoUpload:
         _log(logger, 2)
 
         assert logger.writer.videos == [(first, 0), (second, 1)]
+
+
+class TestTimeSeries:
+    """Tests for the series logged against wall-clock time."""
+
+    def test_log_writer_receives_no_time_series(self, tmp_path: pathlib.Path) -> None:
+        """A LogWriter should only receive series indexed by iteration."""
+        logger = _make_logger(tmp_path)
+        logger.rewbuffer.append(1.0)
+        logger.lenbuffer.append(10.0)
+
+        _log(logger, 0)
+
+        assert "Train/mean_reward" in logger.writer.tags
+        assert not any(tag.endswith("/time") for tag in logger.writer.tags)
