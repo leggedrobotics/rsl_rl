@@ -80,6 +80,40 @@ class TestCNNLatentConcatenation:
         assert not torch.allclose(latent_before[:, cnn_start:], latent_after[:, cnn_start:], atol=1e-6)
 
 
+class TestCNNNormalization:
+    """Tests for normalization with and without 1D observation groups."""
+
+    @pytest.mark.parametrize("image_only", [False, True])
+    @pytest.mark.parametrize("obs_normalization", [False, True])
+    def test_update_normalization(self, image_only: bool, obs_normalization: bool) -> None:
+        """Normalize only 1D groups, or leave image-only models unchanged."""
+        obs = TensorDict({"image": torch.randn(NUM_ENVS, IMG_CHANNELS, IMG_H, IMG_W)}, batch_size=[NUM_ENVS])
+        if not image_only:
+            obs["policy"] = torch.arange(NUM_ENVS * OBS_DIM_1D, dtype=torch.float32).reshape(NUM_ENVS, OBS_DIM_1D)
+        model = CNNModel(
+            obs,
+            {"actor": list(obs.keys())},
+            "actor",
+            NUM_ACTIONS,
+            hidden_dims=[4],
+            cnn_cfg=CNN_CFG,
+            obs_normalization=obs_normalization,
+        )
+        before = model(obs).detach().clone()
+        state_before = {name: value.clone() for name, value in model.obs_normalizer.state_dict().items()}
+
+        model.update_normalization(obs)
+
+        if image_only or not obs_normalization:
+            assert torch.equal(model(obs), before)
+            for name, value in model.obs_normalizer.state_dict().items():
+                assert torch.equal(value, state_before[name])
+        else:
+            assert model.obs_normalizer.count == NUM_ENVS
+            assert torch.allclose(model.obs_normalizer.mean, obs["policy"].mean(dim=0))
+            assert torch.allclose(model.obs_normalizer.std, obs["policy"].std(dim=0, unbiased=False))
+
+
 class TestCNNOutputDimComputation:
     """Tests for the spatial dimension math in CNN layers."""
 
