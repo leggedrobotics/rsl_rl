@@ -98,7 +98,7 @@ class PPO:
 
         # Create the optimizer
         self.optimizer = resolve_optimizer(optimizer)(
-            chain(self.actor.parameters(), self.critic.parameters()), lr=learning_rate
+            list(dict.fromkeys(chain(self.actor.parameters(), self.critic.parameters()))), lr=learning_rate
         )  # type: ignore
 
         # Add storage
