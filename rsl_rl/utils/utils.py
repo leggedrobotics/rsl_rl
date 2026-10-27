@@ -288,21 +288,30 @@ def resolve_obs_groups(
 
 
 def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor) -> None:
-    """Raise ``ValueError`` if any environment output contains NaN."""
+    """Raise ``ValueError`` if any environment output contains NaN or Inf."""
     for key, tensor in obs.items():
-        if torch.isnan(tensor).any():
+        if not torch.isfinite(tensor).all():
+            has_nan = torch.isnan(tensor).any()
+            has_inf = torch.isinf(tensor).any()
+            value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
             raise ValueError(
-                f"The observation group '{key}' returned by the environment contains NaN values. This usually indicates"
-                " a bug in the environment's step() or reset() function."
+                f"The observation group '{key}' returned by the environment contains {value_name} values. This usually"
+                " indicates a bug in the environment's step() or reset() function."
             )
-    if torch.isnan(rewards).any():
+    if not torch.isfinite(rewards).all():
+        has_nan = torch.isnan(rewards).any()
+        has_inf = torch.isinf(rewards).any()
+        value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
         raise ValueError(
-            "The rewards returned by the environment contain NaN values. This usually indicates a bug in the"
+            f"The rewards returned by the environment contain {value_name} values. This usually indicates a bug in the"
             " environment's reward computation."
         )
-    if torch.isnan(dones).any():
+    if not torch.isfinite(dones).all():
+        has_nan = torch.isnan(dones).any()
+        has_inf = torch.isinf(dones).any()
+        value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
         raise ValueError(
-            "The dones returned by the environment contain NaN values. This usually indicates a bug in the"
+            f"The dones returned by the environment contain {value_name} values. This usually indicates a bug in the"
             " environment's termination logic."
         )
 
