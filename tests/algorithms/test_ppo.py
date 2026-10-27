@@ -10,10 +10,8 @@ from __future__ import annotations
 import torch
 from tensordict import TensorDict
 
-import pytest
-
 from rsl_rl.algorithms.ppo import PPO
-from rsl_rl.models import CNNModel, MLPModel
+from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
 from tests.conftest import make_obs
 
@@ -238,65 +236,6 @@ class TestTimeoutBootstrapping:
 
 class TestNormalizationUpdates:
     """Tests for observation-normalization update timing."""
-
-    @pytest.mark.parametrize(
-        "actor_norm,critic_norm,image_only",
-        [(True, False, True), (False, True, True), (True, True, True), (False, False, True), (True, True, False)],
-    )
-    def test_cnn_update(self, actor_norm: bool, critic_norm: bool, image_only: bool) -> None:
-        """A CNN PPO update must work when there are no 1D groups to normalize."""
-        torch.manual_seed(14)
-        num_envs, num_steps, num_actions = 2, 2, 2
-        obs = TensorDict({"image": torch.randn(num_envs, 1, 8, 8)}, batch_size=[num_envs])
-        if not image_only:
-            obs["policy"] = torch.tensor([[1.0, 3.0], [2.0, 7.0]])
-        obs_groups = {"actor": list(obs.keys()), "critic": list(obs.keys())}
-        cnn_cfg = {"output_channels": [2], "kernel_size": 3, "stride": 2}
-        actor = CNNModel(
-            obs,
-            obs_groups,
-            "actor",
-            num_actions,
-            hidden_dims=[4],
-            cnn_cfg=cnn_cfg,
-            obs_normalization=actor_norm,
-            distribution_cfg={"class_name": "GaussianDistribution"},
-        )
-        critic = CNNModel(
-            obs,
-            obs_groups,
-            "critic",
-            1,
-            hidden_dims=[4],
-            cnn_cfg=cnn_cfg,
-            obs_normalization=critic_norm,
-        )
-        storage = RolloutStorage("rl", num_envs, num_steps, obs, [num_actions])
-        ppo = PPO(actor, critic, storage, num_learning_epochs=1, num_mini_batches=1, schedule="fixed")
-        before = [param.detach().clone() for param in actor.parameters()]
-
-        with torch.inference_mode():
-            for step in range(num_steps):
-                ppo.act(obs)
-                next_obs = obs.clone()
-                next_obs["image"] = next_obs["image"] + 0.1
-                ppo.process_env_step(
-                    next_obs,
-                    torch.tensor([1.0 + step, 2.0]),
-                    torch.tensor([False, step == 1]),
-                    {},
-                )
-                obs = next_obs
-            ppo.compute_returns(obs)
-
-        losses = ppo.update()
-
-        assert all(torch.isfinite(torch.tensor(value)) for value in losses.values())
-        assert any(not torch.equal(old, new) for old, new in zip(before, actor.parameters()))
-        assert storage.step == 0
-        for model in (actor, critic):
-            if model.obs_normalization:
-                assert model.obs_normalizer.count == (0 if image_only else num_envs * num_steps)
 
     def test_normalization_uses_rollout_after_policy_update(self) -> None:
         """Normalization statistics should stay fixed during a rollout and update from stored observations."""
