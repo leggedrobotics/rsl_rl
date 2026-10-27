@@ -96,7 +96,7 @@ class PPO:
         self._raw_actor = self.actor
         self._raw_critic = self.critic
 
-        # Create the optimizer (parameters shared between actor and critic, e.g., CNN encoders, are listed once)
+        # Create the optimizer
         self.optimizer = resolve_optimizer(optimizer)(
             list(dict.fromkeys(chain(self.actor.parameters(), self.critic.parameters()))), lr=learning_rate
         )  # type: ignore
@@ -402,20 +402,7 @@ class PPO:
         if load_cfg.get("critic"):
             self._raw_critic.load_state_dict(loaded_dict["critic_state_dict"], strict=strict)
         if load_cfg.get("optimizer"):
-            optimizer_state = loaded_dict["optimizer_state_dict"]
-            # Older checkpoints list parameters shared between actor and critic twice, so merge the duplicates
-            group_params = optimizer_state["param_groups"][0]["params"]
-            if len(set(group_params)) < len(group_params):
-                unique_params = list(dict.fromkeys(group_params))
-                optimizer_state = {
-                    "state": {
-                        i: optimizer_state["state"][j]
-                        for i, j in enumerate(unique_params)
-                        if j in optimizer_state["state"]
-                    },
-                    "param_groups": [{**optimizer_state["param_groups"][0], "params": list(range(len(unique_params)))}],
-                }
-            self.optimizer.load_state_dict(optimizer_state)
+            self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
             self.learning_rate = self.optimizer.param_groups[0]["lr"]
         if load_cfg.get("rnd") and self.rnd:
             self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)

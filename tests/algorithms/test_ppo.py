@@ -8,8 +8,6 @@
 from __future__ import annotations
 
 import torch
-import warnings
-from itertools import chain
 from tensordict import TensorDict
 
 from rsl_rl.algorithms.ppo import PPO
@@ -457,24 +455,3 @@ class TestSharedCNNEncoders:
         assert ppo.optimizer.state[shared]["step"] == 1
         # The first Adam step moves each parameter by the learning rate
         torch.testing.assert_close((before - shared.detach()).abs().max().item(), 1e-3, atol=1e-6, rtol=0)
-
-    def test_legacy_checkpoint_with_duplicate_parameters_loads(self) -> None:
-        """Optimizer states that list shared parameters twice should still load."""
-        source = _build_ppo_with_shared_cnn()
-        with warnings.catch_warnings():  # Older versions passed the shared parameters to the optimizer twice
-            warnings.simplefilter("ignore")
-            legacy_optimizer = torch.optim.Adam(chain(source.actor.parameters(), source.critic.parameters()), lr=5e-4)
-        for p in source.optimizer.param_groups[0]["params"]:
-            p.grad = torch.ones_like(p)
-        legacy_optimizer.step()
-        checkpoint = source.save()
-        checkpoint["optimizer_state_dict"] = legacy_optimizer.state_dict()
-
-        restored = _build_ppo_with_shared_cnn()
-        restored.load(checkpoint, load_cfg=None, strict=True)
-        assert restored.learning_rate == 5e-4
-        restored_params = restored.optimizer.param_groups[0]["params"]
-        for source_param, restored_param in zip(source.optimizer.param_groups[0]["params"], restored_params):
-            torch.testing.assert_close(
-                restored.optimizer.state[restored_param]["exp_avg"], legacy_optimizer.state[source_param]["exp_avg"]
-            )
