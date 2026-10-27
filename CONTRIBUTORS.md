@@ -46,7 +46,6 @@ Please keep the lists sorted alphabetically.
 * Shaoshu Su
 * Shiqi Ren
 * Yuguo Shan
-* yunyv
 * Zeng Qingcheng
 * Zhang Chong
 * Ziqi Fan
