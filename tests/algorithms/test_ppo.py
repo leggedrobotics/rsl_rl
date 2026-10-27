@@ -10,6 +10,8 @@ from __future__ import annotations
 import torch
 from tensordict import TensorDict
 
+import pytest
+
 from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
@@ -76,6 +78,33 @@ def _build_ppo(**overrides: object) -> tuple[PPO, TensorDict]:
 
 class TestGAEComputation:
     """Tests for generalized advantage estimation in ``compute_returns``."""
+
+    @pytest.mark.parametrize("per_batch", [False, True])
+    def test_singleton_advantage_is_preserved(self, per_batch: bool) -> None:
+        """A singleton retains its learning signal through global and per-batch normalization."""
+        obs = make_obs(1, OBS_DIM)
+        groups = {"actor": ["policy"], "critic": ["policy"]}
+        storage = RolloutStorage("rl", 1, 1, obs, [NUM_ACTIONS])
+        ppo = PPO(
+            _make_actor(obs, groups),
+            _make_critic(obs, groups),
+            storage,
+            gamma=0.0,
+            num_learning_epochs=1,
+            num_mini_batches=1,
+            schedule="fixed",
+            normalize_advantage_per_mini_batch=per_batch,
+        )
+        with torch.no_grad():
+            ppo.act(obs)
+            reward = ppo.transition.values.flatten() + 2.0
+            ppo.process_env_step(obs, reward, torch.zeros(1), {})
+            ppo.compute_returns(obs)
+
+        torch.testing.assert_close(storage.advantages, torch.full((1, 1, 1), 2.0))
+        losses = ppo.update()
+        assert all(torch.isfinite(torch.tensor(value)) for value in losses.values())
+        assert losses["surrogate"] == pytest.approx(-2.0)
 
     def test_gae_returns_hand_computed(self) -> None:
         """Verify GAE returns match a hand-computed example with known rewards, values, and dones."""
