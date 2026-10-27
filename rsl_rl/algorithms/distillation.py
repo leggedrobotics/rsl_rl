@@ -81,7 +81,7 @@ class Distillation:
         # Add storage
         self.storage = storage
         self.transition = RolloutStorage.Transition()
-        self.last_hidden_states = (None, None)
+        self.last_student_hidden_state = None
 
         # Distillation parameters
         self.num_learning_epochs = num_learning_epochs
@@ -148,7 +148,7 @@ class Distillation:
         cnt = 0
 
         for epoch in range(self.num_learning_epochs):
-            self.student.reset(hidden_state=self.last_hidden_states[0])
+            self.student.reset(hidden_state=self.last_student_hidden_state)
             self.student.detach_hidden_state()
             for batch in self.storage.generator():
                 # Optionally use mixed precision for the forward pass and loss computation
@@ -182,8 +182,8 @@ class Distillation:
                 self.student.reset(batch.dones.view(-1))
                 self.student.detach_hidden_state(batch.dones.view(-1))
 
-        # Store the last hidden states for the next update
-        self.last_hidden_states = (self.student.get_hidden_state(), self.teacher.get_hidden_state())
+        # Store the last hidden state for the next update
+        self.last_student_hidden_state = self.student.get_hidden_state()
         self.student.detach_hidden_state()
 
         # Update the normalizer
