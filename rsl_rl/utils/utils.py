@@ -190,7 +190,7 @@ def resolve_class(cfg: dict) -> tuple[Callable, dict]:
 
 
 def resolve_obs_groups(
-    obs: TensorDict, obs_groups: dict[str, list[str]], default_sets: list[str]
+    obs: TensorDict, obs_groups: dict[str, list[str]], default_sets: list[str], fallback_to_policy: bool = True
 ) -> dict[str, list[str]]:
     """Validate the observation configuration and resolve missing observation sets.
 
@@ -213,7 +213,7 @@ def resolve_obs_groups(
     function will:
 
     1. Check if a group with the same name exists in the observations and assign this group to the observation set.
-    2. If 1. fails, it will assign the 'policy' observation group to the missing observation set.
+    2. If 1. fails and ``fallback_to_policy`` is True, assign the 'policy' observation group to the missing set.
     3. If 2. fails, an error is raised.
 
     Args:
@@ -221,6 +221,7 @@ def resolve_obs_groups(
         obs_groups: Dictionary mapping observation sets to lists of observation groups.
         default_sets: Default observation set names used by the algorithm. If not provided in ``obs_groups``, a
             default behavior gets triggered.
+        fallback_to_policy: Whether missing sets may use the "policy" group. Disable for physical state and goals.
 
     Returns:
         The resolved observation groups.
@@ -261,7 +262,7 @@ def resolve_obs_groups(
                     f" the appropriate observation. Consider adding the '{default_set_name}' key to the 'obs_groups'"
                     f" dictionary for clarity. This behavior will be removed in a future version."
                 )
-            elif "policy" in obs:
+            elif fallback_to_policy and "policy" in obs:
                 obs_groups[default_set_name] = ["policy"]
                 warnings.warn(
                     f"The observation configuration dictionary 'obs_groups' does not contain the '{default_set_name}'"
