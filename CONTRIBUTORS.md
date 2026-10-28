@@ -37,14 +37,18 @@ Please keep the lists sorted alphabetically.
 * Kohei Sendai
 * Lee Myong Il
 * Lorenzo Terenzi
+* Louis Le Lay
 * Marko Bjelonic
 * Markus Portugall
 * Masahiro Kubota
 * Matthijs van der Boon
 * Özhan Özen
 * Pascal Roth
+* Sanghyun Yun
+* Shantian Zhou
 * Shaoshu Su
 * Shiqi Ren
+* Yuguo Shan
 * Zeng Qingcheng
 * Zhang Chong
 * Ziqi Fan

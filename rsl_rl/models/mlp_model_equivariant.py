@@ -124,8 +124,8 @@ class EquivariantMLPModel(MLPModel):
         exported.mlp = self.mlp.fold()
         return exported
 
-    def as_onnx(self, verbose: bool) -> nn.Module:
+    def as_onnx(self) -> nn.Module:
         """Return a version of the model compatible with ONNX export, with the equivariant MLP folded."""
-        exported = super().as_onnx(verbose)
+        exported = super().as_onnx()
         exported.mlp = self.mlp.fold()
         return exported

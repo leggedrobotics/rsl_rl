@@ -172,7 +172,7 @@ class TestEquivariantMLPModelExport:
     def test_onnx_export_is_folded(self) -> None:
         """The ONNX export uses a plain MLP and is a valid graph."""
         model = make_trained_actor()
-        onnx_model = model.as_onnx(verbose=False)
+        onnx_model = model.as_onnx()
         onnx_model.eval()
         assert not any(isinstance(m, EquivariantLinear) for m in onnx_model.modules())
         with torch.no_grad():

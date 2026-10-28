@@ -76,62 +76,70 @@ class OnPolicyRunner:
         # Start training
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
-        for it in range(start_it, total_it):
-            start = time.time()
-            # Rollout
-            with torch.inference_mode():
-                for _ in range(self.cfg["num_steps_per_env"]):
-                    # Sample actions
-                    actions = self.alg.act(obs)
-                    # Step the environment
-                    obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
-                    # Check for NaN values from the environment
-                    if self.cfg.get("check_for_nan", True):
-                        check_nan(obs, rewards, dones)
-                    # Move to device
-                    obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
-                    # Process the step
-                    self.alg.process_env_step(obs, rewards, dones, extras)
-                    # Extract intrinsic rewards if RND is used (only for logging)
-                    intrinsic_rewards = self.alg.intrinsic_rewards if self.cfg["algorithm"].get("rnd_cfg") else None
-                    # Book keeping
-                    self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
+        try:
+            for it in range(start_it, total_it):
+                start = time.time()
+                # Rollout
+                with torch.inference_mode():
+                    for _ in range(self.cfg["num_steps_per_env"]):
+                        # Sample actions
+                        actions = self.alg.act(obs)
+                        # Step the environment
+                        obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
+                        # Check for NaN or Inf values from the environment
+                        if self.cfg.get("check_for_nan", True):
+                            check_nan(obs, rewards, dones)
+                        # Move to device
+                        obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
+                        # Process the step
+                        self.alg.process_env_step(obs, rewards, dones, extras)
+                        # Extract intrinsic rewards if RND is used (only for logging)
+                        intrinsic_rewards = self.alg.intrinsic_rewards if self.cfg["algorithm"].get("rnd_cfg") else None
+                        # Book keeping
+                        self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
+
+                    stop = time.time()
+                    collect_time = stop - start
+                    start = stop
+
+                    # Compute returns
+                    self.alg.compute_returns(obs)
+
+                # Update policy
+                loss_dict = self.alg.update()
 
                 stop = time.time()
-                collect_time = stop - start
-                start = stop
+                learn_time = stop - start
+                self.current_learning_iteration = it
 
-                # Compute returns
-                self.alg.compute_returns(obs)
+                # Log information
+                self.logger.log(
+                    it=it,
+                    start_it=start_it,
+                    total_it=total_it,
+                    collect_time=collect_time,
+                    learn_time=learn_time,
+                    loss_dict=loss_dict,
+                    learning_rate=self.alg.learning_rate,
+                    action_std=self.alg.get_policy().output_std,
+                    rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"].get("rnd_cfg") else None,
+                )
 
-            # Update policy
-            loss_dict = self.alg.update()
+                # Save model
+                if self.logger.writer is not None and it % self.cfg["save_interval"] == 0:
+                    self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore
 
-            stop = time.time()
-            learn_time = stop - start
-            self.current_learning_iteration = it
+            # Save the final model after training
+            if self.logger.writer is not None:
+                self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))  # type: ignore
 
-            # Log information
-            self.logger.log(
-                it=it,
-                start_it=start_it,
-                total_it=total_it,
-                collect_time=collect_time,
-                learn_time=learn_time,
-                loss_dict=loss_dict,
-                learning_rate=self.alg.learning_rate,
-                action_std=self.alg.get_policy().output_std,
-                rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"].get("rnd_cfg") else None,
-            )
+        except BaseException:
+            # Close the run as aborted, e.g., due to a KeyboardInterrupt or an exception
+            self.logger.abort_logging_writer()
+            raise
 
-            # Save model
-            if self.logger.writer is not None and it % self.cfg["save_interval"] == 0:
-                self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore
-
-        # Save the final model after training and stop the logging writer
-        if self.logger.writer is not None:
-            self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))  # type: ignore
-            self.logger.stop_logging_writer()
+        # Close the run as finished
+        self.logger.stop_logging_writer()
 
     def save(self, path: str, infos: dict | None = None) -> None:
         """Save the models and training state to a given path and upload them if external logging is used."""
@@ -180,7 +188,7 @@ class OnPolicyRunner:
 
     def export_policy_to_onnx(self, path: str, filename: str = "policy.onnx", verbose: bool = False) -> None:
         """Export the model into an ONNX file."""
-        onnx_model = self.alg.get_policy().as_onnx(verbose=verbose)
+        onnx_model = self.alg.get_policy().as_onnx()
         onnx_model.to("cpu")
         onnx_model.eval()
 

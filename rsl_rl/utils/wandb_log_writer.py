@@ -44,9 +44,6 @@ class WandbLogWriter(SummaryWriter, LogWriter):
             config={"log_dir": log_dir},
         )
 
-        # Initialize set to keep track of logged videos
-        self.logged_videos: set[str] = set()
-
     def add_scalar(
         self,
         tag: str,
@@ -76,11 +73,13 @@ class WandbLogWriter(SummaryWriter, LogWriter):
         wandb.save(path, base_path=os.path.dirname(path))
 
     def save_video(self, video: pathlib.Path, it: int) -> None:
-        """Upload a video artifact once per filename to W&B."""
-        if video.name not in self.logged_videos:
-            wandb.log({"video": wandb.Video(str(video), format="mp4")}, step=it)
-            self.logged_videos.add(video.name)
+        """Upload a video artifact to W&B."""
+        wandb.log({"video": wandb.Video(str(video), format="mp4")}, step=it)
 
     def stop(self) -> None:
         """Finish the active W&B run."""
         wandb.finish()
+
+    def abort(self) -> None:
+        """Finish the active W&B run and mark it as failed."""
+        wandb.finish(exit_code=1)

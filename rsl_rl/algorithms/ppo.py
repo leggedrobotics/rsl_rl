@@ -98,7 +98,7 @@ class PPO:
 
         # Create the optimizer
         self.optimizer = resolve_optimizer(optimizer)(
-            chain(self.actor.parameters(), self.critic.parameters()), lr=learning_rate
+            list(dict.fromkeys(chain(self.actor.parameters(), self.critic.parameters()))), lr=learning_rate
         )  # type: ignore
 
         # Add storage
@@ -187,7 +187,7 @@ class PPO:
         # Compute the advantages
         st.advantages = st.returns - st.values
         # Normalize the advantages if per minibatch normalization is not used
-        if not self.normalize_advantage_per_mini_batch:
+        if not self.normalize_advantage_per_mini_batch and st.advantages.numel() > 1:
             st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
 
     def update(self) -> dict[str, float]:
@@ -211,7 +211,7 @@ class PPO:
             original_batch_size = batch.observations.batch_size[0]
 
             # Check if we should normalize advantages per mini-batch
-            if self.normalize_advantage_per_mini_batch:
+            if self.normalize_advantage_per_mini_batch and batch.advantages.numel() > 1:
                 with torch.no_grad():
                     batch.advantages = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)  # type: ignore
 
@@ -266,9 +266,9 @@ class PPO:
                             param_group["lr"] = self.learning_rate
 
                 # Surrogate loss
-                ratio = torch.exp(actions_log_prob - torch.squeeze(batch.old_actions_log_prob))  # type: ignore
-                surrogate = -torch.squeeze(batch.advantages) * ratio  # type: ignore
-                surrogate_clipped = -torch.squeeze(batch.advantages) * torch.clamp(  # type: ignore
+                ratio = torch.exp(actions_log_prob - batch.old_actions_log_prob.squeeze(-1))  # type: ignore
+                surrogate = -batch.advantages.squeeze(-1) * ratio  # type: ignore
+                surrogate_clipped = -batch.advantages.squeeze(-1) * torch.clamp(  # type: ignore
                     ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
                 )
                 surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
@@ -381,6 +381,7 @@ class PPO:
         if self.rnd:
             saved_dict["rnd_state_dict"] = self.rnd.state_dict()
             saved_dict["rnd_optimizer_state_dict"] = self.rnd.optimizer.state_dict()
+            saved_dict["rnd_update_counter"] = self.rnd.update_counter
         return saved_dict
 
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
@@ -406,6 +407,7 @@ class PPO:
         if load_cfg.get("rnd") and self.rnd:
             self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
             self.rnd.optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
+            self.rnd.update_counter = loaded_dict.get("rnd_update_counter", 0)
         return load_cfg.get("iteration", False)
 
     def get_policy(self) -> MLPModel:

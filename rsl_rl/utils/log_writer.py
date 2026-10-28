@@ -41,3 +41,7 @@ class LogWriter(ABC):
 
     def stop(self) -> None:
         """Finalize and close the logging run."""
+
+    def abort(self) -> None:
+        """Close the run after training was interrupted. Defaults to :meth:`stop`."""
+        self.stop()

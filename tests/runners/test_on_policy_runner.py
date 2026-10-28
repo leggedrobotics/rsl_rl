@@ -8,12 +8,16 @@
 from __future__ import annotations
 
 import copy
+import pathlib
 import tempfile
 import torch
 from tensordict import TensorDict
 
+import pytest
+
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner
+from rsl_rl.utils import LogWriter
 
 NUM_ENVS = 4
 OBS_DIM = 8
@@ -152,14 +156,10 @@ class TestRunnerConstruction:
 class TestLearnLoop:
     """Tests that the learn loop runs and updates parameters."""
 
-    def test_learn_runs_without_error(self) -> None:
-        """A short learn call should complete without raising."""
-        runner = _build_runner()
-        runner.learn(num_learning_iterations=2)
-
-    def test_learn_updates_parameters(self) -> None:
+    @pytest.mark.parametrize("model_type", ["mlp", "rnn", "cnn"])
+    def test_learn_updates_parameters(self, model_type: str) -> None:
         """Actor parameters should change after a learning iteration."""
-        runner = _build_runner()
+        runner = _build_runner(model_type=model_type)
         params_before = {n: p.clone() for n, p in runner.alg.actor.named_parameters()}
         runner.learn(num_learning_iterations=2)
         changed = any(not torch.equal(params_before[n], p) for n, p in runner.alg.actor.named_parameters())
@@ -184,9 +184,10 @@ class TestSaveLoad:
             data = torch.load(f.name, weights_only=False, map_location="cpu")
             assert "iter" in data
 
-    def test_load_restores_parameters(self) -> None:
+    @pytest.mark.parametrize("model_type", ["mlp", "rnn", "cnn"])
+    def test_load_restores_parameters(self, model_type: str) -> None:
         """Loading a checkpoint should restore model parameters exactly."""
-        runner = _build_runner()
+        runner = _build_runner(model_type=model_type)
         runner.learn(num_learning_iterations=2)
 
         with tempfile.NamedTemporaryFile(suffix=".pt") as f:
@@ -243,15 +244,10 @@ class TestSaveLoad:
 class TestInferencePolicy:
     """Tests for get_inference_policy and the returned callable."""
 
-    def test_inference_policy_returns_callable(self) -> None:
-        """get_inference_policy should return a callable model."""
-        runner = _build_runner()
-        policy = runner.get_inference_policy()
-        assert callable(policy)
-
-    def test_inference_policy_produces_actions(self) -> None:
+    @pytest.mark.parametrize("model_type", ["mlp", "rnn", "cnn"])
+    def test_inference_policy_produces_actions(self, model_type: str) -> None:
         """The inference policy should return a tensor with the correct action shape."""
-        runner = _build_runner()
+        runner = _build_runner(model_type=model_type)
         policy = runner.get_inference_policy()
         obs = runner.env.get_observations()
         actions = policy(obs)
@@ -281,19 +277,13 @@ class TestDeterministicTraining:
         runner.learn(num_learning_iterations=3)
         return {k: v.clone() for k, v in runner.alg.actor.state_dict().items()}
 
-    def test_mlp_reproducibility(self) -> None:
-        """Two MLP training runs with the same seed should yield identical parameters."""
-        run_a = self._seeded_train(seed=42, model_type="mlp")
-        run_b = self._seeded_train(seed=42, model_type="mlp")
+    @pytest.mark.parametrize("model_type", ["mlp", "rnn", "cnn"])
+    def test_reproducibility(self, model_type: str) -> None:
+        """Two training runs with the same seed should yield identical parameters."""
+        run_a = self._seeded_train(seed=42, model_type=model_type)
+        run_b = self._seeded_train(seed=42, model_type=model_type)
         for key in run_a:
-            assert torch.equal(run_a[key], run_b[key]), f"MLP param '{key}' differs between seeded runs"
-
-    def test_rnn_reproducibility(self) -> None:
-        """Two RNN training runs with the same seed should yield identical parameters."""
-        run_a = self._seeded_train(seed=42, model_type="rnn")
-        run_b = self._seeded_train(seed=42, model_type="rnn")
-        for key in run_a:
-            assert torch.equal(run_a[key], run_b[key]), f"RNN param '{key}' differs between seeded runs"
+            assert torch.equal(run_a[key], run_b[key]), f"Parameter '{key}' differs between seeded runs"
 
     def test_different_seeds_diverge(self) -> None:
         """Different seeds should produce different parameters."""
@@ -303,81 +293,45 @@ class TestDeterministicTraining:
         assert any_different, "Different seeds should produce different parameters"
 
 
-class TestRNNRunner:
-    """Tests that the full learn loop works with an RNN-based actor/critic."""
+class LifecycleRecordingWriter(LogWriter):
+    """LogWriter that records calls to stop and abort."""
 
-    def test_rnn_learn_runs_without_error(self) -> None:
-        """A short learn call with RNN models should complete without raising."""
-        runner = _build_runner(model_type="rnn")
-        runner.learn(num_learning_iterations=2)
+    def __init__(self, log_dir: str) -> None:  # noqa: D107
+        self.calls: list[str] = []
 
-    def test_rnn_learn_updates_parameters(self) -> None:
-        """RNN actor parameters should change after learning."""
-        runner = _build_runner(model_type="rnn")
-        params_before = {n: p.clone() for n, p in runner.alg.actor.named_parameters()}
-        runner.learn(num_learning_iterations=2)
-        changed = any(not torch.equal(params_before[n], p) for n, p in runner.alg.actor.named_parameters())
-        assert changed, "RNN actor parameters should have changed after learning"
+    def add_scalar(self, tag: str, scalar_value: float, global_step: int) -> None:  # noqa: D102
+        pass
 
-    def test_rnn_inference_produces_actions(self) -> None:
-        """Inference policy from an RNN runner should return correct action shape."""
-        runner = _build_runner(model_type="rnn")
-        policy = runner.get_inference_policy()
-        obs = runner.env.get_observations()
-        actions = policy(obs)
-        assert actions.shape == (NUM_ENVS, NUM_ACTIONS)
+    def stop(self) -> None:  # noqa: D102
+        self.calls.append("stop")
 
-    def test_rnn_save_load_restores_parameters(self) -> None:
-        """Save/load should preserve RNN model parameters (including hidden state shapes)."""
-        runner = _build_runner(model_type="rnn")
-        runner.learn(num_learning_iterations=2)
+    def abort(self) -> None:  # noqa: D102
+        self.calls.append("abort")
 
-        with tempfile.NamedTemporaryFile(suffix=".pt") as f:
-            runner.save(f.name)
-            saved_actor = copy.deepcopy(runner.alg.actor.state_dict())
 
+class InterruptedEnv(DummyEnv):
+    """DummyEnv whose step raises as if the user pressed Ctrl-C."""
+
+    def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:  # noqa: D102
+        raise KeyboardInterrupt
+
+
+class TestLoggingWriterLifecycle:
+    """Tests that the learn loop closes the logging writer on success and on failure."""
+
+    def test_learn_aborts_writer_when_training_raises(self, tmp_path: pathlib.Path) -> None:
+        """An interrupted training run should abort the writer and re-raise."""
+        cfg = _make_train_cfg()
+        cfg["logger"] = {"class_name": LifecycleRecordingWriter}
+        runner = OnPolicyRunner(InterruptedEnv(), cfg, log_dir=str(tmp_path), device="cpu")
+        with pytest.raises(KeyboardInterrupt):
             runner.learn(num_learning_iterations=2)
-            runner.load(f.name)
+        assert runner.logger.writer.calls == ["abort"]
 
-            for key, param in runner.alg.actor.state_dict().items():
-                assert torch.equal(saved_actor[key], param), f"RNN parameter '{key}' not restored after load"
-
-
-class TestCNNRunner:
-    """Tests that the full learn loop works with a CNN-based actor/critic."""
-
-    def test_cnn_learn_runs_without_error(self) -> None:
-        """A short learn call with CNN models should complete without raising."""
-        runner = _build_runner(model_type="cnn")
+    def test_learn_stops_writer_when_training_completes(self, tmp_path: pathlib.Path) -> None:
+        """A successful training run should stop the writer and never abort it."""
+        cfg = _make_train_cfg()
+        cfg["logger"] = {"class_name": LifecycleRecordingWriter}
+        runner = OnPolicyRunner(DummyEnv(), cfg, log_dir=str(tmp_path), device="cpu")
         runner.learn(num_learning_iterations=2)
-
-    def test_cnn_learn_updates_parameters(self) -> None:
-        """CNN actor parameters should change after learning."""
-        runner = _build_runner(model_type="cnn")
-        params_before = {n: p.clone() for n, p in runner.alg.actor.named_parameters()}
-        runner.learn(num_learning_iterations=2)
-        changed = any(not torch.equal(params_before[n], p) for n, p in runner.alg.actor.named_parameters())
-        assert changed, "CNN actor parameters should have changed after learning"
-
-    def test_cnn_inference_produces_actions(self) -> None:
-        """Inference policy from a CNN runner should return correct action shape."""
-        runner = _build_runner(model_type="cnn")
-        policy = runner.get_inference_policy()
-        obs = runner.env.get_observations()
-        actions = policy(obs)
-        assert actions.shape == (NUM_ENVS, NUM_ACTIONS)
-
-    def test_cnn_save_load_restores_parameters(self) -> None:
-        """Save/load should preserve CNN model parameters."""
-        runner = _build_runner(model_type="cnn")
-        runner.learn(num_learning_iterations=2)
-
-        with tempfile.NamedTemporaryFile(suffix=".pt") as f:
-            runner.save(f.name)
-            saved_actor = copy.deepcopy(runner.alg.actor.state_dict())
-
-            runner.learn(num_learning_iterations=2)
-            runner.load(f.name)
-
-            for key, param in runner.alg.actor.state_dict().items():
-                assert torch.equal(saved_actor[key], param), f"CNN parameter '{key}' not restored after load"
+        assert runner.logger.writer.calls == ["stop"]
