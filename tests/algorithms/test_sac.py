@@ -41,6 +41,18 @@ def _algorithm() -> SAC:
     return SAC.construct_algorithm(env.get_observations(), env, cfg, "cpu")
 
 
+def test_cnn_actor_is_rejected_at_construction() -> None:
+    """Unsupported image actors fail before replay collection starts."""
+    env, cfg = DummyEnv(), _cfg()
+    cfg["multi_gpu"] = None
+    cfg["obs_groups"]["actor"] = ["policy", "image"]
+    cfg["actor"].update(class_name="CNNModel", cnn_cfg={"output_channels": [4], "kernel_size": 3, "flatten": True})
+    obs = env.get_observations()
+    obs["image"] = torch.zeros(env.num_envs, 1, 8, 8)
+    with pytest.raises(ValueError, match="SAC does not support CNN models"):
+        SAC.construct_algorithm(obs, env, cfg, "cpu")
+
+
 @pytest.mark.parametrize(
     "device",
     [

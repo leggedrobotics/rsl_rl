@@ -17,7 +17,7 @@ from tensordict import TensorDict
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import Symmetry, resolve_symmetry_config
-from rsl_rl.models import MLPModel, QMLPModel
+from rsl_rl.models import CNNModel, MLPModel, QMLPModel
 from rsl_rl.modules import EmpiricalNormalization, SquashedGaussianDistribution
 from rsl_rl.storage import ReplayBuffer
 from rsl_rl.utils import compile_model, resolve_class, resolve_obs_groups, resolve_optimizer
@@ -90,6 +90,8 @@ class SAC:
             raise ValueError("SAC requires a SquashedGaussianDistribution actor.")
         if actor.is_recurrent or any(critic.is_recurrent for critic in critics):
             raise ValueError("SAC does not support recurrent models.")
+        if isinstance(actor, CNNModel):
+            raise ValueError("SAC does not support CNN models.")
         if len(critics) < 2:
             raise ValueError("SAC requires at least two critics.")
         if min(num_updates, batch_size, n_steps, actor_update_interval) < 1 or learning_starts < 0:
