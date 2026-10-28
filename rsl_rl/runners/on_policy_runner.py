@@ -177,6 +177,7 @@ class OnPolicyRunner:
         """Export the model to a Torch JIT file."""
         jit_model = self.alg.get_policy().as_jit()
         jit_model.to("cpu")
+        jit_model.eval()
 
         if not os.path.exists(path):
             os.makedirs(path, exist_ok=True)

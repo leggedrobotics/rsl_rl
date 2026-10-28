@@ -11,6 +11,7 @@ import copy
 import pathlib
 import tempfile
 import torch
+from pathlib import Path
 from tensordict import TensorDict
 
 import pytest
@@ -429,3 +430,10 @@ class TestLoggingWriterLifecycle:
         runner = OnPolicyRunner(DummyEnv(), cfg, log_dir=str(tmp_path), device="cpu")
         runner.learn(num_learning_iterations=2)
         assert runner.logger.writer.calls == ["stop"]
+
+
+def test_jit_export_uses_evaluation_mode(tmp_path: Path) -> None:
+    """Deployment modules use evaluation-mode statistics."""
+    runner = _build_runner()
+    runner.export_policy_to_jit(str(tmp_path))
+    assert not torch.jit.load(str(tmp_path / "policy.pt")).training
