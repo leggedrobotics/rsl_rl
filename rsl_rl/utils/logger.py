@@ -282,10 +282,9 @@ class Logger:
             # Upload new videos to external logging service if supported
             if isinstance(self.writer, LogWriter):
                 for video in pathlib.Path(self.log_dir).rglob("*.mp4"):  # type: ignore
-                    if video in self.uploaded_videos:
-                        continue
-                    self.writer.save_video(video, it)
-                    self.uploaded_videos.add(video)
+                    if video not in self.uploaded_videos:
+                        self.writer.save_video(video, it)
+                        self.uploaded_videos.add(video)
 
             # Clear extras buffer
             self.ep_extras.clear()
@@ -301,7 +300,7 @@ class Logger:
             self.writer.stop()
 
     def abort_logging_writer(self) -> None:
-        """Abort the logging writer after training raised."""
+        """Abort the logging writer after training was interrupted."""
         if isinstance(self.writer, LogWriter):
             self.writer.abort()
 

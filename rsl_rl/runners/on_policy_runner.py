@@ -132,12 +132,13 @@ class OnPolicyRunner:
             # Save the final model after training
             if self.logger.writer is not None:
                 self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))  # type: ignore
+
         except BaseException:
-            # Close the run as failed, also on KeyboardInterrupt
+            # Close the run as aborted, e.g., due to a KeyboardInterrupt or an exception
             self.logger.abort_logging_writer()
             raise
 
-        # Stop the logging writer
+        # Close the run as finished
         self.logger.stop_logging_writer()
 
     def save(self, path: str, infos: dict | None = None) -> None:
