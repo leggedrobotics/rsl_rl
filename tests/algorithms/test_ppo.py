@@ -382,7 +382,7 @@ class TestPPOLosses:
         for actual, expected in zip(actor.parameters(), reference.parameters()):
             torch.testing.assert_close(actual.grad, expected.grad)
 
-    @pytest.mark.parametrize("advantage, ratio, expected", [(1.0, 1.5, -1.2), (-1.0, 0.5, 0.8)])
+    @pytest.mark.parametrize("advantage, ratio, expected", [(1.0, 1.5, -1.2), (-1.0, 0.5, 0.8), (1.0, 0.5, -0.5)])
     def test_surrogate_loss_clipping(self, advantage: float, ratio: float, expected: float) -> None:
         """The update clips probability ratios for positive and negative advantages."""
         ppo, obs = _build_ppo(num_learning_epochs=1, num_mini_batches=1, learning_rate=0.0)
