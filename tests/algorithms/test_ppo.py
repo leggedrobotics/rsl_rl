@@ -385,7 +385,7 @@ class TestPPOLosses:
     @pytest.mark.parametrize("advantage, ratio, expected", [(1.0, 1.5, -1.2), (-1.0, 0.5, 0.8), (1.0, 0.5, -0.5)])
     def test_surrogate_loss_clipping(self, advantage: float, ratio: float, expected: float) -> None:
         """The update clips probability ratios for positive and negative advantages."""
-        ppo, obs = _build_ppo(num_learning_epochs=1, num_mini_batches=1, learning_rate=0.0)
+        ppo, obs = _build_ppo(num_learning_epochs=1, num_mini_batches=1)
         _fill_rollout(ppo, obs)
         ppo.storage.actions_log_prob.sub_(torch.log(torch.tensor(ratio)))
         ppo.storage.advantages.fill_(advantage)
@@ -399,9 +399,7 @@ class TestPPOLosses:
     )
     def test_value_loss_clipping(self, clipped: bool, return_offset: float, expected: float) -> None:
         """The update penalizes changes beyond the value clip only when enabled."""
-        ppo, obs = _build_ppo(
-            num_learning_epochs=1, num_mini_batches=1, learning_rate=0.0, use_clipped_value_loss=clipped
-        )
+        ppo, obs = _build_ppo(num_learning_epochs=1, num_mini_batches=1, use_clipped_value_loss=clipped)
         _fill_rollout(ppo, obs)
         ppo.storage.returns.copy_(ppo.storage.values + return_offset)
         ppo.storage.values.sub_(1.0)
