@@ -98,7 +98,7 @@ class PPO:
 
         # Create the optimizer
         self.optimizer = resolve_optimizer(optimizer)(
-            chain(self.actor.parameters(), self.critic.parameters()), lr=learning_rate
+            list(dict.fromkeys(chain(self.actor.parameters(), self.critic.parameters()))), lr=learning_rate
         )  # type: ignore
 
         # Add storage
@@ -187,7 +187,7 @@ class PPO:
         # Compute the advantages
         st.advantages = st.returns - st.values
         # Normalize the advantages if per minibatch normalization is not used
-        if not self.normalize_advantage_per_mini_batch:
+        if not self.normalize_advantage_per_mini_batch and st.advantages.numel() > 1:
             st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
 
     def update(self) -> dict[str, float]:
@@ -211,7 +211,7 @@ class PPO:
             original_batch_size = batch.observations.batch_size[0]
 
             # Check if we should normalize advantages per mini-batch
-            if self.normalize_advantage_per_mini_batch:
+            if self.normalize_advantage_per_mini_batch and batch.advantages.numel() > 1:
                 with torch.no_grad():
                     batch.advantages = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)  # type: ignore
 

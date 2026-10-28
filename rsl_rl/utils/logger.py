@@ -18,7 +18,6 @@ from collections import deque
 import rsl_rl
 from rsl_rl.utils.log_writer import LogWriter
 from rsl_rl.utils.utils import resolve_class
-from rsl_rl.utils.wandb_log_writer import WandbLogWriter
 
 
 class Logger:
@@ -47,6 +46,7 @@ class Logger:
         self.tot_time = 0
 
         self.writer: LogWriter | None = None
+        self.uploaded_videos: set[pathlib.Path] = set()
 
         # Create buffers
         self.ep_extras = []
@@ -224,7 +224,7 @@ class Logger:
                     self.writer.add_scalar("Rnd/weight", rnd_weight, it)  # type: ignore
                 self.writer.add_scalar("Train/mean_reward", statistics.mean(self.rewbuffer), it)
                 self.writer.add_scalar("Train/mean_episode_length", statistics.mean(self.lenbuffer), it)
-                if not isinstance(self.writer, WandbLogWriter):
+                if not isinstance(self.writer, LogWriter):
                     self.writer.add_scalar(
                         "Train/mean_reward/time", statistics.mean(self.rewbuffer), int(self.tot_time)
                     )
@@ -279,10 +279,12 @@ class Logger:
             )
             print(log_string)
 
-            # Upload available videos to external logging service if supported
+            # Upload new videos to external logging service if supported
             if isinstance(self.writer, LogWriter):
                 for video in pathlib.Path(self.log_dir).rglob("*.mp4"):  # type: ignore
-                    self.writer.save_video(video, it)
+                    if video not in self.uploaded_videos:
+                        self.writer.save_video(video, it)
+                        self.uploaded_videos.add(video)
 
             # Clear extras buffer
             self.ep_extras.clear()
@@ -296,6 +298,11 @@ class Logger:
         """Stop the logging writer."""
         if isinstance(self.writer, LogWriter):
             self.writer.stop()
+
+    def abort_logging_writer(self) -> None:
+        """Abort the logging writer after training was interrupted."""
+        if isinstance(self.writer, LogWriter):
+            self.writer.abort()
 
     def _store_code_state(self) -> list[str]:
         """Store the current git diff of the code repositories involved in the experiment."""
