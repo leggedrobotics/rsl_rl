@@ -10,8 +10,10 @@ from __future__ import annotations
 import torch
 from tensordict import TensorDict
 
+import pytest
+
 from rsl_rl.algorithms.ppo import PPO
-from rsl_rl.models import MLPModel
+from rsl_rl.models import CNNModel, MLPModel
 from rsl_rl.storage import RolloutStorage
 from tests.conftest import make_obs
 
@@ -74,8 +76,56 @@ def _build_ppo(**overrides: object) -> tuple[PPO, TensorDict]:
     return ppo, obs
 
 
+def _build_ppo_with_shared_cnn() -> PPO:
+    """Build a PPO instance whose actor and critic share a CNN encoder."""
+    obs = TensorDict(
+        {"policy": torch.randn(NUM_ENVS, OBS_DIM), "image": torch.randn(NUM_ENVS, 1, 8, 8)}, batch_size=[NUM_ENVS]
+    )
+    obs_groups = {"actor": ["policy", "image"], "critic": ["policy", "image"]}
+    cnn_cfg = {"image": {"output_channels": [4], "kernel_size": 3, "stride": 1, "activation": "elu"}}
+    actor = CNNModel(
+        obs,
+        obs_groups,
+        "actor",
+        NUM_ACTIONS,
+        hidden_dims=[32],
+        cnn_cfg=cnn_cfg,
+        distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0},
+    )
+    critic = CNNModel(obs, obs_groups, "critic", 1, hidden_dims=[32], cnns=actor.cnns)
+    storage = RolloutStorage("rl", NUM_ENVS, NUM_STEPS, obs, [NUM_ACTIONS])
+    return PPO(actor, critic, storage, learning_rate=1e-3)
+
+
 class TestGAEComputation:
     """Tests for generalized advantage estimation in ``compute_returns``."""
+
+    @pytest.mark.parametrize("per_batch", [False, True])
+    def test_singleton_advantage_is_preserved(self, per_batch: bool) -> None:
+        """A singleton retains its learning signal through global and per-batch normalization."""
+        obs = make_obs(1, OBS_DIM)
+        groups = {"actor": ["policy"], "critic": ["policy"]}
+        storage = RolloutStorage("rl", 1, 1, obs, [NUM_ACTIONS])
+        ppo = PPO(
+            _make_actor(obs, groups),
+            _make_critic(obs, groups),
+            storage,
+            gamma=0.0,
+            num_learning_epochs=1,
+            num_mini_batches=1,
+            schedule="fixed",
+            normalize_advantage_per_mini_batch=per_batch,
+        )
+        with torch.no_grad():
+            ppo.act(obs)
+            reward = ppo.transition.values.flatten() + 2.0
+            ppo.process_env_step(obs, reward, torch.zeros(1), {})
+            ppo.compute_returns(obs)
+
+        torch.testing.assert_close(storage.advantages, torch.full((1, 1, 1), 2.0))
+        losses = ppo.update()
+        assert all(torch.isfinite(torch.tensor(value)) for value in losses.values())
+        assert losses["surrogate"] == pytest.approx(-2.0)
 
     def test_gae_returns_hand_computed(self) -> None:
         """Verify GAE returns match a hand-computed example with known rewards, values, and dones."""
@@ -415,3 +465,22 @@ class TestCheckpoint:
         restored, _ = _build_ppo(rnd_cfg=RND_CFG)
         restored.load(checkpoint, load_cfg=None, strict=True)
         assert restored.rnd.update_counter == 0
+
+
+class TestSharedCNNEncoders:
+    """Tests for actor and critic sharing CNN encoders."""
+
+    def test_shared_parameters_are_stepped_once(self) -> None:
+        """Each shared parameter should appear once in the optimizer and receive a single Adam step."""
+        ppo = _build_ppo_with_shared_cnn()
+        params = ppo.optimizer.param_groups[0]["params"]
+        assert len(params) == len({id(p) for p in params})
+
+        shared = next(ppo.actor.cnns.parameters())
+        before = shared.detach().clone()
+        for p in params:
+            p.grad = torch.ones_like(p)
+        ppo.optimizer.step()
+        assert ppo.optimizer.state[shared]["step"] == 1
+        # The first Adam step moves each parameter by the learning rate
+        torch.testing.assert_close((before - shared.detach()).abs().max().item(), 1e-3, atol=1e-6, rtol=0)
