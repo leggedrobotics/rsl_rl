@@ -82,6 +82,13 @@ class DifferentiableTask:
     action_history_length: int = 2
     num_labels: int = 0
 
+    def to(self, device: torch.device | str) -> DifferentiableTask:
+        """Move tensor attributes used by actor heads; override for nested task state."""
+        for name, value in vars(self).items():
+            if isinstance(value, torch.Tensor):
+                setattr(self, name, value.to(device))
+        return self
+
     def actor_obs(
         self, state: State, goal: torch.Tensor, context: torch.Tensor, prev_actions: torch.Tensor
     ) -> torch.Tensor:
