@@ -253,6 +253,9 @@ class SuperMimic:
         frames = self.task.add_noise(
             self.task.actor_obs(state, history["goal"], history["context"], history["prev_actions"])
         )
+        first = index.valid.long().argmax(dim=1)
+        first_frame = frames[torch.arange(batch_size, device=frames.device), first]
+        frames = torch.where(index.valid[..., None], frames, first_frame[:, None])
         return history[:, -1], frames
 
     def _predict(
