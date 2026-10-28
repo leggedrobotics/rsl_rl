@@ -40,3 +40,11 @@ Distribution
    :members:
    :undoc-members:
 
+
+
+ResidualMLP
+-----------
+
+.. automodule:: rsl_rl.modules.residual_mlp
+   :members:
+   :undoc-members:

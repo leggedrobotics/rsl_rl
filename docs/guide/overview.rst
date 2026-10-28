@@ -39,6 +39,12 @@ Algorithms
    algorithm useful for transferring policies from training-time privileged observation sets to observations available
    during real-world deployment.
 
+:class:`~rsl_rl.algorithms.sac.SAC`
+   SAC learns from chronological replay with scalar state-action critics and entropy-regularized actions.
+   FlashSAC options include residual networks, categorical critics, return scaling, held noise and cosine schedules.
+   CPU, single GPU, mixed precision, symmetry and CUDA graphs are supported; recurrent models and multi-GPU are rejected.
+   Done rows require ``extras["final_obs"]``; only exclusive timeouts bootstrap. See :class:`~rsl_rl.env.vec_env.VecEnv`.
+
 Models
 ^^^^^^
 
@@ -58,6 +64,9 @@ Models
    independently. When used in conjunction with :class:`~rsl_rl.algorithms.ppo.PPO`, the encoders may be shared between
    actor and critic to save memory.
 
+:class:`~rsl_rl.models.q_mlp_model.QMLPModel`
+   A state-action critic that combines observation groups with actions before an MLP.
+
 Distributions
 ^^^^^^^^^^^^^
 
@@ -76,6 +85,9 @@ Distributions
    configurable action range. The concentration parameters are predicted by the model's MLP and constrained to guarantee
    a unimodal distribution.
 
+:class:`~rsl_rl.modules.distribution.SquashedGaussianDistribution`
+   A reparameterized, state-dependent Gaussian transformed by tanh and a fixed action range, with corrected log probabilities.
+
 Extensions
 ^^^^^^^^^^
 
@@ -91,7 +103,7 @@ Extensions
    function that defines how observations and actions are transformed. This can improve sample efficiency and promote
    symmetric behaviors for robots with structured morphology. Additionally, a mirror-loss regularization term can be
    added to the loss function to actively encourage symmetry in the policy. This extension is compatible with the
-   :class:`~rsl_rl.algorithms.ppo.PPO` algorithm. For more details, please check
+   :class:`~rsl_rl.algorithms.ppo.PPO` and :class:`~rsl_rl.algorithms.sac.SAC` algorithms. For more details, please check
    `this paper <https://arxiv.org/abs/2403.04359>`__.
 
 Loggers
@@ -179,6 +191,23 @@ A **Module** implements a building block for the **Model**. This could be a neur
 :class:`~rsl_rl.modules.normalization.EmpiricalNormalization`, or a distribution, such as the
 :class:`~rsl_rl.modules.distribution.GaussianDistribution`. Modules are initialized in the **Model** constructor and
 managed by the **Model**.
+
+Runner and algorithm protocol
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``OnPolicyRunner``, ``DistillationRunner`` and ``OffPolicyRunner`` share one collection loop. An algorithm implements
+``act(obs)``, ``process_env_step(obs, rewards, dones, extras)``, ``compute_returns(obs)`` and ``update()``. Replay-based
+algorithms construct targets during ``update`` and leave ``compute_returns`` empty. ``update`` returns named scalar
+losses for logging. Algorithms expose ``learning_rate`` and ``get_policy().output_std``; the latter is defined after
+the first ``act``, including during replay warm-up.
+
+``train_mode`` and ``eval_mode`` control the models. ``save`` and ``load`` own checkpoint state and selection.
+The optional ``default_load_cfg`` is needed only for ``runner.load(..., load_optimizer=False)``.
+``broadcast_parameters`` synchronizes supported distributed algorithms. Algorithms that do not support distribution
+reject a distributed configuration during construction.
+
+Collection runs under ``torch.inference_mode``. Persistent tensors needed by later autograd must be updated in place.
+Lazy allocation of such tensors, including replay storage, uses ``torch.inference_mode(False)``.
 
 .. _additional-components:
 
