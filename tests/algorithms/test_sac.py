@@ -57,7 +57,7 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
 
     assert OffPolicyRunner.learn is OnPolicyRunner.learn
     cfg = _cfg()
-    cfg["algorithm"].update(learning_starts=16, num_updates=4, actor_update_interval=1)
+    cfg["algorithm"].update(learning_starts=16, num_updates=4, actor_update_interval=1, use_cuda_graph=device != "cpu")
     log_dir = tmp_path / "warmup"
     runner = OffPolicyRunner(DummyEnv(device=device), cfg, log_dir=str(log_dir), device=device)
     before = [p.detach().clone() for p in runner.alg.actor.parameters()]
@@ -81,6 +81,8 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
     for model, parameters in zip(models, before_updates):
         assert any(not torch.equal(old, current) for old, current in zip(parameters, model.parameters()))
         assert all(torch.isfinite(p).all() for p in model.parameters())
+    if device != "cpu":
+        assert restored.alg._graph_steps[True].graph is not None
     sample = restored.env.get_observations()[:1]
     with torch.inference_mode():
         expected = restored.alg.get_policy()(sample).cpu()
@@ -198,8 +200,7 @@ def test_n_step_targets_at_episode_boundaries(device: str, scenario: str) -> Non
     torch.manual_seed(0)
     batch = alg._sample_batch()
     rows = (
-        torch
-        .stack(
+        torch.stack(
             (
                 batch.observations["policy"][:, 0],
                 batch.rewards,
@@ -311,3 +312,28 @@ def test_symmetry_replay_endpoints_and_actor_loss(augmentation: bool) -> None:
         torch.testing.assert_close(batch.next_observations["policy"][n:], -batch.next_observations["policy"][:n])
         torch.testing.assert_close(batch.actions[n:], -batch.actions[:n])
     assert torch.isfinite(torch.tensor(runner.alg.update()["symmetry"]))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
+def test_cuda_graph_delayed_actor_and_resume() -> None:
+    """Both graph variants can train, reload eager state and resume under the inherited runner."""
+    cfg = _cfg()
+    cfg["algorithm"].update(
+        use_cuda_graph=True,
+        num_updates=12,
+        actor_update_interval=2,
+        learning_rate_schedule="cosine",
+        schedule_updates=100,
+        critic_loss="categorical",
+        num_bins=11,
+    )
+    for role in ("actor", "critic"):
+        cfg[role]["network_cfg"] = {"class_name": "ResidualMLP", "hidden_dim": 16, "num_blocks": 1, "expansion": 2}
+    runner = OffPolicyRunner(DummyEnv(device="cuda:0"), cfg, device="cuda:0")
+    runner.learn(2)
+    assert all(step.graph is not None for step in runner.alg._graph_steps.values())
+    checkpoint = runner.alg.save()
+    runner.alg.load(checkpoint, None, True)
+    runner.learn(1)
+    assert runner.alg.num_critic_updates == 36
+    assert all(torch.isfinite(p).all() for p in runner.alg.actor.parameters())

@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import copy
+import functools
 import math
 import torch
 import torch.nn as nn
+from collections.abc import Callable
 from dataclasses import dataclass
 from tensordict import TensorDict
 
@@ -76,6 +78,7 @@ class SAC:
         final_learning_rate_ratio: float = 0.5,
         schedule_updates: int | None = None,
         use_mixed_precision: bool = False,
+        use_cuda_graph: bool = False,
         symmetry_cfg: dict | None = None,
         device: str = "cpu",
         multi_gpu_cfg: dict | None = None,
@@ -106,6 +109,9 @@ class SAC:
         if target_entropy_std is not None and target_entropy_std <= 0:
             raise ValueError("target_entropy_std must be positive.")
         self.symmetry = Symmetry(**symmetry_cfg) if symmetry_cfg is not None else None
+        if use_cuda_graph and torch.device(device).type != "cuda":
+            raise ValueError("CUDA graph capture requires a CUDA device.")
+        self.use_cuda_graph = use_cuda_graph
         self.device = device
         self.actor = actor.to(device)
         self.critics = nn.ModuleList(critics).to(device)
@@ -164,6 +170,7 @@ class SAC:
         self._observations: TensorDict | None = None
         self._actions: torch.Tensor | None = None
         self._pending_normalization: list[TensorDict] = []
+        self._configure_optimizer_capture()
 
     @torch.no_grad()
     def act(self, obs: TensorDict) -> torch.Tensor:
@@ -269,9 +276,17 @@ class SAC:
             if self.reward_normalization:
                 batch.rewards = batch.rewards / self._reward_scale()
             do_actor = self.num_critic_updates % self.actor_update_interval == 0
-            stats = self._update_actor_and_alpha(batch) if do_actor else {}
-            stats.update(self._update_critics(batch))
-            self._update_target_critics()
+            inputs = (
+                batch.observations,
+                batch.actions,
+                batch.rewards,
+                batch.next_observations,
+                batch.bootstrap_discounts,
+            )
+            if self.use_cuda_graph:
+                stats = self._graph_steps[do_actor](*inputs)
+            else:
+                stats = self._gradient_step(*inputs, do_actor=do_actor)
             self.num_critic_updates += 1
             for scheduler in self._schedulers:
                 if scheduler.last_epoch < scheduler.T_max:
@@ -286,6 +301,42 @@ class SAC:
             ).item()
             for key, value in totals.items()
         }
+
+    def _gradient_step(
+        self,
+        observations: TensorDict,
+        actions: torch.Tensor,
+        rewards: torch.Tensor,
+        next_observations: TensorDict,
+        bootstrap_discounts: torch.Tensor,
+        do_actor: bool,
+    ) -> dict[str, torch.Tensor]:
+        """Perform one fixed-shape optimizer step, suitable for lazy CUDA capture."""
+        batch = _Batch(observations, actions, rewards, next_observations, bootstrap_discounts)
+        stats = self._update_actor_and_alpha(batch) if do_actor else {}
+        stats.update(self._update_critics(batch))
+        self._update_target_critics()
+        return stats
+
+    def _configure_optimizer_capture(self) -> None:
+        """Keep capture state and learning-rate tensor identities consistent after construction and loading."""
+        for opt in (self.actor_optimizer, self.critic_optimizer, self.alpha_optimizer):
+            for group in opt.param_groups:
+                if self.use_cuda_graph and "capturable" not in group:
+                    raise ValueError("CUDA graphs require a capturable optimizer such as Adam or AdamW.")
+                if "capturable" in group:
+                    group["capturable"] = self.use_cuda_graph
+                group["lr"] = (
+                    torch.as_tensor(group["lr"], device=self.device) if self.use_cuda_graph else float(group["lr"])
+                )
+            for state in opt.state.values():
+                if "step" in state:
+                    state["step"] = state["step"].to(self.device if self.use_cuda_graph else "cpu")
+        if self.use_cuda_graph:
+            self._graph_steps = {
+                flag: _CudaGraphStep(functools.partial(self._gradient_step, do_actor=flag), self.device)
+                for flag in (True, False)
+            }
 
     def _augment_batch(self, batch: _Batch) -> _Batch:
         """Augment both endpoints with the existing Symmetry extension before constructing replay losses."""
@@ -524,6 +575,7 @@ class SAC:
             self.learning_rate = float(self.critic_optimizer.param_groups[0]["lr"])
             for scheduler, state in zip(self._schedulers, loaded_dict.get("scheduler_state_dicts", [])):
                 scheduler.load_state_dict(state)
+        self._configure_optimizer_capture()
         if load_cfg.get("iteration"):
             self.num_env_steps, self.num_critic_updates = (
                 loaded_dict["num_env_steps"],
@@ -561,6 +613,41 @@ class SAC:
         alg = alg_class(actor, critics, storage, device=device, multi_gpu_cfg=cfg["multi_gpu"], **alg_cfg)
         alg.compile(cfg.get("torch_compile_mode"))
         return alg
+
+
+class _CudaGraphStep:
+    """Run a function in a CUDA graph after a few eager warm-up calls.
+
+    The inputs of each call are copied into static buffers before the graph is replayed. The function must only use
+    tensor operations that are valid during graph capture and return a dictionary of tensors.
+    """
+
+    def __init__(self, fn: Callable[..., dict[str, torch.Tensor]], device: str, num_warmup: int = 3) -> None:
+        self.fn = fn
+        self.num_warmup = num_warmup
+        self.num_calls = 0
+        self.graph: torch.cuda.CUDAGraph | None = None
+        self._stream = torch.cuda.Stream(device=device)
+
+    def __call__(self, *args: torch.Tensor | TensorDict) -> dict[str, torch.Tensor]:
+        with torch.cuda.device(self._stream.device):
+            if self.graph is None and self.num_calls < self.num_warmup:
+                self.num_calls += 1
+                self._stream.wait_stream(torch.cuda.current_stream())
+                with torch.cuda.stream(self._stream):
+                    outputs = self.fn(*args)
+                torch.cuda.current_stream().wait_stream(self._stream)
+                return outputs
+            if self.graph is None:
+                self._static_args = tuple(arg.clone() for arg in args)
+                self.graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(self.graph, stream=self._stream):
+                    self._static_outputs = self.fn(*self._static_args)
+            else:
+                for static, arg in zip(self._static_args, args):
+                    static.copy_(arg)
+            self.graph.replay()
+            return {key: value.clone() for key, value in self._static_outputs.items()}
 
 
 def _batch_norm_layers(module: nn.Module) -> list[nn.Module]:
