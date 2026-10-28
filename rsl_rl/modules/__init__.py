@@ -17,6 +17,7 @@ from .mlp import MLP
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
 from .residual_mlp import ResidualMLP
 from .rnn import RNN, HiddenState
+from .world_model import WorldModel
 
 __all__ = [
     "CNN",
@@ -31,4 +32,5 @@ __all__ = [
     "HiddenState",
     "ResidualMLP",
     "SquashedGaussianDistribution",
+    "WorldModel",
 ]

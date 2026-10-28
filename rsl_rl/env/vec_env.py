@@ -99,7 +99,7 @@ class VecEnv(ABC):
             - "final_obs" (TensorDict): Transition-end observations on the environment device, owned by the caller.
               When any row is done, this must contain at least the consumed groups with the same shapes as the
               returned observations, before resets, post-step events and command resampling. Consumers read done
-              rows only.
+              rows only unless ``extras["final_obs_every_step"] = True`` signals capture on every step.
 
             - "log" (dict[str, float | torch.Tensor]): Additional information for logging and debugging purposes.
                The key should be a string and start with "/" for namespacing. The value can be a scalar or a
