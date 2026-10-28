@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import torch
+from collections.abc import Callable
 from tensordict import TensorDict
 from torch import nn
 from typing import TYPE_CHECKING
@@ -61,6 +62,12 @@ class SuperMimicActor(nn.Module):
         )
         self.register_buffer("fresh", torch.ones(num_envs, dtype=torch.bool), persistent=False)
         self.register_buffer("noise_std", torch.zeros(num_actions), persistent=False)
+
+    def _apply(self, fn: Callable, recurse: bool = True) -> SuperMimicActor:
+        """Keep task observation tensors on the actor device."""
+        super()._apply(fn, recurse=recurse)
+        self.task.to(self.history.device)
+        return self
 
     def observation_set(self, obs: TensorDict, name: str) -> torch.Tensor:
         """Concatenate one explicitly mapped set, using an empty tensor for absent optional sets."""
