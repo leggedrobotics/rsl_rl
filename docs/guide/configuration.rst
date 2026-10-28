@@ -536,16 +536,17 @@ MLPModel
    * - ``network_cfg``
      - dict | None
      - ``None``
-     - Optional network class and kwargs; replaces the default MLP.
+     - Optional network class and kwargs; replaces the default MLP. Available for MLPModel and QMLPModel only.
    * - ``distribution_cfg``
      - dict | None
      - ``None``
      - Optional output distribution configuration. If provided, the model can output stochastic values sampled from 
        the specified distribution.
 
-``network_cfg`` replaces the MLP and ignores ``hidden_dims`` and ``activation``. For ``class_name: ResidualMLP``,
-options are ``hidden_dim`` (256), ``num_blocks`` (2), ``expansion`` (4), and ``bn_momentum`` (0.01).
-ResidualMLP requires ``normalize_parameters`` after each optimizer step; only SAC calls it.
+For MLPModel and QMLPModel, ``network_cfg`` replaces the MLP and ignores ``hidden_dims`` and ``activation``.
+RNNModel and CNNModel do not accept ``network_cfg``. For ``class_name: ResidualMLP``, options are ``hidden_dim``
+(256), ``num_blocks`` (2), ``expansion`` (4), and ``bn_momentum`` (0.01). ResidualMLP requires
+``normalize_parameters`` after each optimizer step; only SAC calls it.
 
 QMLPModel
 ^^^^^^^^^
@@ -569,9 +570,8 @@ SAC sets its output dimension to one for scalar critics or ``num_bins`` for cate
 RNNModel
 ^^^^^^^^
 
-The :class:`~rsl_rl.models.rnn_model.RNNModel` inherits from the :class:`~rsl_rl.models.mlp_model.MLPModel` and thus
-shares the same configuration keys as the :class:`~rsl_rl.models.mlp_model.MLPModel`, with the addition of the following 
-keys:
+The :class:`~rsl_rl.models.rnn_model.RNNModel` inherits from the :class:`~rsl_rl.models.mlp_model.MLPModel` and shares
+the same configuration keys except ``network_cfg``, with the addition of the following keys:
 
 .. list-table::
    :header-rows: 1
@@ -605,9 +605,8 @@ keys:
 CNNModel
 ^^^^^^^^
 
-The :class:`~rsl_rl.models.cnn_model.CNNModel` inherits from the :class:`~rsl_rl.models.mlp_model.MLPModel` and thus
-shares the same configuration keys as the :class:`~rsl_rl.models.mlp_model.MLPModel`, with the addition of the following 
-keys:
+The :class:`~rsl_rl.models.cnn_model.CNNModel` inherits from the :class:`~rsl_rl.models.mlp_model.MLPModel` and shares
+the same configuration keys except ``network_cfg``, with the addition of the following keys:
 
 .. list-table::
    :header-rows: 1

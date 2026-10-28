@@ -42,7 +42,7 @@ Algorithms
 :class:`~rsl_rl.algorithms.sac.SAC`
    SAC learns from chronological replay with scalar state-action critics and entropy-regularized actions.
    FlashSAC options include residual networks, categorical critics, return scaling, held noise and cosine schedules.
-   CPU, single GPU, mixed precision, symmetry and CUDA graphs are supported; recurrent models and multi-GPU are rejected.
+   CPU, single GPU, mixed precision, symmetry and CUDA graphs are supported; CNN, recurrent models and multi-GPU are rejected.
    Done rows require ``extras["final_obs"]``; only exclusive timeouts bootstrap. See :class:`~rsl_rl.env.vec_env.VecEnv`.
 
 :class:`~rsl_rl.algorithms.supermimic.SuperMimic`
