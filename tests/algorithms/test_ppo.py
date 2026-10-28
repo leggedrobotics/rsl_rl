@@ -394,14 +394,16 @@ class TestPPOLosses:
 
         assert losses["surrogate"] == pytest.approx(expected)
 
-    @pytest.mark.parametrize("clipped, expected", [(True, 0.64), (False, 0.0)])
-    def test_value_loss_clipping(self, clipped: bool, expected: float) -> None:
+    @pytest.mark.parametrize(
+        "clipped, return_offset, expected", [(True, 0.0, 0.64), (False, 0.0, 0.0), (True, -1.0, 1.0)]
+    )
+    def test_value_loss_clipping(self, clipped: bool, return_offset: float, expected: float) -> None:
         """The update penalizes changes beyond the value clip only when enabled."""
         ppo, obs = _build_ppo(
             num_learning_epochs=1, num_mini_batches=1, learning_rate=0.0, use_clipped_value_loss=clipped
         )
         _fill_rollout(ppo, obs)
-        ppo.storage.returns.copy_(ppo.storage.values)
+        ppo.storage.returns.copy_(ppo.storage.values + return_offset)
         ppo.storage.values.sub_(1.0)
 
         losses = ppo.update()
