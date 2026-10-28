@@ -448,3 +448,18 @@ def test_tensor_episode_length_limits() -> None:
     assert runner.env.episode_length_buf.dtype == torch.int32
     assert (runner.env.episode_length_buf >= 0).all()
     assert (runner.env.episode_length_buf < runner.env.max_episode_length).all()
+
+
+def test_load_without_optimizer_restores_models_and_iteration(tmp_path: Path) -> None:
+    """Fresh optimizer state can accompany a full checkpoint model restore."""
+    runner = _build_runner()
+    runner.learn(1)
+    runner.current_learning_iteration = 7
+    path = str(tmp_path / "model.pt")
+    runner.save(path)
+    restored = _build_runner()
+    restored.load(path, load_optimizer=False)
+    assert restored.current_learning_iteration == 7
+    assert not restored.alg.optimizer.state
+    for expected, actual in zip(runner.alg.actor.parameters(), restored.alg.actor.parameters()):
+        torch.testing.assert_close(actual, expected)
