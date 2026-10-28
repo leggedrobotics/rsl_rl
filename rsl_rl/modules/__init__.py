@@ -23,6 +23,7 @@ from .equivariant import (
 from .mlp import MLP, ResidualMLP
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
 from .rnn import RNN, HiddenState
+from .world_model import WorldModel
 
 __all__ = [
     "CNN",
@@ -42,4 +43,5 @@ __all__ = [
     "SignedPermutation",
     "SquashedGaussianDistribution",
     "SymmetricEmpiricalNormalization",
+    "WorldModel",
 ]
