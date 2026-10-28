@@ -437,3 +437,14 @@ def test_jit_export_uses_evaluation_mode(tmp_path: Path) -> None:
     runner = _build_runner()
     runner.export_policy_to_jit(str(tmp_path))
     assert not torch.jit.load(str(tmp_path / "policy.pt")).training
+
+
+def test_tensor_episode_length_limits() -> None:
+    """Floating per-environment limits preserve the environment's integer buffer dtype and bounds."""
+    runner = _build_runner()
+    runner.env.max_episode_length = torch.tensor([1.5, 2.25, 3.75, 8.5])
+    runner.env.episode_length_buf = torch.zeros(NUM_ENVS, dtype=torch.int32)
+    runner.learn(0, init_at_random_ep_len=True)
+    assert runner.env.episode_length_buf.dtype == torch.int32
+    assert (runner.env.episode_length_buf >= 0).all()
+    assert (runner.env.episode_length_buf < runner.env.max_episode_length).all()

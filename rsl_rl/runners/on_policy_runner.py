@@ -57,9 +57,15 @@ class OnPolicyRunner:
         """Run the learning loop for the specified number of iterations."""
         # Randomize initial episode lengths (for exploration)
         if init_at_random_ep_len:
-            self.env.episode_length_buf = torch.randint_like(
-                self.env.episode_length_buf, high=int(self.env.max_episode_length)
-            )
+            if isinstance(self.env.max_episode_length, torch.Tensor):
+                self.env.episode_length_buf = (
+                    torch.rand_like(self.env.episode_length_buf, dtype=torch.float)
+                    * self.env.max_episode_length.to(self.env.episode_length_buf.device)
+                ).to(self.env.episode_length_buf.dtype)
+            else:
+                self.env.episode_length_buf = torch.randint_like(
+                    self.env.episode_length_buf, high=int(self.env.max_episode_length)
+                )
 
         # Start learning
         obs = self.env.get_observations().to(self.device)
