@@ -244,12 +244,6 @@ class TestSaveLoad:
 class TestInferencePolicy:
     """Tests for get_inference_policy and the returned callable."""
 
-    def test_inference_policy_returns_callable(self) -> None:
-        """get_inference_policy should return a callable model."""
-        runner = _build_runner()
-        policy = runner.get_inference_policy()
-        assert callable(policy)
-
     @pytest.mark.parametrize("model_type", ["mlp", "rnn", "cnn"])
     def test_inference_policy_produces_actions(self, model_type: str) -> None:
         """The inference policy should return a tensor with the correct action shape."""
