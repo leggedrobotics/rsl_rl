@@ -225,6 +225,23 @@ def test_direct_and_standard_runner_train_all_models() -> None:
     assert torch.isfinite(torch.tensor(learner.update()["world_model_loss"]))
 
 
+def test_replay_start_padding_repeats_the_same_noisy_reset_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unavailable history repeats one corrupted frame, as during collection."""
+    torch.manual_seed(0)
+    env, cfg = ScalarEnv(), _cfg()
+    cfg["actor"]["history_length"] = 5
+    learner = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, env.device)
+    _collect(learner, env, 7)
+    index = learner.storage.sample(64, history=4)
+    assert (~index.valid).any() and index.valid.all(dim=1).any()
+    monkeypatch.setattr(learner.storage, "sample", lambda *args, **kwargs: index)
+    monkeypatch.setattr(learner.task, "add_noise", lambda frames: frames + torch.randn_like(frames))
+    _, frames = learner._starts(64)
+    first = frames[torch.arange(64), index.valid.long().argmax(dim=1)]
+    torch.testing.assert_close(frames[~index.valid], first[:, None].expand_as(frames)[~index.valid], rtol=0, atol=0)
+    assert (frames[index.valid.all(dim=1), 0] != frames[index.valid.all(dim=1), -1]).any()
+
+
 def test_learning_rate_tracks_learner_iterations_and_resume() -> None:
     """All optimizers share one clamped schedule despite unequal update counts."""
     learner, env = _learner(lr_decay_iterations=8, num_world_model_updates=2), ScalarEnv()
