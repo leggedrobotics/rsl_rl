@@ -30,7 +30,6 @@ Please keep the lists sorted alphabetically.
 ## Contributors
 
 * Bikram Pandit
-* cyanseek
 * Emilio Palma
 * Eric Vollenweider
 * Fabian Jenelten

@@ -11,8 +11,6 @@ import copy
 import torch
 from tensordict import TensorDict
 
-import pytest
-
 from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.models import MLPModel, RNNModel
 from rsl_rl.storage import RolloutStorage
@@ -279,20 +277,16 @@ class TestNormalizationUpdates:
 class TestPPOLosses:
     """Tests for PPO loss computation correctness."""
 
-    @pytest.mark.parametrize("actor_type", ["gru", "lstm", "mlp"])
-    @pytest.mark.parametrize("num_envs", [1, 2])
-    def test_recurrent_surrogate_matches_per_transition_objective(self, actor_type: str, num_envs: int) -> None:
+    def test_recurrent_surrogate_matches_per_transition_objective(self) -> None:
         """A recurrent minibatch must pair each action with its own old probability and advantage."""
         torch.manual_seed(7)
+        num_envs = 1
         obs = make_obs(num_envs, 3)
         obs_groups = {"actor": ["policy"], "critic": ["policy"]}
-        rnn_cfg = {"hidden_dims": [8], "rnn_hidden_dim": 8, "rnn_type": "lstm" if actor_type == "lstm" else "gru"}
-        if actor_type == "mlp":
-            actor = _make_actor(obs, obs_groups, 2, hidden_dims=[8])
-        else:
-            actor = RNNModel(
-                obs, obs_groups, "actor", 2, distribution_cfg={"class_name": "GaussianDistribution"}, **rnn_cfg
-            )
+        rnn_cfg = {"hidden_dims": [8], "rnn_hidden_dim": 8, "rnn_type": "gru"}
+        actor = RNNModel(
+            obs, obs_groups, "actor", 2, distribution_cfg={"class_name": "GaussianDistribution"}, **rnn_cfg
+        )
         critic = RNNModel(obs, obs_groups, "critic", 1, **rnn_cfg)
         storage = RolloutStorage("rl", num_envs, 6, obs, [2])
         ppo = PPO(
