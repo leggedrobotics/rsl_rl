@@ -31,3 +31,11 @@ Q MLP Model
 .. automodule:: rsl_rl.models.q_mlp_model
    :members:
    :undoc-members:
+
+
+SuperMimic Actor
+----------------
+
+.. automodule:: rsl_rl.models.supermimic_actor
+   :members:
+   :undoc-members:

@@ -45,6 +45,11 @@ Algorithms
    CPU, single GPU, mixed precision, symmetry and CUDA graphs are supported; recurrent models and multi-GPU are rejected.
    Done rows require ``extras["final_obs"]``; only exclusive timeouts bootstrap. See :class:`~rsl_rl.env.vec_env.VecEnv`.
 
+:class:`~rsl_rl.algorithms.supermimic.SuperMimic`
+   SuperMimic fits physical dynamics from replay and differentiates imagined returns through frozen model weights
+   to optimize a history-conditioned actor. The task owns geometry, rewards and analytic state advancement.
+   It uses the standard OffPolicyRunner loop. See :ref:`supermimic-contract` for its environment and checkpoint contract.
+
 Models
 ^^^^^^
 
@@ -317,3 +322,23 @@ following replay script:
    for _ in range(1000):
        actions = policy(obs)
        obs, rewards, dones, extras = env.step(actions)
+
+
+.. _supermimic-contract:
+
+SuperMimic environment and checkpoints
+--------------------------------------
+
+The environment supplies flat, noise-free ``state`` and optional ``goal``, privileged ``context`` and event ``labels``
+sets. Every step must supply physical successors before resets and interval events in ``extras["final_obs"]``, with
+``extras["final_obs_every_step"] = True``. Interval edits cut future model-fitting windows through ``window_break``;
+replay retains the original physical successor. Task features and ``post_dynamics`` preserve state and action gradients.
+Actor moments update during ``act`` and world-model moments during ``process_env_step``, using in-place writes compatible
+with inference-mode collection. ``updates_per_step`` accrues learner debt; runner iteration is the logging step axis.
+All optimizers share one cosine schedule over ``lr_decay_iterations`` learner iterations.
+
+Full checkpoints contain ``actor_state_dict``, ``critic_state_dict``, ``world_model_state_dict``, each model's
+``*_optimizer_state_dict`` and the learner iteration. Replay, collection history and simulator state are excluded.
+``runner.load(path, load_optimizer=False)`` loads all models and counters with fresh optimizers. For deployment use
+``runner.load(path, load_cfg={"actor": True})``; other partial model selections are rejected. Model state-dict loading
+checks tensor shapes. Task coordinate meaning must match the training configuration.

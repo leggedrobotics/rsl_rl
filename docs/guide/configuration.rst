@@ -452,6 +452,52 @@ SAC
      - ``None``
      - Optional replay augmentation and mirror-loss configuration.
 
+SuperMimic
+^^^^^^^^^^
+
+SuperMimic uses ``actor``, ``world_model`` and ``critic`` model configurations. ``task_cfg.class_name`` resolves a
+:class:`~rsl_rl.algorithms.supermimic_task.DifferentiableTask` with ``env``, ``device`` and the remaining task kwargs.
+The task supplies physical coordinates, rewards and feature construction. See
+:class:`~rsl_rl.algorithms.supermimic.SuperMimic` for all optimizer, imagination and cadence parameters.
+Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 0.1]`` after global norm clipping.
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - ``"SuperMimic"``.
+   * - ``task_cfg``
+     - dict
+     - required
+     - Differentiable task class and kwargs.
+   * - ``replay_buffer_size``
+     - int
+     - ``1000000``
+     - Total physical transitions across environments; allocated lazily.
+   * - ``max_replay_memory_fraction``
+     - float | None
+     - ``None``
+     - Optional fraction of free device memory available to replay.
+   * - ``updates_per_step``
+     - float
+     - ``0.4``
+     - Learner iterations accrued per environment step.
+   * - ``warmup_steps``
+     - int
+     - ``64``
+     - Stored steps per environment before learning; must cover world_model_window.
+   * - ``lr_decay_iterations``
+     - int
+     - ``250000``
+     - Shared cosine duration in learner iterations.
+
 Model Configuration
 -------------------
 
@@ -643,6 +689,68 @@ configuration includes the following parameters:
      - ``True``
      - Whether to flatten the output tensor.
 
+
+SuperMimicActor
+^^^^^^^^^^^^^^^
+
+The actor consumes deployable features from the task and exports explicit ``obs_history`` and optional ``goal`` inputs.
+Feature widths are inferred at construction.
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - ``"SuperMimicActor"``.
+   * - ``history_length``
+     - int
+     - ``5``
+     - Number of actor frames; reset history repeats its first frame.
+   * - ``latent_dim``
+     - int
+     - ``32``
+     - Encoded goal width.
+   * - ``encoder_hidden_dims``
+     - tuple[int]
+     - ``(2048, 1024, 512, 256)``
+     - Goal encoder layers.
+   * - ``decoder_hidden_dims``
+     - tuple[int]
+     - ``(2048, 1024, 512, 256)``
+     - Action decoder layers.
+
+WorldModel
+^^^^^^^^^^
+
+The world model predicts physical increments and optional successor event labels. The task defines integration
+coordinates and feature widths.
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - ``"WorldModel"``.
+   * - ``hidden_dims``
+     - tuple[int]
+     - ``(2048, 2048, 2048)``
+     - Dynamics network layers with LayerNorm.
+   * - ``label_hidden_dims``
+     - tuple[int]
+     - ``(512, 512)``
+     - Optional event-head layers.
 
 Distribution Configuration
 --------------------------
@@ -946,6 +1054,21 @@ Depending on the algorithm and extensions used, RSL-RL expects different observa
      - Observations used as input to the teacher model.
    * - ``rnd_state``
      - Observations used as input to the RND extension.
+
+   * - ``state``
+     - SuperMimic physical state, noise-free; required without a policy-group fallback.
+   * - ``goal``
+     - Optional SuperMimic task goal.
+   * - ``context``
+     - Optional noise-free privileged dynamics and critic context.
+   * - ``labels``
+     - Optional binary successor events with ``task.num_labels`` columns.
+   * - ``prev_action`` / ``prev_prev_action``
+     - Optional action vectors overriding SuperMimic's collection history, including nonzero reset commands.
+
+SuperMimic optional sets must be mapped explicitly. Its critic inputs are constructed by ``task.critic_obs``;
+do not map a ``critic`` set for this algorithm. Task action histories are oldest-first with shape
+``[..., task.action_history_length, num_actions]``.
 
 Incomplete or incorrect configurations are handled in :func:`~rsl_rl.utils.utils.resolve_obs_groups`, which provides 
 detailed information on how errors are resolved.
