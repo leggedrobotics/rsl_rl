@@ -242,6 +242,15 @@ def test_replay_start_padding_repeats_the_same_noisy_reset_frame(monkeypatch: py
     assert (frames[index.valid.all(dim=1), 0] != frames[index.valid.all(dim=1), -1]).any()
 
 
+def test_inference_device_moves_task_tensors() -> None:
+    """Task observation constants move together with policy parameters and history."""
+    learner = _learner()
+    learner.task.offset = torch.ones(1)
+    policy = learner.get_policy().to("meta")
+    assert policy.history.device.type == "meta"
+    assert learner.task.offset.device.type == "meta"
+
+
 def test_learning_rate_tracks_learner_iterations_and_resume() -> None:
     """All optimizers share one clamped schedule despite unequal update counts."""
     learner, env = _learner(lr_decay_iterations=8, num_world_model_updates=2), ScalarEnv()
