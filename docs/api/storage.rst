@@ -16,3 +16,10 @@ Replay Buffer
    :members:
    :undoc-members:
 
+
+Sequence Replay Buffer
+----------------------
+
+.. automodule:: rsl_rl.storage.sequence_replay_buffer
+   :members:
+   :undoc-members:

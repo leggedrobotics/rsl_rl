@@ -31,3 +31,11 @@ Equivariant MLP Model
 .. automodule:: rsl_rl.models.mlp_model_equivariant
    :members:
    :undoc-members:
+
+
+SuperMimic Actor
+----------------
+
+.. automodule:: rsl_rl.models.supermimic_actor
+   :members:
+   :undoc-members:
