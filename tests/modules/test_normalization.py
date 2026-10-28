@@ -144,6 +144,15 @@ class TestEmpiricalDiscountedVariationNormalization:
         last_10 = outputs[-10:]
         assert max(last_10) - min(last_10) < 0.1, "Normalization should stabilize for constant rewards"
 
+    def test_fresh_eval_normalizer_preserves_reward(self) -> None:
+        """An untrained normalizer in eval mode divides rewards by its unit std."""
+        norm = EmpiricalDiscountedVariationNormalization(shape=[])
+        norm.eval()
+        reward = torch.tensor([5.0])
+        torch.testing.assert_close(norm(reward), reward)
+        assert norm.emp_norm.std == 1
+        assert norm.emp_norm.count == 0
+
     def test_zero_std_returns_raw_reward(self) -> None:
         """When std is zero, forward should return the raw reward."""
         norm = EmpiricalDiscountedVariationNormalization(shape=[])
