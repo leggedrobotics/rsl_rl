@@ -24,3 +24,10 @@ CNN Model
    :members:
    :undoc-members:
 
+
+SuperMimic Actor
+----------------
+
+.. automodule:: rsl_rl.models.supermimic_actor
+   :members:
+   :undoc-members:
