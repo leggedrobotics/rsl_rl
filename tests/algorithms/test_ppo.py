@@ -181,12 +181,6 @@ class TestGAEComputation:
         ]
         expected_returns = [expected_adv[i] + values[i] for i in range(3)]
 
-        # Use the actual critic to produce last_values override
-        with torch.no_grad():
-            storage.values[0] = torch.full((num_envs, 1), values[0])
-            storage.values[1] = torch.full((num_envs, 1), values[1])
-            storage.values[2] = torch.full((num_envs, 1), values[2])
-
         # Call compute_returns with a custom last_values by monkeypatching critic
         original_critic_call = ppo.critic.forward
         ppo.critic.forward = lambda *a, **kw: last_values
