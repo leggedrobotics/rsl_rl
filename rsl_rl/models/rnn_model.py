@@ -104,9 +104,9 @@ class RNNModel(MLPModel):
         else:
             raise NotImplementedError(f"Unsupported RNN type: {type(self.rnn.rnn)}")
 
-    def as_onnx(self, verbose: bool = False) -> nn.Module:
+    def as_onnx(self) -> nn.Module:
         """Return a version of the model compatible with ONNX export."""
-        return _OnnxRNNModel(self, verbose)
+        return _OnnxRNNModel(self)
 
     def _get_latent_dim(self) -> int:
         """Return the latent dimensionality consumed by the MLP head."""
@@ -182,10 +182,9 @@ class _OnnxRNNModel(nn.Module):
 
     is_recurrent: bool = True
 
-    def __init__(self, model: RNNModel, verbose: bool) -> None:
+    def __init__(self, model: RNNModel) -> None:
         """Create an ONNX-export wrapper around an RNNModel."""
         super().__init__()
-        self.verbose = verbose
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.rnn = copy.deepcopy(model.rnn.rnn)  # Access underlying torch module to avoid wrapper logic during export
         self.mlp = copy.deepcopy(model.mlp)

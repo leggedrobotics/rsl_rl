@@ -180,7 +180,7 @@ class TestMLPModelExport:
         actor, _obs = _make_mlp_model(stochastic=True)
         actor.eval()
 
-        onnx_model = actor.as_onnx(verbose=False)
+        onnx_model = actor.as_onnx()
         onnx_model.eval()
 
         with tempfile.NamedTemporaryFile(suffix=".onnx") as f:
@@ -214,7 +214,7 @@ class TestMLPModelExport:
             model.update_normalization(shifted_obs)
 
         model.eval()
-        onnx_model = model.as_onnx(verbose=False)
+        onnx_model = model.as_onnx()
         onnx_model.eval()
 
         with tempfile.NamedTemporaryFile(suffix=".onnx") as f:
