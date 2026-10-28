@@ -277,7 +277,7 @@ class TestDeterministicTraining:
         runner.learn(num_learning_iterations=3)
         return {k: v.clone() for k, v in runner.alg.actor.state_dict().items()}
 
-    @pytest.mark.parametrize("model_type", ["mlp", "rnn"])
+    @pytest.mark.parametrize("model_type", ["mlp", "rnn", "cnn"])
     def test_reproducibility(self, model_type: str) -> None:
         """Two training runs with the same seed should yield identical parameters."""
         run_a = self._seeded_train(seed=42, model_type=model_type)
