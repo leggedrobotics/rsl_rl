@@ -77,6 +77,12 @@ class MLP(nn.Sequential):
         for idx, layer in enumerate(layers):
             self.add_module(f"{idx}", layer)
 
+    @property
+    @torch.jit.unused
+    def output(self) -> nn.Linear:
+        """Return the output projection for distribution-specific initialization."""
+        return [layer for layer in self if isinstance(layer, nn.Linear)][-1]
+
     def init_weights(self, scales: float | tuple[float]) -> None:
         """Initialize the weights of the MLP.
 
