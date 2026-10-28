@@ -414,10 +414,22 @@ class TestPPOLosses:
 class TestAdaptiveLearningRate:
     """Tests for adaptive KL-based learning rate scheduling."""
 
-    @pytest.mark.parametrize("kl, expected_lr", [(0.03, 1e-3 / 1.5), (0.002, 1.5e-3), (0.01, 1e-3)])
-    def test_update_adapts_optimizer_lr(self, monkeypatch: pytest.MonkeyPatch, kl: float, expected_lr: float) -> None:
+    @pytest.mark.parametrize(
+        "kl, initial_lr, expected_lr",
+        [
+            (0.03, 1e-3, 1e-3 / 1.5),
+            (0.002, 1e-3, 1.5e-3),
+            (0.01, 1e-3, 1e-3),
+            (0.0, 1e-3, 1e-3),
+            (0.03, 1.2e-5, 1e-5),
+            (0.002, 8e-3, 1e-2),
+        ],
+    )
+    def test_update_adapts_optimizer_lr(
+        self, monkeypatch: pytest.MonkeyPatch, kl: float, initial_lr: float, expected_lr: float
+    ) -> None:
         """The update applies the KL-based learning rate to every optimizer group."""
-        ppo, obs = _build_ppo(num_learning_epochs=1, num_mini_batches=1, schedule="adaptive")
+        ppo, obs = _build_ppo(num_learning_epochs=1, num_mini_batches=1, schedule="adaptive", learning_rate=initial_lr)
         _fill_rollout(ppo, obs)
         monkeypatch.setattr(ppo.actor, "get_kl_divergence", lambda *_: torch.tensor(kl))
 
