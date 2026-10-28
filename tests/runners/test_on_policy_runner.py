@@ -8,12 +8,16 @@
 from __future__ import annotations
 
 import copy
+import pathlib
 import tempfile
 import torch
 from tensordict import TensorDict
 
+import pytest
+
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner
+from rsl_rl.utils import LogWriter
 
 NUM_ENVS = 4
 OBS_DIM = 8
@@ -381,3 +385,47 @@ class TestCNNRunner:
 
             for key, param in runner.alg.actor.state_dict().items():
                 assert torch.equal(saved_actor[key], param), f"CNN parameter '{key}' not restored after load"
+
+
+class LifecycleRecordingWriter(LogWriter):
+    """LogWriter that records calls to stop and abort."""
+
+    def __init__(self, log_dir: str) -> None:  # noqa: D107
+        self.calls: list[str] = []
+
+    def add_scalar(self, tag: str, scalar_value: float, global_step: int) -> None:  # noqa: D102
+        pass
+
+    def stop(self) -> None:  # noqa: D102
+        self.calls.append("stop")
+
+    def abort(self) -> None:  # noqa: D102
+        self.calls.append("abort")
+
+
+class InterruptedEnv(DummyEnv):
+    """DummyEnv whose step raises as if the user pressed Ctrl-C."""
+
+    def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:  # noqa: D102
+        raise KeyboardInterrupt
+
+
+class TestLoggingWriterLifecycle:
+    """Tests that the learn loop closes the logging writer on success and on failure."""
+
+    def test_learn_aborts_writer_when_training_raises(self, tmp_path: pathlib.Path) -> None:
+        """An interrupted training run should abort the writer and re-raise."""
+        cfg = _make_train_cfg()
+        cfg["logger"] = {"class_name": LifecycleRecordingWriter}
+        runner = OnPolicyRunner(InterruptedEnv(), cfg, log_dir=str(tmp_path), device="cpu")
+        with pytest.raises(KeyboardInterrupt):
+            runner.learn(num_learning_iterations=2)
+        assert runner.logger.writer.calls == ["abort"]
+
+    def test_learn_stops_writer_when_training_completes(self, tmp_path: pathlib.Path) -> None:
+        """A successful training run should stop the writer and never abort it."""
+        cfg = _make_train_cfg()
+        cfg["logger"] = {"class_name": LifecycleRecordingWriter}
+        runner = OnPolicyRunner(DummyEnv(), cfg, log_dir=str(tmp_path), device="cpu")
+        runner.learn(num_learning_iterations=2)
+        assert runner.logger.writer.calls == ["stop"]
