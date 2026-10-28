@@ -7,13 +7,14 @@
 
 from __future__ import annotations
 
+import copy
 import torch
 from tensordict import TensorDict
 
 import pytest
 
 from rsl_rl.algorithms.ppo import PPO
-from rsl_rl.models import CNNModel, MLPModel
+from rsl_rl.models import CNNModel, MLPModel, RNNModel
 from rsl_rl.storage import RolloutStorage
 from tests.conftest import make_obs
 
@@ -325,6 +326,59 @@ class TestNormalizationUpdates:
 
 class TestPPOLosses:
     """Tests for PPO loss computation correctness."""
+
+    def test_recurrent_surrogate_matches_per_transition_objective(self) -> None:
+        """A recurrent minibatch must pair each action with its own old probability and advantage."""
+        torch.manual_seed(7)
+        num_envs = 1
+        obs = make_obs(num_envs, 3)
+        obs_groups = {"actor": ["policy"], "critic": ["policy"]}
+        rnn_cfg = {"hidden_dims": [8], "rnn_hidden_dim": 8, "rnn_type": "gru"}
+        actor = RNNModel(
+            obs, obs_groups, "actor", 2, distribution_cfg={"class_name": "GaussianDistribution"}, **rnn_cfg
+        )
+        critic = RNNModel(obs, obs_groups, "critic", 1, **rnn_cfg)
+        storage = RolloutStorage("rl", num_envs, 6, obs, [2])
+        ppo = PPO(
+            actor,
+            critic,
+            storage,
+            num_learning_epochs=1,
+            num_mini_batches=1,
+            schedule="fixed",
+            learning_rate=0.0,
+            value_loss_coef=0.0,
+            entropy_coef=0.0,
+            max_grad_norm=1e6,
+        )
+        with torch.inference_mode():
+            for step in range(storage.num_transitions_per_env):
+                ppo.act(obs)
+                obs = make_obs(num_envs, 3)
+                dones = torch.full((num_envs,), step == 2)
+                ppo.process_env_step(obs, torch.randn(num_envs), dones, {})
+            ppo.compute_returns(obs)
+
+        reference = copy.deepcopy(actor)
+        batch = next(storage.recurrent_mini_batch_generator(1, 1))
+        reference(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[0], stochastic_output=True)
+        log_prob = (
+            torch.distributions.Normal(reference.output_mean, reference.output_std)
+            .log_prob(batch.actions)
+            .sum(-1)
+            .flatten()
+        )
+        ratios = (log_prob - batch.old_actions_log_prob.flatten()).exp()
+        advantages = batch.advantages.flatten().clone()
+        expected_loss = -torch.minimum(
+            ratios * advantages, ratios.clamp(1.0 - ppo.clip_param, 1.0 + ppo.clip_param) * advantages
+        ).mean()
+        expected_loss.backward()
+
+        losses = ppo.update()
+        torch.testing.assert_close(losses["surrogate"], expected_loss.item(), atol=1e-6, rtol=1e-5)
+        for actual, expected in zip(actor.parameters(), reference.parameters()):
+            torch.testing.assert_close(actual.grad, expected.grad)
 
     def test_surrogate_loss_clipping(self) -> None:
         """When ratio deviates beyond clip_param, the clipped branch should dominate."""

@@ -266,9 +266,9 @@ class PPO:
                             param_group["lr"] = self.learning_rate
 
                 # Surrogate loss
-                ratio = torch.exp(actions_log_prob - torch.squeeze(batch.old_actions_log_prob))  # type: ignore
-                surrogate = -torch.squeeze(batch.advantages) * ratio  # type: ignore
-                surrogate_clipped = -torch.squeeze(batch.advantages) * torch.clamp(  # type: ignore
+                ratio = torch.exp(actions_log_prob - batch.old_actions_log_prob.squeeze(-1))  # type: ignore
+                surrogate = -batch.advantages.squeeze(-1) * ratio  # type: ignore
+                surrogate_clipped = -batch.advantages.squeeze(-1) * torch.clamp(  # type: ignore
                     ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
                 )
                 surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
