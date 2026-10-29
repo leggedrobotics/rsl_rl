@@ -110,6 +110,15 @@ class TestCNNOutputDimComputation:
         actual_output = cnn(obs["image"])
         assert actual_output.shape == (NUM_ENVS, cnn.output_dim)
 
+        model, obs = _make_cnn_model(
+            cnn_cfg={"image": {"output_channels": [2], "kernel_size": 1, "stride": 3, "padding": "zeros"}}
+        )
+        cnn = model.cnns["image"]
+        actual_output = cnn(obs["image"])
+        assert cnn.output_dim == 2 * 6 * 6
+        assert actual_output.shape == (NUM_ENVS, cnn.output_dim)
+        assert model(obs).shape == (NUM_ENVS, NUM_ACTIONS)
+
     def test_max_pool_halves_output(self) -> None:
         """Max pooling should roughly halve spatial dimensions."""
         h_out, w_out = _compute_output_dim((16, 16), kernel=3, stride=1, dilation=1, padding=(1, 1), is_max_pool=True)

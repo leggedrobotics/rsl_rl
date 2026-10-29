@@ -168,7 +168,7 @@ def _compute_padding(input_hw: tuple[int, int], kernel: int, stride: int, dilati
     """
     h = math.ceil((stride * math.floor(input_hw[0] / stride) - input_hw[0] - stride + dilation * (kernel - 1) + 1) / 2)
     w = math.ceil((stride * math.floor(input_hw[1] / stride) - input_hw[1] - stride + dilation * (kernel - 1) + 1) / 2)
-    return (h, w)
+    return (max(0, h), max(0, w))
 
 
 def _compute_output_dim(
