@@ -62,10 +62,12 @@ class VecEnv(ABC):
             actions: Input actions to apply. Shape: (num_envs, num_actions)
 
         Returns:
-            observations: Observations from the environment.
-            rewards: Rewards from the environment. Shape: (num_envs,)
-            dones: Done flags from the environment. Shape: (num_envs,)
-            extras: Extra information from the environment.
+            A tuple containing:
+
+            - observations: Observations from the environment.
+            - rewards: Rewards from the environment. Shape: (num_envs,)
+            - dones: Done flags from the environment. Shape: (num_envs,)
+            - extras: Extra information from the environment.
 
         Observations:
             The observations TensorDict usually contains multiple observation groups. The `obs_groups`
@@ -91,9 +93,13 @@ class VecEnv(ABC):
             The extras dictionary includes metrics such as the episode reward, episode length, etc. The following
             dictionary keys are used by rsl_rl:
 
-            - "time_outs" (torch.Tensor): Timeouts for the environments. These correspond to terminations that
-               happen due to time limits and not due to the environment reaching a terminal state. This is useful
-               for environments that have a fixed episode length.
+            - "time_outs" (torch.Tensor): Boolean timeout flags of shape ``[num_envs]``. True only for rows that
+              were truncated without reaching a terminal state.
+
+            - "final_obs" (TensorDict): Transition-end observations on the environment device, owned by the caller.
+              When any row is done, this must contain at least the consumed groups with the same shapes as the
+              returned observations, before resets, post-step events and command resampling. Consumers read done
+              rows only.
 
             - "log" (dict[str, float | torch.Tensor]): Additional information for logging and debugging purposes.
                The key should be a string and start with "/" for namespacing. The value can be a scalar or a
