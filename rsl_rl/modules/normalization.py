@@ -113,10 +113,8 @@ class EmpiricalDiscountedVariationNormalization(nn.Module):
             self.emp_norm.update(avg)
 
         # Normalize rewards with the empirical std
-        if self.emp_norm._std > 0:  # type: ignore
-            return rew / self.emp_norm._std  # type: ignore
-        else:
-            return rew
+        std = self.emp_norm._std
+        return rew / torch.where(std > 0, std, 1.0)
 
 
 class _DiscountedAverage:

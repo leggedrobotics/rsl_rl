@@ -163,6 +163,16 @@ class TestEmpiricalDiscountedVariationNormalization:
         assert norm.emp_norm.std == 0
         torch.testing.assert_close(result, reward)
 
+        vector_norm = EmpiricalDiscountedVariationNormalization(shape=2)
+        vector_reward = torch.tensor([[1.0, 5.0], [5.0, 5.0]])
+        torch.testing.assert_close(vector_norm(vector_reward), torch.tensor([[0.5, 5.0], [2.5, 5.0]]))
+        vector_norm.eval()
+        vector_reward = torch.tensor([[6.0, 7.0], [10.0, 9.0]], requires_grad=True)
+        result = vector_norm(vector_reward)
+        torch.testing.assert_close(result, torch.tensor([[3.0, 7.0], [5.0, 9.0]]))
+        result.sum().backward()
+        torch.testing.assert_close(vector_reward.grad, torch.tensor([[0.5, 1.0], [0.5, 1.0]]))
+
     def test_in_place_scaling_of_output_does_not_change_history(self) -> None:
         """Scaling the returned raw reward in place should not modify the discounted average."""
         norm = EmpiricalDiscountedVariationNormalization(shape=[], gamma=0.5)
