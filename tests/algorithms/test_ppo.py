@@ -7,13 +7,14 @@
 
 from __future__ import annotations
 
+import copy
 import torch
 from tensordict import TensorDict
 
 import pytest
 
 from rsl_rl.algorithms.ppo import PPO
-from rsl_rl.models import CNNModel, MLPModel
+from rsl_rl.models import CNNModel, MLPModel, RNNModel
 from rsl_rl.storage import RolloutStorage
 from tests.conftest import make_obs
 
@@ -74,6 +75,14 @@ def _build_ppo(**overrides: object) -> tuple[PPO, TensorDict]:
     defaults.update(overrides)
     ppo = PPO(actor, critic, storage, **defaults)
     return ppo, obs
+
+
+def _fill_rollout(ppo: PPO, obs: TensorDict) -> None:
+    """Collect transitions for one PPO update."""
+    with torch.no_grad():
+        for _ in range(ppo.storage.num_transitions_per_env):
+            ppo.act(obs)
+            ppo.process_env_step(obs, torch.zeros(NUM_ENVS), torch.zeros(NUM_ENVS), {})
 
 
 def _build_ppo_with_shared_cnn() -> PPO:
@@ -171,12 +180,6 @@ class TestGAEComputation:
             3.48,
         ]
         expected_returns = [expected_adv[i] + values[i] for i in range(3)]
-
-        # Use the actual critic to produce last_values override
-        with torch.no_grad():
-            storage.values[0] = torch.full((num_envs, 1), values[0])
-            storage.values[1] = torch.full((num_envs, 1), values[1])
-            storage.values[2] = torch.full((num_envs, 1), values[2])
 
         # Call compute_returns with a custom last_values by monkeypatching critic
         original_critic_call = ppo.critic.forward
@@ -326,96 +329,112 @@ class TestNormalizationUpdates:
 class TestPPOLosses:
     """Tests for PPO loss computation correctness."""
 
-    def test_surrogate_loss_clipping(self) -> None:
-        """When ratio deviates beyond clip_param, the clipped branch should dominate."""
-        clip_param = 0.2
+    def test_recurrent_surrogate_matches_per_transition_objective(self) -> None:
+        """A recurrent minibatch must pair each action with its own old probability and advantage."""
+        torch.manual_seed(7)
+        num_envs = 1
+        obs = make_obs(num_envs, 3)
+        obs_groups = {"actor": ["policy"], "critic": ["policy"]}
+        rnn_cfg = {"hidden_dims": [8], "rnn_hidden_dim": 8, "rnn_type": "gru"}
+        actor = RNNModel(
+            obs, obs_groups, "actor", 2, distribution_cfg={"class_name": "GaussianDistribution"}, **rnn_cfg
+        )
+        critic = RNNModel(obs, obs_groups, "critic", 1, **rnn_cfg)
+        storage = RolloutStorage("rl", num_envs, 6, obs, [2])
+        ppo = PPO(
+            actor,
+            critic,
+            storage,
+            num_learning_epochs=1,
+            num_mini_batches=1,
+            schedule="fixed",
+            learning_rate=0.0,
+            value_loss_coef=0.0,
+            entropy_coef=0.0,
+            max_grad_norm=1e6,
+        )
+        with torch.inference_mode():
+            for step in range(storage.num_transitions_per_env):
+                ppo.act(obs)
+                obs = make_obs(num_envs, 3)
+                dones = torch.full((num_envs,), step == 2)
+                ppo.process_env_step(obs, torch.randn(num_envs), dones, {})
+            ppo.compute_returns(obs)
 
-        # Construct a scenario: positive advantages, ratio > 1 + clip
-        advantages = torch.tensor([1.0, 1.0, 1.0])
-        old_log_probs = torch.tensor([0.0, 0.0, 0.0])
-        # New log probs that give ratio = exp(0.5) ≈ 1.65, which is > 1 + 0.2
-        new_log_probs = torch.tensor([0.5, 0.5, 0.5])
+        reference = copy.deepcopy(actor)
+        batch = next(storage.recurrent_mini_batch_generator(1, 1))
+        reference(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[0], stochastic_output=True)
+        log_prob = (
+            torch.distributions.Normal(reference.output_mean, reference.output_std)
+            .log_prob(batch.actions)
+            .sum(-1)
+            .flatten()
+        )
+        ratios = (log_prob - batch.old_actions_log_prob.flatten()).exp()
+        advantages = batch.advantages.flatten().clone()
+        expected_loss = -torch.minimum(
+            ratios * advantages, ratios.clamp(1.0 - ppo.clip_param, 1.0 + ppo.clip_param) * advantages
+        ).mean()
+        expected_loss.backward()
 
-        ratio = torch.exp(new_log_probs - old_log_probs)
-        surrogate = -advantages * ratio
-        surrogate_clipped = -advantages * torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param)
-        loss = torch.max(surrogate, surrogate_clipped).mean()
+        losses = ppo.update()
+        torch.testing.assert_close(losses["surrogate"], expected_loss.item(), atol=1e-6, rtol=1e-5)
+        for actual, expected in zip(actor.parameters(), reference.parameters()):
+            torch.testing.assert_close(actual.grad, expected.grad)
 
-        # The clipped branch should be -advantages * (1 + clip_param) = -1.2
-        # The unclipped branch should be -advantages * 1.65 ≈ -1.65
-        # max(-1.65, -1.2) = -1.2, so clipped branch dominates
-        expected_clipped = (-advantages * (1.0 + clip_param)).mean()
-        assert torch.allclose(loss, expected_clipped, atol=1e-5)
+    @pytest.mark.parametrize("advantage, ratio, expected", [(1.0, 1.5, -1.2), (-1.0, 0.5, 0.8), (1.0, 0.5, -0.5)])
+    def test_surrogate_loss_clipping(self, advantage: float, ratio: float, expected: float) -> None:
+        """The update clips probability ratios for positive and negative advantages."""
+        ppo, obs = _build_ppo(num_learning_epochs=1, num_mini_batches=1)
+        _fill_rollout(ppo, obs)
+        ppo.storage.actions_log_prob.sub_(torch.log(torch.tensor(ratio)))
+        ppo.storage.advantages.fill_(advantage)
 
-    def test_value_loss_clipping(self) -> None:
-        """With clipped value loss, large value changes should be clipped."""
-        clip_param = 0.2
-        old_values = torch.tensor([[1.0], [1.0]])
-        new_values = torch.tensor([[2.0], [1.1]])
-        returns = torch.tensor([[1.5], [1.5]])
+        losses = ppo.update()
 
-        value_clipped = old_values + (new_values - old_values).clamp(-clip_param, clip_param)
-        losses_unclipped = (new_values - returns).pow(2)
-        losses_clipped = (value_clipped - returns).pow(2)
-        loss = torch.max(losses_unclipped, losses_clipped).mean()
+        assert losses["surrogate"] == pytest.approx(expected)
 
-        # Env 0: new=2.0, old=1.0, clipped_new=1.2
-        #   unclipped: (2.0 - 1.5)^2 = 0.25
-        #   clipped: (1.2 - 1.5)^2 = 0.09
-        #   max = 0.25
-        # Env 1: new=1.1, old=1.0, clipped_new=1.1 (within clip)
-        #   unclipped: (1.1 - 1.5)^2 = 0.16
-        #   clipped: (1.1 - 1.5)^2 = 0.16
-        #   max = 0.16
-        expected = (0.25 + 0.16) / 2
-        assert torch.allclose(loss, torch.tensor(expected), atol=1e-5)
+    @pytest.mark.parametrize(
+        "clipped, return_offset, expected", [(True, 0.0, 0.64), (False, 0.0, 0.0), (True, -1.0, 1.0)]
+    )
+    def test_value_loss_clipping(self, clipped: bool, return_offset: float, expected: float) -> None:
+        """The update penalizes changes beyond the value clip only when enabled."""
+        ppo, obs = _build_ppo(num_learning_epochs=1, num_mini_batches=1, use_clipped_value_loss=clipped)
+        _fill_rollout(ppo, obs)
+        ppo.storage.returns.copy_(ppo.storage.values + return_offset)
+        ppo.storage.values.sub_(1.0)
+
+        losses = ppo.update()
+
+        assert losses["value"] == pytest.approx(expected, abs=1e-6)
 
 
 class TestAdaptiveLearningRate:
     """Tests for adaptive KL-based learning rate scheduling."""
 
-    def test_lr_decreases_when_kl_too_high(self) -> None:
-        """LR should decrease when KL > 2 * desired_kl."""
-        ppo, _obs = _build_ppo(schedule="adaptive", desired_kl=0.01, learning_rate=1e-3)
-        initial_lr = ppo.learning_rate
+    @pytest.mark.parametrize(
+        "kl, initial_lr, expected_lr",
+        [
+            (0.03, 1e-3, 1e-3 / 1.5),
+            (0.002, 1e-3, 1.5e-3),
+            (0.01, 1e-3, 1e-3),
+            (0.0, 1e-3, 1e-3),
+            (0.03, 1.2e-5, 1e-5),
+            (0.002, 8e-3, 1e-2),
+        ],
+    )
+    def test_update_adapts_optimizer_lr(
+        self, monkeypatch: pytest.MonkeyPatch, kl: float, initial_lr: float, expected_lr: float
+    ) -> None:
+        """The update applies the KL-based learning rate to every optimizer group."""
+        ppo, obs = _build_ppo(num_learning_epochs=1, num_mini_batches=1, schedule="adaptive", learning_rate=initial_lr)
+        _fill_rollout(ppo, obs)
+        monkeypatch.setattr(ppo.actor, "get_kl_divergence", lambda *_: torch.tensor(kl))
 
-        # Simulate high KL scenario
-        ppo.learning_rate = initial_lr
-        kl_mean = torch.tensor(0.03)  # > 2 * 0.01
+        ppo.update()
 
-        # Apply the same logic as PPO.update
-        if kl_mean > ppo.desired_kl * 2.0:
-            ppo.learning_rate = max(1e-5, ppo.learning_rate / 1.5)
-
-        assert ppo.learning_rate < initial_lr
-        assert ppo.learning_rate == max(1e-5, initial_lr / 1.5)
-
-    def test_lr_increases_when_kl_too_low(self) -> None:
-        """LR should increase when 0 < KL < desired_kl / 2."""
-        ppo, _obs = _build_ppo(schedule="adaptive", desired_kl=0.01, learning_rate=1e-3)
-        initial_lr = ppo.learning_rate
-
-        kl_mean = torch.tensor(0.002)  # < 0.01 / 2 = 0.005
-
-        if kl_mean < ppo.desired_kl / 2.0 and kl_mean > 0.0:
-            ppo.learning_rate = min(1e-2, ppo.learning_rate * 1.5)
-
-        assert ppo.learning_rate > initial_lr
-        assert ppo.learning_rate == min(1e-2, initial_lr * 1.5)
-
-    def test_lr_unchanged_in_stable_range(self) -> None:
-        """LR should remain unchanged when KL is in [desired_kl/2, 2*desired_kl]."""
-        ppo, _obs = _build_ppo(schedule="adaptive", desired_kl=0.01, learning_rate=1e-3)
-        initial_lr = ppo.learning_rate
-
-        kl_mean = torch.tensor(0.01)  # Exactly desired_kl — in stable range
-
-        if kl_mean > ppo.desired_kl * 2.0:
-            ppo.learning_rate = max(1e-5, ppo.learning_rate / 1.5)
-        elif kl_mean < ppo.desired_kl / 2.0 and kl_mean > 0.0:
-            ppo.learning_rate = min(1e-2, ppo.learning_rate * 1.5)
-
-        assert ppo.learning_rate == initial_lr
+        assert ppo.learning_rate == pytest.approx(expected_lr)
+        assert all(group["lr"] == pytest.approx(expected_lr) for group in ppo.optimizer.param_groups)
 
 
 class TestMixedPrecision:

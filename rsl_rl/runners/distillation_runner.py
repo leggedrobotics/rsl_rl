@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from rsl_rl.algorithms import Distillation
-from rsl_rl.runners import OnPolicyRunner
+from rsl_rl.runners.on_policy_runner import OnPolicyRunner
 
 
 class DistillationRunner(OnPolicyRunner):

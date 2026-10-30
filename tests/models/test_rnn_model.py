@@ -253,7 +253,7 @@ class TestRNNModelONNXExport:
         )
         model.eval()
 
-        onnx_model = model.as_onnx(verbose=False)
+        onnx_model = model.as_onnx()
         onnx_model.eval()
 
         with tempfile.NamedTemporaryFile(suffix=".onnx") as f:

@@ -122,9 +122,9 @@ class CNNModel(MLPModel):
         """Return a version of the model compatible with Torch JIT export."""
         return _TorchCNNModel(self)
 
-    def as_onnx(self, verbose: bool = False) -> nn.Module:
+    def as_onnx(self) -> nn.Module:
         """Return a version of the model compatible with ONNX export."""
-        return _OnnxCNNModel(self, verbose)
+        return _OnnxCNNModel(self)
 
     def _get_obs_dim(self, obs: TensorDict, obs_groups: dict[str, list[str]], obs_set: str) -> tuple[list[str], int]:
         """Select active observation groups and compute observation dimension."""
@@ -200,10 +200,9 @@ class _TorchCNNModel(nn.Module):
 class _OnnxCNNModel(nn.Module):
     """Exportable CNN model for ONNX."""
 
-    def __init__(self, model: CNNModel, verbose: bool) -> None:
+    def __init__(self, model: CNNModel) -> None:
         """Create an ONNX-export wrapper around a CNNModel."""
         super().__init__()
-        self.verbose = verbose
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         # Convert ModuleDict to ModuleList for ordered iteration
         self.cnns = nn.ModuleList([copy.deepcopy(model.cnns[g]) for g in model.obs_groups_2d])
