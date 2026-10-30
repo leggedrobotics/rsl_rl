@@ -136,7 +136,7 @@ class SuperMimicActor(nn.Module):
         """Return the stateless network with explicit deployable history and optional goal inputs."""
         return _GoalActorExport(self) if self.goal_dim else _ActorExport(self)
 
-    def as_onnx(self, verbose: bool = False) -> nn.Module:
+    def as_onnx(self) -> nn.Module:
         """Return the same stateless representation for ONNX export."""
         return self.as_jit()
 
