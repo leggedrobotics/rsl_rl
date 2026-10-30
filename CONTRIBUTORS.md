@@ -43,6 +43,7 @@ Please keep the lists sorted alphabetically.
 * Matthijs van der Boon
 * Özhan Özen
 * Pascal Roth
+* Rafael Cathomen
 * Sanghyun Yun
 * Shantian Zhou
 * Shaoshu Su

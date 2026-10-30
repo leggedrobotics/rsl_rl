@@ -476,6 +476,25 @@ class TestCheckpoint:
         restored.rnd.get_intrinsic_reward(obs)
         assert restored.rnd.weight == 0.25
 
+    def test_selected_rnd_restores_its_optimizer_with_fresh_policy_optimizer(self) -> None:
+        """The policy optimizer flag preserves the existing independent RND selection semantics."""
+        source, _ = _build_ppo(rnd_cfg=RND_CFG)
+        for optimizer in (source.optimizer, source.rnd.optimizer):
+            for group in optimizer.param_groups:
+                for parameter in group["params"]:
+                    parameter.grad = torch.ones_like(parameter)
+            optimizer.step()
+        checkpoint = source.save()
+        restored, _ = _build_ppo(rnd_cfg=RND_CFG)
+        load_cfg = restored.default_load_cfg(checkpoint)
+        load_cfg["optimizer"] = False
+        restored.load(checkpoint, load_cfg, strict=True)
+        assert not restored.optimizer.state
+        assert len(restored.rnd.optimizer.state) == len(source.rnd.optimizer.state) > 0
+        for actual, expected in zip(restored.rnd.optimizer.state.values(), source.rnd.optimizer.state.values()):
+            for key in expected:
+                torch.testing.assert_close(actual[key], expected[key], rtol=0, atol=0)
+
     def test_legacy_checkpoint_without_rnd_counter_loads(self) -> None:
         """Checkpoints saved before the RND counter was stored should still load."""
         source, _ = _build_ppo(rnd_cfg=RND_CFG)

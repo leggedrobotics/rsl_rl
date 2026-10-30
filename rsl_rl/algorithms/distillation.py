@@ -220,18 +220,16 @@ class Distillation:
         }
         return saved_dict
 
+    def default_load_cfg(self, loaded_dict: dict) -> dict:
+        """Detect an RL teacher checkpoint or a full distillation checkpoint."""
+        if any("actor_state_dict" in key for key in loaded_dict):
+            return {"teacher": True, "iteration": False}
+        return {"student": True, "teacher": True, "optimizer": True, "iteration": True}
+
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load specified models from a saved dict."""
-        # If no load_cfg is provided, determine what to load automatically
-        if load_cfg is None and any("actor_state_dict" in key for key in loaded_dict):  # Load from RL training
-            load_cfg = {"teacher": True, "iteration": False}  # Only load teacher by default
-        elif load_cfg is None:  # Load from distillation training
-            load_cfg = {
-                "student": True,
-                "teacher": True,
-                "optimizer": True,
-                "iteration": True,
-            }
+        if load_cfg is None:
+            load_cfg = self.default_load_cfg(loaded_dict)
 
         # Load the specified models
         if load_cfg.get("student"):

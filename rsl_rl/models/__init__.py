@@ -7,10 +7,14 @@
 
 from .cnn_model import CNNModel
 from .mlp_model import MLPModel
+from .q_mlp_model import QMLPModel
 from .rnn_model import RNNModel
+from .supermimic_actor import SuperMimicActor
 
 __all__ = [
     "CNNModel",
     "MLPModel",
+    "QMLPModel",
     "RNNModel",
+    "SuperMimicActor",
 ]

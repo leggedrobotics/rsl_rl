@@ -57,9 +57,15 @@ class OnPolicyRunner:
         """Run the learning loop for the specified number of iterations."""
         # Randomize initial episode lengths (for exploration)
         if init_at_random_ep_len:
-            self.env.episode_length_buf = torch.randint_like(
-                self.env.episode_length_buf, high=int(self.env.max_episode_length)
-            )
+            if isinstance(self.env.max_episode_length, torch.Tensor):
+                self.env.episode_length_buf = (
+                    torch.rand_like(self.env.episode_length_buf, dtype=torch.float)
+                    * self.env.max_episode_length.to(self.env.episode_length_buf.device)
+                ).to(self.env.episode_length_buf.dtype)
+            else:
+                self.env.episode_length_buf = torch.randint_like(
+                    self.env.episode_length_buf, high=int(self.env.max_episode_length)
+                )
 
         # Start learning
         obs = self.env.get_observations().to(self.device)
@@ -151,7 +157,12 @@ class OnPolicyRunner:
         self.logger.save_model(path, self.current_learning_iteration)
 
     def load(
-        self, path: str, load_cfg: dict | None = None, strict: bool = True, map_location: str | None = None
+        self,
+        path: str,
+        load_cfg: dict | None = None,
+        strict: bool = True,
+        map_location: str | None = None,
+        load_optimizer: bool = True,
     ) -> dict:
         """Load the models and training state from a given path.
 
@@ -161,8 +172,14 @@ class OnPolicyRunner:
                 models and states are loaded.
             strict (bool): Whether state_dict loading should be strict.
             map_location (str | None): Device mapping for loading the model.
+            load_optimizer (bool): Whether to restore policy optimizer state. False overrides ``load_cfg``.
         """
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
+        if not load_optimizer:
+            load_cfg = {
+                **(self.alg.default_load_cfg(loaded_dict) if load_cfg is None else load_cfg),
+                "optimizer": False,
+            }
         load_iteration = self.alg.load(loaded_dict, load_cfg, strict)
         if load_iteration:
             self.current_learning_iteration = loaded_dict["iter"]
@@ -177,6 +194,7 @@ class OnPolicyRunner:
         """Export the model to a Torch JIT file."""
         jit_model = self.alg.get_policy().as_jit()
         jit_model.to("cpu")
+        jit_model.eval()
 
         if not os.path.exists(path):
             os.makedirs(path, exist_ok=True)

@@ -69,6 +69,9 @@ class NeptuneLogWriter(SummaryWriter, LogWriter):
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
         """Upload environment and training configuration to Neptune."""
         self.run["train_cfg"] = train_cfg
+        if isinstance(env_cfg, dict):
+            self.run["env_cfg"] = env_cfg
+            return
         try:
             self.run["env_cfg"] = env_cfg.to_dict()  # type: ignore
         except Exception:

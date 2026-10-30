@@ -31,6 +31,7 @@ class MLP(nn.Sequential):
         hidden_dims: tuple[int, ...] | list[int],
         activation: str = "elu",
         last_activation: str | None = None,
+        norm: str = "none",
     ) -> None:
         """Initialize the MLP.
 
@@ -41,6 +42,7 @@ class MLP(nn.Sequential):
                 inferred from the input dimension.
             activation: Activation function.
             last_activation: Activation function of the last layer. None results in a linear last layer.
+            norm: Optional normalization before each hidden activation: "none" or "layer".
         """
         super().__init__()
 
@@ -51,22 +53,24 @@ class MLP(nn.Sequential):
         hidden_dims_processed = [input_dim if dim == -1 else dim for dim in hidden_dims]
 
         # Create layers sequentially
+        if norm not in ("none", "layer"):
+            raise ValueError("norm must be 'none' or 'layer'.")
         layers = []
-        layers.append(nn.Linear(input_dim, hidden_dims_processed[0]))
-        layers.append(activation_mod)
-
-        for layer_index in range(len(hidden_dims_processed) - 1):
-            layers.append(nn.Linear(hidden_dims_processed[layer_index], hidden_dims_processed[layer_index + 1]))
+        layer_dims = [input_dim, *hidden_dims_processed]
+        for layer_index in range(len(hidden_dims_processed)):
+            layers.append(nn.Linear(layer_dims[layer_index], layer_dims[layer_index + 1]))
+            if norm == "layer":
+                layers.append(nn.LayerNorm(layer_dims[layer_index + 1]))
             layers.append(activation_mod)
 
         # Add last layer
         if isinstance(output_dim, int):
-            layers.append(nn.Linear(hidden_dims_processed[-1], output_dim))
+            layers.append(nn.Linear(layer_dims[-1], output_dim))
         else:
             # Compute the total output dimension
             total_out_dim = reduce(lambda x, y: x * y, output_dim)
             # Add a layer to reshape the output to the desired shape
-            layers.append(nn.Linear(hidden_dims_processed[-1], total_out_dim))
+            layers.append(nn.Linear(layer_dims[-1], total_out_dim))
             layers.append(nn.Unflatten(dim=-1, unflattened_size=output_dim))
 
         # Add last activation function if specified
@@ -76,6 +80,12 @@ class MLP(nn.Sequential):
         # Register the layers
         for idx, layer in enumerate(layers):
             self.add_module(f"{idx}", layer)
+
+    @property
+    @torch.jit.unused
+    def output(self) -> nn.Linear:
+        """Return the output projection for distribution-specific initialization."""
+        return [layer for layer in self if isinstance(layer, nn.Linear)][-1]
 
     def init_weights(self, scales: float | tuple[float]) -> None:
         """Initialize the weights of the MLP.
