@@ -172,14 +172,13 @@ class OnPolicyRunner:
                 models and states are loaded.
             strict (bool): Whether state_dict loading should be strict.
             map_location (str | None): Device mapping for loading the model.
-            load_optimizer (bool): Whether to restore policy optimizer state. False overrides ``load_cfg``.
+            load_optimizer (bool): Whether to restore policy optimizer state. ``False`` overrides `load_cfg`.
         """
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
         if not load_optimizer:
-            load_cfg = {
-                **(self.alg.default_load_cfg(loaded_dict) if load_cfg is None else load_cfg),
-                "optimizer": False,
-            }
+            if load_cfg is None:
+                load_cfg = self.alg.default_load_cfg(loaded_dict)
+            load_cfg = {**load_cfg, "optimizer": False}
         load_iteration = self.alg.load(loaded_dict, load_cfg, strict)
         if load_iteration:
             self.current_learning_iteration = loaded_dict["iter"]

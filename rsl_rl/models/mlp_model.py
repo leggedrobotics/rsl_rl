@@ -51,8 +51,9 @@ class MLPModel(nn.Module):
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
             distribution_cfg: Configuration dictionary for the output distribution. If provided, the model outputs
                 stochastic values sampled from the distribution.
-            network_cfg: Optional network class configuration. None uses the existing MLP defaults; an alternative
-                is built from input/output dimensions and its own kwargs, instead of hidden_dims and activation.
+            network_cfg: Configuration dictionary for an alternative network. ``None`` uses :class:`~rsl_rl.modules.MLP`
+                with `hidden_dims` and `activation`. Otherwise, the network is constructed from the input and output
+                dimensions and its own configuration arguments.
         """
         super().__init__()
 
@@ -79,8 +80,8 @@ class MLPModel(nn.Module):
         if network_cfg is None:
             self.mlp = MLP(self._get_latent_dim(), mlp_output_dim, hidden_dims, activation)
         else:
-            network_class, network_kwargs = resolve_class(network_cfg)
-            self.mlp = network_class(self._get_latent_dim(), mlp_output_dim, **network_kwargs)
+            network_class, network_cfg = resolve_class(network_cfg)
+            self.mlp = network_class(self._get_latent_dim(), mlp_output_dim, **network_cfg)
 
         # Initialize distribution-specific MLP weights
         if self.distribution is not None:

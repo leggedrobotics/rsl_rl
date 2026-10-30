@@ -8,6 +8,7 @@
 import math
 import torch
 
+from rsl_rl.modules import MLP, SquashedGaussianDistribution
 from rsl_rl.modules.distribution import BetaDistribution, GaussianDistribution, HeteroscedasticGaussianDistribution
 
 
@@ -318,8 +319,6 @@ class TestBetaDistribution:
 
 def test_squashed_gaussian_per_dimension_ranges_and_sample_gradients() -> None:
     """Both density paths match a float64 change-of-variables reference and retain gradients."""
-    from rsl_rl.modules import SquashedGaussianDistribution
-
     distribution = SquashedGaussianDistribution(2, action_range=([-2.0, 1.0], [4.0, 3.0]))
     logits = torch.tensor([[[0.2, -0.3], [0.0, 0.1]]], requires_grad=True)
     distribution.update(logits)
@@ -341,8 +340,6 @@ def test_squashed_gaussian_per_dimension_ranges_and_sample_gradients() -> None:
 
 def test_squashed_gaussian_initial_standard_deviation() -> None:
     """The optional initialization sets the learned std head independently of its inputs."""
-    from rsl_rl.modules import MLP, SquashedGaussianDistribution
-
     distribution = SquashedGaussianDistribution(2, init_std=0.5)
     mlp = MLP(3, [2, 2], [8], "elu")
     distribution.init_mlp_weights(mlp)

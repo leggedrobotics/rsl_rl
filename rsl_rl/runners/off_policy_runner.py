@@ -3,11 +3,16 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+
 from rsl_rl.algorithms import SAC
 from rsl_rl.runners.on_policy_runner import OnPolicyRunner
 
 
 class OffPolicyRunner(OnPolicyRunner):
-    """Named runner for replay algorithms using the standard interaction and logging loop."""
+    """Off-policy runner for SAC.
+
+    This runner uses the interaction, logging, and checkpointing loop provided by :class:`OnPolicyRunner`.
+    """
 
     alg: SAC
+    """The SAC algorithm."""

@@ -41,14 +41,25 @@ class QMLPModel(MLPModel):
         """
         if kwargs.get("distribution_cfg") is not None:
             raise ValueError("The Q model does not support an output distribution.")
+
+        # Include the action dimension when constructing the MLP head
         self.action_dim = action_dim
         super().__init__(obs, obs_groups, obs_set, output_dim, **kwargs)  # type: ignore
 
     def forward(self, obs: TensorDict, actions: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
-        """Return the output for the given observations and actions."""
+        """Forward pass of the state-action value model.
+
+        Args:
+            obs: Observation dictionary.
+            actions: Actions to concatenate with the observation latent.
+
+        Returns:
+            The scalar Q-values or categorical value logits.
+        """
+        # Concatenate normalized observations and actions before the MLP forward pass
         latent = torch.cat([self.get_latent(obs), actions], dim=-1)
         return self.mlp(latent)
 
     def _get_latent_dim(self) -> int:
-        """Return the latent dimensionality consumed by the MLP head (observations and actions)."""
+        """Return the combined observation and action dimension for the MLP head."""
         return self.obs_dim + self.action_dim

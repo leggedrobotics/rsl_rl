@@ -13,7 +13,8 @@ import pytest
 from rsl_rl.storage import ReplayBuffer
 
 
-def _step(value: float, done: bool = False) -> TensorDict:
+def _make_transition(value: float, done: bool = False) -> TensorDict:
+    """Create one replay transition per environment."""
     return TensorDict(
         {
             "observations": {"policy": torch.full((2, 1), value)},
@@ -32,27 +33,27 @@ def test_lazy_replay_ring_and_episode_validity() -> None:
     """Windows retain chronology, exclude resets, and clamp invalid positions to their last valid transition."""
     replay = ReplayBuffer(2, 8)
     assert replay.data is None
-    for t in range(6):
-        replay.add(_step(float(t), done=t == 3))
+    for step in range(6):
+        replay.add(_make_transition(float(step), done=step == 3))
     torch.manual_seed(0)
     sample = replay.sample(100, length=3)
     for row in range(100):
         values = sample.window["extra", "value"][row]
         anchor = int(values[0])
-        env = int(sample.actions[row, 0])
-        for col in range(3):
-            age = anchor + col
+        env_idx = int(sample.actions[row, 0])
+        for offset in range(3):
+            age = anchor + offset
             expected = 2 <= age <= 5
-            if env == 0 and anchor <= 3 < age:
+            if env_idx == 0 and anchor <= 3 < age:
                 expected = False
-            assert bool(sample.valid[row, col]) == expected
+            assert bool(sample.valid[row, offset]) == expected
             if expected:
-                assert values[col] == age
+                assert values[offset] == age
         last = int(sample.valid[row].sum()) - 1
         assert (values[last:] == values[last]).all()
         assert sample.observations["policy"][row, 0] == anchor
         assert sample.next_observations["policy"][row, 0] == values[last] + 100
-        assert sample.terminated[row] == (env == 0 and values[last] == 3)
+        assert sample.terminated[row] == (env_idx == 0 and values[last] == 3)
     assert replay.num_steps == 4 and replay.size == 8
 
 
@@ -60,10 +61,10 @@ def test_collection_allocation_and_clear() -> None:
     """Inference-mode insertion leaves replay writable during later no-grad collection and reuse."""
     replay = ReplayBuffer(2, 8)
     with torch.inference_mode():
-        replay.add(_step(1.0))
+        replay.add(_make_transition(1.0))
     assert all(not value.is_inference() for value in replay.data.values(True, True))
     with torch.no_grad():
-        step = _step(7.0)
+        step = _make_transition(7.0)
         replay.add(step)
         replay.clear()
         with pytest.raises(RuntimeError, match="empty replay"):
@@ -79,12 +80,12 @@ def test_collection_allocation_and_clear() -> None:
 def test_lazy_memory_budget_checks_minimum_window(monkeypatch: pytest.MonkeyPatch) -> None:
     """The optional cap uses the actual transition schema and rejects a window that no longer fits."""
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device=None: (10240, 40960))
-    step = _step(0.0)
-    replay = ReplayBuffer(2, 1000, "cuda", min_steps=3, max_memory_fraction=0.5)
+    step = _make_transition(0.0)
+    replay = ReplayBuffer(2, 1000, min_steps=3, max_memory_fraction=0.5, device="cuda")
     assert replay.data is None and replay.num_slots == 500
     with pytest.warns(UserWarning, match="Reducing replay"):
         replay.add(step)
     assert replay.num_slots == 116
-    undersized = ReplayBuffer(2, 1000, "cuda", min_steps=117, max_memory_fraction=0.5)
+    undersized = ReplayBuffer(2, 1000, min_steps=117, max_memory_fraction=0.5, device="cuda")
     with pytest.warns(UserWarning, match="Reducing replay"), pytest.raises(ValueError, match="117 steps"):
         undersized.add(step)

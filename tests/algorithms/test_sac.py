@@ -18,7 +18,8 @@ from rsl_rl.runners import OffPolicyRunner, OnPolicyRunner
 from tests.runners.test_on_policy_runner import DummyEnv
 
 
-def _cfg() -> dict:
+def _make_train_cfg() -> dict:
+    """Create a SAC configuration with small networks for testing."""
     return {
         "num_steps_per_env": 3,
         "save_interval": 100,
@@ -34,8 +35,9 @@ def _cfg() -> dict:
     }
 
 
-def _algorithm() -> SAC:
-    cfg = _cfg()
+def _build_sac() -> SAC:
+    """Build a SAC instance with small networks for testing."""
+    cfg = _make_train_cfg()
     cfg["multi_gpu"] = None
     env = DummyEnv()
     return SAC.construct_algorithm(env.get_observations(), env, cfg, "cpu")
@@ -43,7 +45,8 @@ def _algorithm() -> SAC:
 
 def test_cnn_actor_is_rejected_at_construction() -> None:
     """Unsupported image actors fail before replay collection starts."""
-    env, cfg = DummyEnv(), _cfg()
+    env = DummyEnv()
+    cfg = _make_train_cfg()
     cfg["multi_gpu"] = None
     cfg["obs_groups"]["actor"] = ["policy", "image"]
     cfg["actor"].update(class_name="CNNModel", cnn_cfg={"output_channels": [4], "kernel_size": 3, "flatten": True})
@@ -68,7 +71,7 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
     from onnx.reference import ReferenceEvaluator
 
     assert OffPolicyRunner.learn is OnPolicyRunner.learn
-    cfg = _cfg()
+    cfg = _make_train_cfg()
     cfg["algorithm"].update(learning_starts=16, num_updates=4, actor_update_interval=1, use_cuda_graph=device != "cpu")
     log_dir = tmp_path / "warmup"
     runner = OffPolicyRunner(DummyEnv(device=device), cfg, log_dir=str(log_dir), device=device)
@@ -186,7 +189,7 @@ def test_n_step_targets_at_episode_boundaries(device: str, scenario: str) -> Non
     }[scenario]
     env = DummyEnv(device=device)
     env.num_envs = 2 if scenario == "independent" else 1
-    cfg = _cfg()
+    cfg = _make_train_cfg()
     cfg["multi_gpu"] = None
     cfg["algorithm"].update(replay_buffer_size=capacity, n_steps=n_steps, gamma=0.9, batch_size=256)
     alg = SAC.construct_algorithm(env.get_observations(), env, cfg, device)
@@ -194,7 +197,8 @@ def test_n_step_targets_at_episode_boundaries(device: str, scenario: str) -> Non
         start = step + torch.arange(env.num_envs, device=device, dtype=torch.float) * 10
         done = torch.zeros(env.num_envs, dtype=torch.bool, device=device)
         terminated = torch.zeros_like(done)
-        done[0], terminated[0] = step in ends, step in terminals
+        done[0] = step in ends
+        terminated[0] = step in terminals
         alg.storage.add(
             TensorDict(
                 {
@@ -231,7 +235,7 @@ def test_n_step_targets_at_episode_boundaries(device: str, scenario: str) -> Non
 
 def test_terminal_observations_and_missing_final() -> None:
     """All done successors use final observations; only exclusive timeouts bootstrap."""
-    alg = _algorithm()
+    alg = _build_sac()
     obs = DummyEnv().get_observations()
     dones = torch.tensor([True, True, False, False])
     alg.act(obs)
@@ -251,7 +255,7 @@ def test_terminal_observations_and_missing_final() -> None:
     assert alg.actor.obs_normalizer.count == 0
     alg.update()
     assert alg.actor.obs_normalizer.count == 4
-    cfg = _cfg()
+    cfg = _make_train_cfg()
     cfg["multi_gpu"] = {"global_rank": 0, "local_rank": 0, "world_size": 2}
     with pytest.raises(NotImplementedError, match="Multi-GPU"):
         SAC.construct_algorithm(obs, DummyEnv(), cfg, "cpu")
@@ -266,7 +270,7 @@ def test_terminal_observations_and_missing_final() -> None:
 @pytest.mark.parametrize(("network", "mixed_precision"), [(None, False), ("ResidualMLP", False), (None, True)])
 def test_opt_in_flash_components_and_export(network: str | None, mixed_precision: bool, tmp_path: Path) -> None:
     """Categorical updates, return scaling, held noise and residual export work through the standard runner."""
-    cfg = _cfg()
+    cfg = _make_train_cfg()
     cfg["algorithm"].update(
         critic_loss="categorical",
         use_mixed_precision=mixed_precision,
@@ -297,7 +301,9 @@ def test_opt_in_flash_components_and_export(network: str | None, mixed_precision
     assert restored.alg._schedulers[0].last_epoch == runner.alg._schedulers[0].last_epoch
 
 
-def _mirror(env: object, obs: TensorDict | None, actions: torch.Tensor | None) -> tuple:
+def _mirror(
+    env: object, obs: TensorDict | None, actions: torch.Tensor | None
+) -> tuple[TensorDict | None, torch.Tensor | None]:
     """Mirror all inputs around zero while retaining the original batch first."""
     return (
         torch.cat([obs, -obs]) if obs is not None else None,
@@ -308,7 +314,7 @@ def _mirror(env: object, obs: TensorDict | None, actions: torch.Tensor | None) -
 @pytest.mark.parametrize("augmentation", [False, True])
 def test_symmetry_replay_endpoints_and_actor_loss(augmentation: bool) -> None:
     """Symmetry handles replay endpoint pairs and the existing auxiliary actor loss."""
-    cfg = _cfg()
+    cfg = _make_train_cfg()
     cfg["algorithm"]["symmetry_cfg"] = {
         "data_augmentation_func": _mirror,
         "use_data_augmentation": augmentation,
@@ -319,17 +325,21 @@ def test_symmetry_replay_endpoints_and_actor_loss(augmentation: bool) -> None:
     runner.learn(2)
     batch = runner.alg._augment_batch(runner.alg._sample_batch())
     if augmentation:
-        n = runner.alg.batch_size
-        torch.testing.assert_close(batch.observations["policy"][n:], -batch.observations["policy"][:n])
-        torch.testing.assert_close(batch.next_observations["policy"][n:], -batch.next_observations["policy"][:n])
-        torch.testing.assert_close(batch.actions[n:], -batch.actions[:n])
+        batch_size = runner.alg.batch_size
+        torch.testing.assert_close(
+            batch.observations["policy"][batch_size:], -batch.observations["policy"][:batch_size]
+        )
+        torch.testing.assert_close(
+            batch.next_observations["policy"][batch_size:], -batch.next_observations["policy"][:batch_size]
+        )
+        torch.testing.assert_close(batch.actions[batch_size:], -batch.actions[:batch_size])
     assert torch.isfinite(torch.tensor(runner.alg.update()["symmetry"]))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
 def test_cuda_graph_delayed_actor_and_resume() -> None:
     """Both graph variants can train, reload eager state and resume under the inherited runner."""
-    cfg = _cfg()
+    cfg = _make_train_cfg()
     cfg["algorithm"].update(
         use_cuda_graph=True,
         num_updates=12,

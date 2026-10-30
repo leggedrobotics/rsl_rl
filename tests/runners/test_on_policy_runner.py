@@ -11,7 +11,6 @@ import copy
 import pathlib
 import tempfile
 import torch
-from pathlib import Path
 from tensordict import TensorDict
 
 import pytest
@@ -338,7 +337,7 @@ class TestLoggingWriterLifecycle:
         assert runner.logger.writer.calls == ["stop"]
 
 
-def test_jit_export_uses_evaluation_mode(tmp_path: Path) -> None:
+def test_jit_export_uses_evaluation_mode(tmp_path: pathlib.Path) -> None:
     """Deployment modules use evaluation-mode statistics."""
     runner = _build_runner()
     runner.export_policy_to_jit(str(tmp_path))
@@ -356,7 +355,7 @@ def test_tensor_episode_length_limits() -> None:
     assert (runner.env.episode_length_buf < runner.env.max_episode_length).all()
 
 
-def test_load_without_optimizer_restores_models_and_iteration(tmp_path: Path) -> None:
+def test_load_without_optimizer_restores_models_and_iteration(tmp_path: pathlib.Path) -> None:
     """Fresh optimizer state can accompany a full checkpoint model restore."""
     runner = _build_runner()
     runner.learn(1)

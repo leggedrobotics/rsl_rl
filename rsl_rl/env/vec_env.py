@@ -93,7 +93,7 @@ class VecEnv(ABC):
             The extras dictionary includes metrics such as the episode reward, episode length, etc. The following
             dictionary keys are used by rsl_rl:
 
-            - "time_outs" (torch.Tensor): Boolean timeout flags of shape ``[num_envs]``. True only for rows that
+            - "time_outs" (torch.Tensor): Boolean timeout flags of shape ``(num_envs,)``. ``True`` only for rows that
               were truncated without reaching a terminal state.
 
             - "final_obs" (TensorDict): Transition-end observations on the environment device, owned by the caller.
