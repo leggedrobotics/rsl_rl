@@ -278,6 +278,8 @@ class TestBetaDistribution:
         samples = dist.sample().clamp(1e-6, 1.0 - 1e-6)
         expected = torch.distributions.Beta(dist._alpha, dist._beta).log_prob(samples).sum(dim=-1)
         assert torch.allclose(dist.log_prob(samples), expected, atol=1e-5)
+        expected_entropy = torch.distributions.Beta(dist._alpha, dist._beta).entropy().sum(dim=-1)
+        torch.testing.assert_close(dist.entropy, expected_entropy)
 
     def test_log_prob_jacobian_correction(self) -> None:
         """log_prob with a scaled action_range should differ from the unscaled case by log(scale) per dimension."""
@@ -297,6 +299,7 @@ class TestBetaDistribution:
         lp_scaled = dist_scaled.log_prob(scaled_samples)
         # Change-of-variables: log p(y) = log p(x) - dim * log(scale)
         assert torch.allclose(lp_unit - dim * math.log(scale), lp_scaled, atol=1e-5)
+        torch.testing.assert_close(dist_scaled.entropy, dist_unit.entropy + dim * math.log(scale))
 
     def test_deterministic_output_matches_module(self) -> None:
         """as_deterministic_output_module() should produce the same result as deterministic_output()."""

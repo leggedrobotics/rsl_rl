@@ -405,7 +405,7 @@ class BetaDistribution(Distribution):
     @property
     def entropy(self) -> torch.Tensor:
         """Return the entropy of the Beta distribution, summed over the last dimension."""
-        return self._distribution.entropy().sum(dim=-1)  # type: ignore
+        return (self._distribution.entropy() + self._log_range_scale).sum(dim=-1)  # type: ignore
 
     @property
     def params(self) -> tuple[torch.Tensor, ...]:
