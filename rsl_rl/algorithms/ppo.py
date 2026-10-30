@@ -67,6 +67,7 @@ class PPO:
         grad_reduce_bucket_mb: float = 25,
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
+        # Validate configuration
         if actor.distribution is None:
             raise ValueError("PPO requires an actor with an output distribution.")
         if schedule not in ("fixed", "adaptive"):
