@@ -170,9 +170,9 @@ class MLPModel(nn.Module):
         """Return a version of the model compatible with Torch JIT export."""
         return _TorchMLPModel(self)
 
-    def as_onnx(self, verbose: bool) -> nn.Module:
+    def as_onnx(self) -> nn.Module:
         """Return a version of the model compatible with ONNX export."""
-        return _OnnxMLPModel(self, verbose)
+        return _OnnxMLPModel(self)
 
     def update_normalization(self, obs: TensorDict) -> None:
         """Update observation-normalization statistics from a batch of observations."""
@@ -230,10 +230,9 @@ class _OnnxMLPModel(nn.Module):
 
     is_recurrent: bool = False
 
-    def __init__(self, model: MLPModel, verbose: bool) -> None:
+    def __init__(self, model: MLPModel) -> None:
         """Create an ONNX-export wrapper around an MLPModel."""
         super().__init__()
-        self.verbose = verbose
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.mlp = copy.deepcopy(model.mlp)
         if model.distribution is not None:

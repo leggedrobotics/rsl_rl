@@ -206,7 +206,7 @@ class OnPolicyRunner:
 
     def export_policy_to_onnx(self, path: str, filename: str = "policy.onnx", verbose: bool = False) -> None:
         """Export the model into an ONNX file."""
-        onnx_model = self.alg.get_policy().as_onnx(verbose=verbose)
+        onnx_model = self.alg.get_policy().as_onnx()
         onnx_model.to("cpu")
         onnx_model.eval()
 
