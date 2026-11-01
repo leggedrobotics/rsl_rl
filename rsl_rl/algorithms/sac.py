@@ -47,9 +47,8 @@ class SAC:
     """Soft Actor-Critic algorithm.
 
     This algorithm uses an ensemble of state-action critics and chronological n-step replay. The default configuration
-    uses scalar critics and Gaussian exploration. Optional FlashSAC components include categorical critics, held
-    exploration noise, reward normalization, residual networks, and CUDA graphs. Normalizers are updated by
-    :meth:`update` using newly collected observations and returns.
+    uses scalar critics and Gaussian exploration. Optional components inspired by FlashSAC include categorical critics,
+    held exploration noise, reward normalization, residual networks, and CUDA graphs.
 
     References:
         - Haarnoja et al. "Soft Actor-Critic Algorithms and Applications." arXiv preprint arXiv:1812.05905 (2018).
@@ -65,9 +64,6 @@ class SAC:
 
     target_critics: nn.ModuleList
     """The ensemble of target critic models."""
-
-    storage: ReplayBuffer
-    """The replay buffer for collected transitions."""
 
     def __init__(
         self,
@@ -111,7 +107,6 @@ class SAC:
         # Execution parameters
         use_mixed_precision: bool = False,
         use_cuda_graph: bool = False,
-        # Device-related parameters
         device: str = "cpu",
         # Symmetry parameters
         symmetry_cfg: dict | None = None,
@@ -119,33 +114,27 @@ class SAC:
         multi_gpu_cfg: dict | None = None,
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
-        # Check the models and hyperparameters
+        # Not yet implemented features
         if multi_gpu_cfg is not None:
-            raise NotImplementedError("Multi-GPU training is not supported for SAC.")
+            raise NotImplementedError("Multi-GPU training is not yet supported for SAC.")
+        if actor.is_recurrent or any(critic.is_recurrent for critic in critics):
+            raise ValueError("SAC does not yet support recurrent models.")
+        if isinstance(actor, CNNModel):
+            raise ValueError("SAC does not yet support CNN models.")
+
+        # Validate configuration
         if not isinstance(actor.distribution, SquashedGaussianDistribution):
             raise ValueError("SAC requires a SquashedGaussianDistribution actor.")
-        if actor.is_recurrent or any(critic.is_recurrent for critic in critics):
-            raise ValueError("SAC does not support recurrent models.")
-        if isinstance(actor, CNNModel):
-            raise ValueError("SAC does not support CNN models.")
         if len(critics) < 2:
             raise ValueError("SAC requires at least two critics.")
-        if min(num_updates, batch_size, n_steps, actor_update_interval) < 1 or learning_starts < 0:
-            raise ValueError("Update counts and batch/window sizes must be positive; learning_starts nonnegative.")
-        if not 0 <= gamma <= 1 or not 0 < tau <= 1 or init_alpha <= 0:
-            raise ValueError("SAC requires gamma in [0,1], tau in (0,1] and positive init_alpha.")
-        if critic_loss not in ("mse", "categorical") or exploration not in ("gaussian", "held"):
-            raise ValueError("Unsupported critic loss or exploration mode.")
-        if num_bins < 2 or value_range[0] >= value_range[1]:
-            raise ValueError("Categorical critics need at least two bins and an ordered value range.")
+        if critic_loss not in ("mse", "categorical"):
+            raise ValueError(f"Unsupported critic loss: {critic_loss}. Expected 'mse' or 'categorical'.")
+        if exploration not in ("gaussian", "held"):
+            raise ValueError(f"Unsupported exploration mode: {exploration}. Expected 'gaussian' or 'held'.")
         if learning_rate_schedule not in ("constant", "cosine"):
             raise ValueError("Unsupported learning rate schedule.")
-        if learning_rate_schedule == "cosine" and (schedule_updates is None or schedule_updates < 1):
-            raise ValueError("A cosine schedule requires positive schedule_updates.")
-        if reward_normalization_max_return <= 0 or noise_repeat_max < 1:
-            raise ValueError("Reward normalization floor and maximum noise repetitions must be positive.")
-        if target_entropy_std is not None and target_entropy_std <= 0:
-            raise ValueError("target_entropy_std must be positive.")
+        if learning_rate_schedule == "cosine" and schedule_updates is None:
+            raise ValueError("A cosine schedule requires schedule_updates to be specified.")
 
         # Symmetry extension
         self.symmetry = Symmetry(**symmetry_cfg) if symmetry_cfg is not None else None
@@ -170,10 +159,10 @@ class SAC:
         optimizer_class = resolve_optimizer(optimizer)
         self.actor_optimizer = optimizer_class(
             self.actor.parameters(), lr=actor_learning_rate, weight_decay=weight_decay
-        )
+        )  # type: ignore
         self.critic_optimizer = optimizer_class(
             self.critics.parameters(), lr=critic_learning_rate, weight_decay=weight_decay
-        )
+        )  # type: ignore
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=alpha_learning_rate)
         self.learning_rate = critic_learning_rate
 
@@ -233,7 +222,7 @@ class SAC:
                 self._schedulers.append(
                     torch.optim.lr_scheduler.CosineAnnealingLR(
                         model_optimizer,
-                        T_max=schedule_updates,
+                        T_max=schedule_updates,  # type: ignore
                         eta_min=model_optimizer.param_groups[0]["lr"] * final_learning_rate_ratio,
                     )
                 )
@@ -245,6 +234,7 @@ class SAC:
         self._observations: TensorDict | None = None
         self._actions: torch.Tensor | None = None
         self._pending_normalization: list[TensorDict] = []
+
         # Configure optimizer state for CUDA graph capture
         self._configure_optimizer_capture()
 
