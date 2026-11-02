@@ -233,7 +233,7 @@ class SAC:
         self._actor_loaded = False
         self._observations: TensorDict | None = None
         self._actions: torch.Tensor | None = None
-        self._pending_normalization: list[TensorDict] = []
+        self._pending_observations: list[TensorDict] = []
 
         # Configure optimizer state for CUDA graph capture
         self._configure_optimizer_capture()
@@ -241,22 +241,22 @@ class SAC:
     @torch.no_grad()
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Sample actions and store transition data."""
-        distribution = self.actor.distribution
         # Keep policy statistics available to the runner during uniform-action warm-up
         with _BatchNormMode(self._actor_batch_norms, training=False):
             actions = self.actor(obs, stochastic_output=True)
 
         # Sample uniform actions during warm-up
+        distribution = self.actor.distribution
         if not self._actor_loaded and self.num_env_steps * self.storage.num_envs < self.learning_starts:
             uniform_actions = torch.rand(obs.batch_size[0], distribution.output_dim, device=self.device) * 2.0 - 1.0
-            actions = distribution.range_offset + distribution.range_scale * uniform_actions
+            actions = distribution.range_offset + distribution.range_scale * uniform_actions  # type: ignore
         elif self.exploration == "held":
             # Resample noise and repetition counts for environments whose held noise has expired
             resample = self._noise_steps_left <= 0
             self._noise.copy_(torch.where(resample[:, None], torch.randn_like(self._noise), self._noise))
             repeats = torch.searchsorted(self._noise_repeat_cdf, torch.rand_like(self._noise_steps_left.float()))
             self._noise_steps_left.copy_(torch.where(resample, repeats + 1, self._noise_steps_left) - 1)
-            actions = distribution.sample(noise=self._noise)
+            actions = distribution.sample(noise=self._noise)  # type: ignore
 
         # Record observations and actions before env.step()
         self._observations = obs
@@ -266,12 +266,9 @@ class SAC:
     @torch.no_grad()
     def process_env_step(self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict) -> None:
         """Record one environment step using final observations for environments that reset."""
-        if self._observations is None or self._actions is None:
-            raise RuntimeError("act() must precede process_env_step().")
-
         # Record the transition and retain observations for normalization
-        self.storage.add(self._make_transition(obs, self._actions, rewards, dones, extras))
-        self._pending_normalization.append(self._observations.detach().clone())
+        self.storage.add(self._make_transition(obs, self._actions, rewards, dones, extras))  # type: ignore
+        self._pending_observations.append(self._observations.detach().clone())
 
         # Record discounted returns for reward normalization
         if self.reward_normalization:
@@ -285,7 +282,7 @@ class SAC:
         self.num_env_steps += 1
         self.actor.reset(dones)
         for critic in self.critics:
-            critic.reset(dones)
+            critic.reset(dones)  # type: ignore
         self._observations = None
         self._actions = None
 
@@ -296,12 +293,12 @@ class SAC:
     def update(self) -> dict[str, float]:
         """Update normalizers and models from replay samples and return mean losses."""
         # Update the normalizers using newly collected observations and returns
-        if self._pending_normalization:
-            observations = torch.cat(self._pending_normalization)
-            self.actor.update_normalization(observations)
+        if self._pending_observations:
+            observations = torch.cat(self._pending_observations)  # type: ignore
+            self.actor.update_normalization(observations)  # type: ignore
             for critic in self.critics:
-                critic.update_normalization(observations)
-            self._pending_normalization.clear()
+                critic.update_normalization(observations)  # type: ignore
+            self._pending_observations.clear()
         if self._pending_returns:
             self._return_normalizer.update(torch.cat(self._pending_returns).unsqueeze(-1))
             self._pending_returns.clear()
@@ -347,7 +344,7 @@ class SAC:
             for key, value in stats.items():
                 totals[key] = totals.get(key, 0.0) + value
 
-        # Average the losses over their corresponding update counts
+        # Divide the losses by the number of updates
         loss_dict: dict[str, float] = {}
         for key, value in totals.items():
             num_updates = actor_updates if key in ("actor", "alpha", "entropy", "symmetry") else self.num_updates
@@ -371,7 +368,6 @@ class SAC:
 
         Replay data and environment state are not included.
         """
-        # Save the models, optimizer states, and update counters
         saved_dict = {
             "actor_state_dict": self._raw_actor.state_dict(),
             "critic_state_dict": nn.ModuleList(self._raw_critics).state_dict(),
@@ -384,7 +380,6 @@ class SAC:
             "num_critic_updates": self.num_critic_updates,
             "scheduler_state_dicts": [scheduler.state_dict() for scheduler in self._schedulers],
         }
-        # Save the reward normalization statistics if used
         if self.reward_normalization:
             saved_dict["return_normalizer_state_dict"] = self._return_normalizer.state_dict()
             saved_dict["max_abs_return"] = self._max_abs_return.clone()
