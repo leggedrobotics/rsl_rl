@@ -80,8 +80,8 @@ class MLP(nn.Sequential):
 
     @property
     @torch.jit.unused
-    def output(self) -> nn.Linear:
-        """Return the output projection for distribution-specific initialization."""
+    def output_layer(self) -> nn.Linear:
+        """Return the output layer for distribution-specific initialization."""
         return [layer for layer in self if isinstance(layer, nn.Linear)][-1]
 
     def init_weights(self, scales: float | tuple[float]) -> None:
@@ -148,12 +148,12 @@ class ResidualMLP(nn.Module):
 
         # Create the input embedding, residual blocks, and output projection
         self.input_norm = nn.BatchNorm1d(input_dim, momentum=batch_norm_momentum)
-        self.embed = nn.Linear(input_dim, hidden_dim, bias=False)
+        self.input_layer = nn.Linear(input_dim, hidden_dim, bias=False)
         self.blocks = nn.ModuleList([
             _ResidualBlock(hidden_dim, expansion, batch_norm_momentum) for _ in range(num_blocks)
         ])
         self.output_norm = nn.RMSNorm(hidden_dim, eps=1e-6)
-        self.output = nn.Linear(hidden_dim, total_out_dim)
+        self.output_layer = nn.Linear(hidden_dim, total_out_dim)
 
         # Initialize linear weights and normalize the network parameters
         for module in self.modules():
@@ -169,13 +169,13 @@ class ResidualMLP(nn.Module):
         batch_shape = x.shape[:-1]
         x = x.flatten(0, -2)
 
-        # Apply the input embedding and residual blocks
-        x = self.embed(self.input_norm(x))
+        # Apply the input layer and residual blocks
+        x = self.input_layer(self.input_norm(x))
         for block in self.blocks:
             x = block(x)
 
         # Project the output and restore its leading dimensions
-        x = self.output(self.output_norm(x))
+        x = self.output_layer(self.output_norm(x))
         return x.unflatten(-1, self.output_shape).unflatten(0, batch_shape)
 
     @torch.no_grad()

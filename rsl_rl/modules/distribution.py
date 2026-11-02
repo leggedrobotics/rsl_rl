@@ -315,12 +315,12 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
     def init_mlp_weights(self, mlp: nn.Module) -> None:
         """Initialize the std head weights in the MLP."""
         # Initialize weights and biases for the std portion of the last layer
-        torch.nn.init.zeros_(mlp.output.weight[self.output_dim :])  # type: ignore
+        torch.nn.init.zeros_(mlp.output_layer.weight[self.output_dim :])  # type: ignore
         if self.std_type == "scalar":
-            torch.nn.init.constant_(mlp.output.bias[self.output_dim :], self.init_std)  # type: ignore
+            torch.nn.init.constant_(mlp.output_layer.bias[self.output_dim :], self.init_std)  # type: ignore
         elif self.std_type == "log":
             init_std_log = torch.log(torch.tensor(self.init_std + 1e-7))
-            torch.nn.init.constant_(mlp.output.bias[self.output_dim :], init_std_log)  # type: ignore
+            torch.nn.init.constant_(mlp.output_layer.bias[self.output_dim :], init_std_log)  # type: ignore
 
 
 class BetaDistribution(Distribution):
@@ -431,8 +431,8 @@ class BetaDistribution(Distribution):
 
     def init_mlp_weights(self, mlp: nn.Module) -> None:
         """Initialize the beta-parameter head weights to zero for a near-uniform initial distribution."""
-        torch.nn.init.zeros_(mlp.output.weight[self.output_dim :])  # type: ignore
-        torch.nn.init.zeros_(mlp.output.bias[self.output_dim :])  # type: ignore
+        torch.nn.init.zeros_(mlp.output_layer.weight[self.output_dim :])  # type: ignore
+        torch.nn.init.zeros_(mlp.output_layer.bias[self.output_dim :])  # type: ignore
 
 
 class SquashedGaussianDistribution(Distribution):
@@ -578,12 +578,12 @@ class SquashedGaussianDistribution(Distribution):
             return
 
         # Invert the bounded log standard deviation mapping to initialize the output head
-        last_linear = mlp.output
+        output_layer = mlp.output_layer
         log_std_min, log_std_max = self.log_std_range
         normalized = 2.0 * (np.log(self.init_std) - log_std_min) / (log_std_max - log_std_min) - 1.0
-        torch.nn.init.zeros_(last_linear.weight[self.output_dim :])
+        torch.nn.init.zeros_(output_layer.weight[self.output_dim :])
         torch.nn.init.constant_(
-            last_linear.bias[self.output_dim :], float(np.arctanh(np.clip(normalized, -0.99, 0.99)))
+            output_layer.bias[self.output_dim :], float(np.arctanh(np.clip(normalized, -0.99, 0.99)))
         )
 
     def _scale(self, squashed: torch.Tensor) -> torch.Tensor:
