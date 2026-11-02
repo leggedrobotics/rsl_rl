@@ -458,7 +458,7 @@ Model Configuration
 Different algorithms use models for different purposes. For example, :class:`~rsl_rl.algorithms.ppo.PPO` uses an actor
 and a critic, while :class:`~rsl_rl.algorithms.distillation.Distillation` uses a student and a teacher. Even though
 their function might be different, they can all use the same underlying model classes. Available models include :class:`~rsl_rl.models.mlp_model.MLPModel`, :class:`~rsl_rl.models.rnn_model.RNNModel`, and
-:class:`~rsl_rl.models.cnn_model.CNNModel`, and :class:`~rsl_rl.models.q_mlp_model.QMLPModel`.
+:class:`~rsl_rl.models.cnn_model.CNNModel`, and :class:`~rsl_rl.models.mlp_model_q.QMLPModel`.
 
 MLPModel
 ^^^^^^^^

@@ -7,7 +7,7 @@
 
 from .cnn_model import CNNModel
 from .mlp_model import MLPModel
-from .q_mlp_model import QMLPModel
+from .mlp_model_q import QMLPModel
 from .rnn_model import RNNModel
 
 __all__ = [

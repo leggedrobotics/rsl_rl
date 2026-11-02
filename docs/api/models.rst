@@ -28,7 +28,7 @@ CNN Model
 Q MLP Model
 -----------
 
-.. automodule:: rsl_rl.models.q_mlp_model
+.. automodule:: rsl_rl.models.mlp_model_q
    :members:
    :undoc-members:
 
