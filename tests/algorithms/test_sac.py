@@ -82,7 +82,7 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
     assert all(torch.equal(a, b) for a, b in zip(before, runner.alg.actor.parameters()))
     assert runner.alg.get_policy().output_std is not None
     assert list(log_dir.glob("events*"))
-    assert not runner.alg.storage.data["actions"].is_inference()
+    assert not runner.alg.storage.actions.is_inference()
     path = str(tmp_path / "sac.pt")
     runner.save(path)
     restored = OffPolicyRunner(DummyEnv(device=device), cfg, log_dir=str(tmp_path / "resume"), device=device)
@@ -201,20 +201,18 @@ def test_n_step_targets_at_episode_boundaries(device: str, scenario: str) -> Non
         terminated = torch.zeros_like(done)
         done[0] = step in ends
         terminated[0] = step in terminals
-        alg.storage.add(
-            TensorDict(
-                {
-                    "observations": {"policy": start[:, None].expand(-1, 8)},
-                    "actions": torch.zeros(env.num_envs, 4, device=device),
-                    "rewards": torch.full((env.num_envs,), float(reward), device=device),
-                    "next_observations": {"policy": (start + 100)[:, None].expand(-1, 8)},
-                    "dones": done,
-                    "terminated": terminated,
-                },
-                batch_size=[env.num_envs],
-                device=device,
-            )
+        transition = alg.storage.Transition()
+        transition.observations = TensorDict(
+            {"policy": start[:, None].expand(-1, 8)}, batch_size=[env.num_envs], device=device
         )
+        transition.actions = torch.zeros(env.num_envs, 4, device=device)
+        transition.rewards = torch.full((env.num_envs,), float(reward), device=device)
+        transition.next_observations = TensorDict(
+            {"policy": (start + 100)[:, None].expand(-1, 8)}, batch_size=[env.num_envs], device=device
+        )
+        transition.dones = done
+        transition.terminated = terminated
+        alg.storage.add_transition(transition)
     torch.manual_seed(0)
     batch = alg._sample_batch()
     rows = (
@@ -252,8 +250,8 @@ def test_terminal_observations_and_missing_final() -> None:
             "final_obs": TensorDict({"policy": torch.full_like(obs["policy"], 9.0)}, batch_size=[4]),
         },
     )
-    torch.testing.assert_close(alg.storage.data["next_observations", "policy"][0, :2], torch.full((2, 8), 9.0))
-    assert alg.storage.data["terminated"][0].tolist() == [True, False, False, False]
+    torch.testing.assert_close(alg.storage.next_observations["policy"][0, :2], torch.full((2, 8), 9.0))
+    assert alg.storage.terminated[0].tolist() == [True, False, False, False]
     assert alg.actor.obs_normalizer.count == 0
     alg.update()
     assert alg.actor.obs_normalizer.count == 4

@@ -19,6 +19,36 @@ class ReplayBuffer:
     oldest ones when the buffer is full.
     """
 
+    class Transition:
+        """Storage for a single state transition.
+
+        This class is populated during collection and passed to :meth:`ReplayBuffer.add_transition`.
+        """
+
+        def __init__(self) -> None:
+            """Initialize an empty transition container."""
+            self.observations: TensorDict | None = None
+            """Observations at the current step."""
+
+            self.actions: torch.Tensor | None = None
+            """Actions taken at the current step."""
+
+            self.rewards: torch.Tensor | None = None
+            """Rewards received after the action."""
+
+            self.next_observations: TensorDict | None = None
+            """Observations after the action, before any environment reset."""
+
+            self.dones: torch.Tensor | None = None
+            """Boolean flags indicating episode boundaries. Shape: (num_envs,)."""
+
+            self.terminated: torch.Tensor | None = None
+            """Boolean flags indicating terminal states, excluding timeouts. Shape: (num_envs,)."""
+
+        def clear(self) -> None:
+            """Reset all transition fields to None."""
+            self.__init__()
+
     @dataclass
     class Batch:
         """A batch of data returned by :meth:`ReplayBuffer.sample`.
@@ -34,8 +64,8 @@ class ReplayBuffer:
         actions: torch.Tensor
         """Actions at the first transition of each window."""
 
-        window: dict[str | tuple[str, ...], torch.Tensor]
-        """Raw rewards, episode flags, and extra fields over the sampled windows."""
+        window: dict[str, torch.Tensor]
+        """Raw rewards and episode flags over the sampled windows."""
 
         valid: torch.Tensor
         """Validity masks for window entries. Shape: (batch_size, length)."""
@@ -71,92 +101,93 @@ class ReplayBuffer:
         self.max_memory_fraction = max_memory_fraction
         self.device = device
 
-        # Initialize the write cursor and allocation state
+        # Initialize the write cursor and storage fields
         self.num_steps = 0
         self.step = 0
-        self.data: TensorDict | None = None
-        self._data: dict[str | tuple[str, ...], torch.Tensor] = {}
-
-        # Cache flattened views for sampling observations, actions, and reward windows
-        self._observations: dict[str | tuple[str, ...], torch.Tensor] = {}
-        self._next_observations: dict[str | tuple[str, ...], torch.Tensor] = {}
-        self._window: dict[str | tuple[str, ...], torch.Tensor] = {}
-        self._actions: torch.Tensor | None = None
+        self.observations: TensorDict | None = None
+        self.actions: torch.Tensor | None = None
+        self.rewards: torch.Tensor | None = None
+        self.next_observations: TensorDict | None = None
+        self.dones: torch.Tensor | None = None
+        self.terminated: torch.Tensor | None = None
 
     @property
     def size(self) -> int:
         """Return the number of stored transitions across all environments."""
         return self.num_steps * self.num_envs
 
+    def _initialize_storage(self, transition: ReplayBuffer.Transition) -> None:
+        """Allocate replay tensors using the shapes and dtypes of the first transition."""
+        # Limit capacity to the configured fraction of free GPU memory
+        if self.max_memory_fraction is not None and torch.device(self.device).type == "cuda":
+            free_memory, _ = torch.cuda.mem_get_info(torch.device(self.device))
+            bytes_per_step = sum(
+                value.numel() * value.element_size()  # type: ignore
+                for value in (
+                    *transition.observations.values(include_nested=True, leaves_only=True),
+                    transition.actions,
+                    transition.rewards,
+                    *transition.next_observations.values(include_nested=True, leaves_only=True),
+                    transition.dones,
+                    transition.terminated,
+                )
+            )
+            num_affordable_steps = int(self.max_memory_fraction * free_memory) // bytes_per_step
+            if num_affordable_steps < self.num_slots:
+                warnings.warn(
+                    f"Reducing replay from {self.num_slots} to {num_affordable_steps} steps per environment"
+                    " to fit the configured GPU memory fraction.",
+                )
+                self.num_slots = num_affordable_steps
+
+        # Ensure the minimum replay window still fits
+        if self.num_slots < self.min_steps_per_env:
+            raise ValueError(f"Replay capacity must hold at least {self.min_steps_per_env} steps per environment.")
+
+        # Allocate mutable tensors even when collection runs under inference mode
+        with torch.inference_mode(False):
+            self.observations = TensorDict(
+                {
+                    key: torch.empty(self.num_slots, *value.shape, dtype=value.dtype, device=self.device)
+                    for key, value in transition.observations.items(include_nested=True, leaves_only=True)
+                },
+                batch_size=[self.num_slots, self.num_envs],
+                device=self.device,
+            )
+            self.actions = torch.empty(
+                self.num_slots, *transition.actions.shape, dtype=transition.actions.dtype, device=self.device
+            )
+            self.rewards = torch.empty(
+                self.num_slots, *transition.rewards.shape, dtype=transition.rewards.dtype, device=self.device
+            )
+            self.next_observations = TensorDict(
+                {
+                    key: torch.empty(self.num_slots, *value.shape, dtype=value.dtype, device=self.device)
+                    for key, value in transition.next_observations.items(include_nested=True, leaves_only=True)
+                },
+                batch_size=[self.num_slots, self.num_envs],
+                device=self.device,
+            )
+            self.dones = torch.empty(self.num_slots, self.num_envs, dtype=torch.bool, device=self.device)
+            self.terminated = torch.empty(self.num_slots, self.num_envs, dtype=torch.bool, device=self.device)
+
     @torch.no_grad()
-    def add(self, step: TensorDict) -> None:
+    def add_transition(self, transition: ReplayBuffer.Transition) -> None:
         """Copy one transition per environment into the replay buffer.
 
-        Storage is allocated on the first call using the shapes and dtypes of `step`.
-
-        Args:
-            step: Transition dictionary with observations, actions, rewards, next observations, done flags, and
-                termination flags. Done and termination flags must be boolean tensors of shape ``(num_envs,)``.
-                Additional tensor fields are stored alongside the required fields.
+        Storage is allocated on the first call using the shapes and dtypes of `transition`.
         """
-        # Check the transition batch shape and done flags
-        if step.batch_size != torch.Size([self.num_envs]):
-            raise ValueError(f"Expected one transition per environment, got batch size {step.batch_size}.")
-        leaves = dict(step.items(True, True))
-        dones = leaves.get("dones")
-        if dones is None or dones.shape != (self.num_envs,) or dones.dtype != torch.bool:
-            raise ValueError("Replay transitions require boolean 'dones' with shape [num_envs].")
-
-        # Initialize storage from the first transition
-        if self.data is None:
-            # Check the required fields and termination flags
-            required = {"observations", "actions", "rewards", "next_observations", "dones", "terminated"}
-            if not required.issubset(step.keys()):
-                raise ValueError(f"Replay transitions require {sorted(required)}.")
-            if step["terminated"].shape != (self.num_envs,) or step["terminated"].dtype != torch.bool:
-                raise ValueError("Replay transitions require boolean 'terminated' with shape [num_envs].")
-
-            # Limit capacity to the configured fraction of free GPU memory
-            if self.max_memory_fraction is not None and torch.device(self.device).type == "cuda":
-                free_memory, _ = torch.cuda.mem_get_info(torch.device(self.device))
-                bytes_per_step = sum(value.numel() * value.element_size() for value in leaves.values())
-                num_affordable_steps = int(self.max_memory_fraction * free_memory) // bytes_per_step
-                if num_affordable_steps < self.num_slots:
-                    warnings.warn(
-                        f"Reducing replay from {self.num_slots} to {num_affordable_steps} steps per environment"
-                        " to fit the configured GPU memory fraction.",
-                        stacklevel=2,
-                    )
-                    self.num_slots = num_affordable_steps
-
-            # Ensure the minimum replay window still fits
-            if self.num_slots < self.min_steps_per_env:
-                raise ValueError(f"Replay capacity must hold at least {self.min_steps_per_env} steps per environment.")
-
-            # Allocate mutable tensors even when collection runs under inference mode
-            with torch.inference_mode(False):
-                self._data = {
-                    key: torch.empty(self.num_slots, *value.shape, dtype=value.dtype, device=self.device)
-                    for key, value in leaves.items()
-                }
-                self.data = TensorDict(self._data, batch_size=[self.num_slots, self.num_envs], device=self.device)
-
-                # Cache flattened views of each transition field for indexed sampling
-                for key, value in self._data.items():
-                    flat_value = value.flatten(0, 1)
-                    if isinstance(key, tuple) and key[0] in {"observations", "next_observations"}:
-                        group = self._observations if key[0] == "observations" else self._next_observations
-                        group[key[1] if len(key) == 2 else key[1:]] = flat_value
-                    elif key == "actions":
-                        self._actions = flat_value
-                    else:
-                        self._window[key] = flat_value
+        # Initialize storage
+        if self.observations is None:
+            self._initialize_storage(transition)
 
         # Copy the transition into the ring buffer and advance the write cursor
-        if leaves.keys() != self._data.keys():
-            raise ValueError("Replay transition keys changed after allocation.")
-        for key, value in leaves.items():
-            self._data[key][self.step].copy_(value)
+        self.observations[self.step].copy_(transition.observations)  # type: ignore
+        self.actions[self.step].copy_(transition.actions)  # type: ignore
+        self.rewards[self.step].copy_(transition.rewards)  # type: ignore
+        self.next_observations[self.step].copy_(transition.next_observations)  # type: ignore
+        self.dones[self.step].copy_(transition.dones)  # type: ignore
+        self.terminated[self.step].copy_(transition.terminated)  # type: ignore
         self.step = (self.step + 1) % self.num_slots
         self.num_steps = min(self.num_steps + 1, self.num_slots)
 
@@ -185,42 +216,35 @@ class ReplayBuffer:
 
         # Select window entries in chronological order
         if length == 1:
-            first = ((oldest + anchor) % self.num_slots) * self.num_envs + env_idx
-            last = first
-            indices = first[:, None]
+            indices = ((oldest + anchor) % self.num_slots)[:, None]
             valid = torch.ones_like(indices, dtype=torch.bool)
         else:
             offsets = torch.arange(length, device=self.device)
             ages = anchor[:, None] + offsets
             valid = ages < self.num_steps
-            step_indices = (oldest + ages.clamp(max=self.num_steps - 1)) % self.num_slots
-            indices = step_indices * self.num_envs + env_idx[:, None]
+            indices = (oldest + ages.clamp(max=self.num_steps - 1)) % self.num_slots
 
             # Stop at episode boundaries and repeat the last valid transition at invalid positions
-            dones = self._window["dones"][indices]
+            dones = self.dones[indices, env_idx[:, None]]
             alive = torch.cumprod((~dones[:, :-1]).long(), dim=1).bool()
             valid[:, 1:] &= alive
             last_offset = valid.sum(1, keepdim=True) - 1
             indices = indices.gather(1, torch.minimum(offsets, last_offset))
-            first = indices[:, 0]
-            last = indices[:, -1]
+        first = indices[:, 0]
+        last = indices[:, -1]
 
         # Construct the batch using the first and last valid transitions of each window
         return ReplayBuffer.Batch(
-            observations=TensorDict(
-                {key: value[first] for key, value in self._observations.items()},
-                batch_size=[batch_size],
-                device=self.device,
-            ),
-            actions=self._actions[first],
-            window={key: value[indices] for key, value in self._window.items()},
+            observations=self.observations[first, env_idx],
+            actions=self.actions[first, env_idx],
+            window={
+                "rewards": self.rewards[indices, env_idx[:, None]],
+                "dones": self.dones[indices, env_idx[:, None]],
+                "terminated": self.terminated[indices, env_idx[:, None]],
+            },
             valid=valid,
-            next_observations=TensorDict(
-                {key: value[last] for key, value in self._next_observations.items()},
-                batch_size=[batch_size],
-                device=self.device,
-            ),
-            terminated=self._window["terminated"][last],
+            next_observations=self.next_observations[last, env_idx],
+            terminated=self.terminated[last, env_idx],
         )
 
     def clear(self) -> None:

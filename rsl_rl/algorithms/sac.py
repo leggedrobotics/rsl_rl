@@ -147,6 +147,7 @@ class SAC:
 
         # Add storage
         self.storage = storage
+        self.transition = ReplayBuffer.Transition()
 
         # SAC parameters
         self.num_updates = num_updates
@@ -206,12 +207,10 @@ class SAC:
                     )
                 )
 
-        # Initialize update counters and transition data
+        # Initialize update counters, actor state, and pending observations
         self.num_env_steps = 0
         self.num_critic_updates = 0
         self._actor_loaded = False
-        self._observations: TensorDict | None = None
-        self._actions: torch.Tensor | None = None
         self._pending_observations: list[TensorDict] = []
 
         # Configure optimizer state for CUDA graph capture
@@ -238,8 +237,8 @@ class SAC:
             actions = distribution.sample(noise=self._noise)  # type: ignore
 
         # Record observations and actions before env.step()
-        self._observations = obs
-        self._actions = actions
+        self.transition.observations = obs
+        self.transition.actions = actions
         return actions
 
     @torch.no_grad()
@@ -262,22 +261,17 @@ class SAC:
                 next_obs[key] = torch.where(mask, final_obs[key].to(self.device), next_obs[key])
 
         # Construct the transition using observations and actions recorded by act()
-        transition = TensorDict(
-            {
-                "observations": self._observations.select(*groups),
-                "actions": self._actions,
-                "rewards": rewards.reshape(-1),
-                "next_observations": next_obs,
-                "dones": done_mask,
-                "terminated": done_mask & ~time_outs,
-            },
-            batch_size=[self.storage.num_envs],
-            device=self.device,
-        )
+        observations = self.transition.observations
+        self.transition.observations = observations.select(*groups)
+        self.transition.rewards = rewards.reshape(-1)
+        self.transition.next_observations = next_obs
+        self.transition.dones = done_mask
+        self.transition.terminated = done_mask & ~time_outs
 
         # Record the transition and retain observations for normalization
-        self.storage.add(transition)
-        self._pending_observations.append(self._observations.detach().clone())
+        self.storage.add_transition(self.transition)
+        self.transition.clear()
+        self._pending_observations.append(observations.detach().clone())
 
         # Record discounted returns for reward normalization
         if self.reward_normalization:
@@ -292,8 +286,6 @@ class SAC:
         self.actor.reset(dones)
         for critic in self.critics:
             critic.reset(dones)  # type: ignore
-        self._observations = None
-        self._actions = None
 
     def compute_returns(self, obs: TensorDict) -> None:
         """Defer return computation to replay sampling in :meth:`update` (no-op)."""
