@@ -64,7 +64,7 @@ Models
    independently. When used in conjunction with :class:`~rsl_rl.algorithms.ppo.PPO`, the encoders may be shared between
    actor and critic to save memory.
 
-:class:`~rsl_rl.models.mlp_model_q.QMLPModel`
+:class:`~rsl_rl.models.mlp_model.QMLPModel`
    A state-action critic that combines observation groups with actions before an MLP.
 
 Distributions

@@ -6,8 +6,7 @@
 """Neural models for the learning algorithm."""
 
 from .cnn_model import CNNModel
-from .mlp_model import MLPModel
-from .mlp_model_q import QMLPModel
+from .mlp_model import MLPModel, QMLPModel
 from .rnn_model import RNNModel
 
 __all__ = [
