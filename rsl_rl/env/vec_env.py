@@ -90,16 +90,18 @@ class VecEnv(ABC):
                 method returns.
 
         Extras:
-            The extras dictionary includes metrics such as the episode reward, episode length, etc. The following
-            dictionary keys are used by rsl_rl:
+            The extras dictionary provides additional transition data and optional metrics for logging. rsl_rl uses
+            the following keys:
 
-            - "time_outs" (torch.Tensor): Boolean timeout flags of shape ``(num_envs,)``. ``True`` only for rows that
-              were truncated without reaching a terminal state.
+            - "time_outs" (torch.Tensor): Boolean flags of shape ``(num_envs,)``. ``True`` when an episode ends
+              because it reaches a time limit without reaching a terminal state. This distinguishes timeouts from
+              terminal states.
 
-            - "final_obs" (TensorDict): Transition-end observations on the environment device, owned by the caller.
-              When any row is done, this must contain at least the consumed groups with the same shapes as the
-              returned observations, before resets, post-step events and command resampling. Consumers read done
-              rows only.
+            - "final_obs" (TensorDict): Observations after the final action of each episode, before resets, post-step
+              events, or command resampling. SAC requires this key whenever an environment is done, so it can store
+              the correct next observation for that transition. Include the groups used by the actor and critics,
+              with the same shapes and device as the returned observations. Entries for environments that are not
+              done are ignored. Keep the tensors unchanged until ``process_env_step()`` has recorded the transition.
 
             - "log" (dict[str, float | torch.Tensor]): Additional information for logging and debugging purposes.
                The key should be a string and start with "/" for namespacing. The value can be a scalar or a
