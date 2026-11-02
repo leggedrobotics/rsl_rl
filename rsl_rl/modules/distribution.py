@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -323,6 +324,156 @@ class HeteroscedasticGaussianDistribution(GaussianDistribution):
             torch.nn.init.constant_(mlp.output_layer.bias[self.output_dim :], init_std_log)  # type: ignore
 
 
+class SquashedGaussianDistribution(Distribution):
+    """Gaussian distribution module with tanh squashing for bounded action spaces.
+
+    This distribution parameterizes stochastic outputs using a multivariate Gaussian with diagonal covariance. The
+    mean and standard deviation are state-dependent. Samples are passed through ``tanh`` to constrain them to
+    ``[-1, 1]`` and then linearly rescaled to ``action_range``. Log probabilities account for both transformations.
+    """
+
+    def __init__(
+        self,
+        output_dim: int,
+        init_std: float | None = None,
+        std_range: tuple[float, float] = (math.exp(-5.0), math.exp(2.0)),
+        action_range: tuple[float | list[float], float | list[float]] = (-1.0, 1.0),
+    ) -> None:
+        """Initialize the squashed Gaussian distribution module.
+
+        Args:
+            output_dim: Dimension of the action/output space.
+            init_std: Initial standard deviation before squashing, used to initialize the MLP's std head.
+                ``None`` leaves the head's default initialization unchanged.
+            std_range: Minimum and maximum standard deviation before squashing.
+            action_range: Interval ``(min, max)`` to which squashed samples are rescaled. Each bound can be a scalar
+                or a list with one value per action dimension.
+        """
+        super().__init__(output_dim)
+
+        # Check action limit dimensions
+        low, high = torch.broadcast_tensors(
+            torch.as_tensor(action_range[0]).float(), torch.as_tensor(action_range[1]).float()
+        )
+        if low.shape not in ((), (output_dim,)):
+            raise ValueError(
+                f"Each action bound must be a scalar or a vector of length {output_dim}; got shape {tuple(low.shape)}."
+            )
+
+        # Compute scaling and offset for rescaling samples
+        self.register_buffer("range_scale", (high - low) / 2.0)
+        self.register_buffer("range_offset", (high + low) / 2.0)
+
+        # Store standard deviation initialization and range
+        self.init_std = init_std
+        self.log_std_range = [float(np.log(max(std_range[0], 1e-6))), float(np.log(std_range[1]))]
+
+        # Initialize distribution parameters and cached samples
+        self._mean = torch.zeros(output_dim)
+        self._std = torch.full((output_dim,), init_std if init_std is not None else 1.0)
+        self._pre_squash: torch.Tensor | None = None
+        self._last_sample: torch.Tensor | None = None
+
+        # Disable args validation for speedup
+        Normal.set_default_validate_args(False)
+
+    def update(self, mlp_output: torch.Tensor) -> None:
+        """Update the distribution parameters from MLP output."""
+        # Map the raw standard deviation head smoothly into the configured log range
+        mean, raw_log_std = torch.unbind(mlp_output, dim=-2)
+        log_std_min, log_std_max = self.log_std_range
+        log_std = log_std_min + (log_std_max - log_std_min) * 0.5 * (1.0 + torch.tanh(raw_log_std))
+        self._mean = mean
+        self._std = torch.exp(log_std)
+
+    def sample(self, noise: torch.Tensor | None = None) -> torch.Tensor:
+        """Sample a reparameterized action and rescale it to `action_range`.
+
+        Args:
+            noise: Standard Gaussian noise to use for sampling. ``None`` draws independent noise for each action.
+        """
+        noise = torch.randn_like(self._mean) if noise is None else noise
+        self._pre_squash = self._mean + self._std * noise
+        self._last_sample = self._scale(torch.tanh(self._pre_squash))
+        return self._last_sample
+
+    def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        """Return the squashed and scaled mean of the MLP output."""
+        return self._scale(torch.tanh(mlp_output[..., 0, :]))
+
+    def as_deterministic_output_module(self) -> nn.Module:
+        """Return export-friendly module that computes the squashed and scaled mean from the MLP output."""
+        return _SquashedMeanDeterministicOutput(self.range_scale.clone(), self.range_offset.clone())  # type: ignore
+
+    @property
+    def input_dim(self) -> list[int]:
+        """Return the input dimension required by the distribution.
+
+        The MLP must output a tensor of shape ``[..., 2, output_dim]`` where the first slice along the second-to-last
+        dimension is the mean and the second is the raw log standard deviation.
+        """
+        return [2, self.output_dim]
+
+    @property
+    def mean(self) -> torch.Tensor:
+        """Return the squashed and scaled mean (the deterministic action)."""
+        return self._scale(torch.tanh(self._mean))
+
+    @property
+    def std(self) -> torch.Tensor:
+        """Return the standard deviation of the Gaussian before squashing."""
+        return self._std
+
+    @property
+    def entropy(self) -> torch.Tensor:
+        """Return the entropy of the Gaussian before squashing, summed over the last dimension.
+
+        The entropy of the squashed distribution has no closed form. SAC estimates it from sampled log probabilities.
+        """
+        return Normal(self._mean, self._std).entropy().sum(dim=-1)
+
+    @property
+    def params(self) -> tuple[torch.Tensor, ...]:
+        """Return ``(mean, std)`` of the Gaussian before squashing."""
+        return (self._mean, self._std)
+
+    def log_prob(self, outputs: torch.Tensor) -> torch.Tensor:
+        """Compute the log probability of squashed and scaled outputs, summed over the last dimension."""
+        # Undo action scaling and reuse cached pre-squash samples when available
+        if outputs is self._last_sample:
+            pre_squash: torch.Tensor = self._pre_squash  # type: ignore
+        else:
+            squashed = (outputs - self.range_offset) / self.range_scale  # type: ignore
+            pre_squash = torch.atanh(squashed.clamp(-1.0 + 1e-6, 1.0 - 1e-6))
+        # Correct the Gaussian density for tanh squashing and action scaling
+        log_det_tanh = 2.0 * (np.log(2.0) - pre_squash - torch.nn.functional.softplus(-2.0 * pre_squash))
+        log_prob = Normal(self._mean, self._std).log_prob(pre_squash) - log_det_tanh
+        return log_prob.sum(dim=-1) - torch.log(self.range_scale).expand(self.output_dim).sum()  # type: ignore
+
+    def kl_divergence(self, old_params: tuple[torch.Tensor, ...], new_params: tuple[torch.Tensor, ...]) -> torch.Tensor:
+        """Compute KL(old || new), which is invariant to the squashing since it is a bijection."""
+        old_mean, old_std = old_params
+        new_mean, new_std = new_params
+        return torch.distributions.kl_divergence(Normal(old_mean, old_std), Normal(new_mean, new_std)).sum(dim=-1)
+
+    def init_mlp_weights(self, mlp: nn.Module) -> None:
+        """Initialize the std head so that the initial standard deviation equals ``init_std``."""
+        if self.init_std is None:
+            return
+        # Invert the bounded log standard deviation mapping to initialize the output head
+        log_std_min, log_std_max = self.log_std_range
+        normalized = 2.0 * (np.log(self.init_std) - log_std_min) / (log_std_max - log_std_min) - 1.0
+        torch.nn.init.zeros_(mlp.output_layer.weight[self.output_dim :])  # type: ignore
+        torch.nn.init.constant_(
+            mlp.output_layer.bias[self.output_dim :],  # type: ignore
+            float(np.arctanh(np.clip(normalized, -0.99, 0.99))),
+        )
+
+    def _scale(self, squashed: torch.Tensor) -> torch.Tensor:
+        """Map normalized actions to the fixed action range."""
+        return self.range_offset + self.range_scale * squashed  # type: ignore
+
+
 class BetaDistribution(Distribution):
     """Beta distribution module for bounded action spaces.
 
@@ -435,165 +586,18 @@ class BetaDistribution(Distribution):
         torch.nn.init.zeros_(mlp.output_layer.bias[self.output_dim :])  # type: ignore
 
 
-class SquashedGaussianDistribution(Distribution):
-    """Gaussian distribution module with tanh squashing for bounded action spaces.
+class _IdentityDeterministicOutput(nn.Module):
+    """Exportable module that returns the MLP output as is."""
 
-    The model predicts mean and raw log standard deviation in shape ``[..., 2, output_dim]``. Log probabilities
-    include both the tanh Jacobian and the affine range transformation.
-    """
-
-    def __init__(
-        self,
-        output_dim: int,
-        init_std: float | None = None,
-        log_std_range: tuple[float, float] = (-5.0, 2.0),
-        action_range: tuple[float | list[float], float | list[float]] = (-1.0, 1.0),
-    ) -> None:
-        """Initialize the squashed Gaussian distribution module.
-
-        Args:
-            output_dim: Dimension of the action/output space.
-            init_std: Initial standard deviation before squashing, used to initialize the MLP's std head.
-                ``None`` leaves the head's default initialization unchanged.
-            log_std_range: Minimum and maximum log standard deviation before squashing.
-            action_range: Interval ``(min, max)`` to which squashed samples are rescaled. Each bound can be a scalar
-                or a list with one value per action dimension.
-        """
-        super().__init__(output_dim)
-
-        # Check fixed action limits and the log standard deviation range
-        low, high = torch.broadcast_tensors(
-            torch.as_tensor(action_range[0]).float(), torch.as_tensor(action_range[1]).float()
-        )
-        if low.ndim > 1 or (low.ndim == 1 and low.shape != (output_dim,)):
-            raise ValueError("Action ranges must be scalar pairs or one pair per action dimension.")
-        if not torch.isfinite(low).all() or not torch.isfinite(high).all() or (low >= high).any():
-            raise ValueError("Action limits must be finite and strictly ordered.")
-        if log_std_range[0] >= log_std_range[1]:
-            raise ValueError("log_std_range must be strictly ordered.")
-
-        self.init_std = init_std
-        self.log_std_range = log_std_range
-
-        # Compute scaling and offset for rescaling samples
-        self.register_buffer("range_scale", (high - low) / 2.0)
-        self.register_buffer("range_offset", (high + low) / 2.0)
-
-        # Initialize distribution parameters and cached samples
-        self._mean = torch.zeros(output_dim)
-        self._std = torch.full((output_dim,), init_std if init_std is not None else 1.0)
-        self._pre_squash: torch.Tensor | None = None
-        self._last_sample: torch.Tensor | None = None
-
-        # Disable argument validation for speed
-        Normal.set_default_validate_args(False)
-
-    def update(self, mlp_output: torch.Tensor) -> None:
-        """Update the distribution parameters from MLP output."""
-        # Map the raw standard deviation head smoothly into the configured log range
-        mean, raw_log_std = torch.unbind(mlp_output, dim=-2)
-        log_std_min, log_std_max = self.log_std_range
-        log_std = log_std_min + (log_std_max - log_std_min) * 0.5 * (1.0 + torch.tanh(raw_log_std))
-        self._mean = mean
-        self._std = torch.exp(log_std)
-
-    def sample(self, noise: torch.Tensor | None = None) -> torch.Tensor:
-        """Sample a reparameterized action and rescale it to `action_range`.
-
-        Args:
-            noise: Standard Gaussian noise to use for sampling. ``None`` draws independent noise for each action.
-
-        Returns:
-            The squashed and scaled action sample.
-        """
-        # Cache the pre-squash sample for stable log probability computation
-        noise = torch.randn_like(self._mean) if noise is None else noise
-        self._pre_squash = self._mean + self._std * noise
-        self._last_sample = self._scale(torch.tanh(self._pre_squash))
-        return self._last_sample
-
-    def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
-        """Return the squashed and scaled mean of the MLP output."""
-        return self._scale(torch.tanh(mlp_output[..., 0, :]))
-
-    def as_deterministic_output_module(self) -> nn.Module:
-        """Return export-friendly module that computes the squashed and scaled mean from the MLP output."""
-        return _SquashedMeanDeterministicOutput(self.range_scale.clone(), self.range_offset.clone())
-
-    @property
-    def input_dim(self) -> list[int]:
-        """Return the input dimension required by the distribution.
-
-        The MLP must output a tensor of shape ``[..., 2, output_dim]`` where the first slice along the second-to-last
-        dimension is the mean and the second is the raw log standard deviation.
-        """
-        return [2, self.output_dim]
-
-    @property
-    def mean(self) -> torch.Tensor:
-        """Return the squashed and scaled mean (the deterministic action)."""
-        return self._scale(torch.tanh(self._mean))
-
-    @property
-    def std(self) -> torch.Tensor:
-        """Return the standard deviation of the Gaussian before squashing."""
-        return self._std
-
-    @property
-    def entropy(self) -> torch.Tensor:
-        """Return the entropy of the Gaussian before squashing, summed over the last dimension.
-
-        The entropy of the squashed distribution has no closed form. SAC estimates it from sampled log probabilities.
-        """
-        return Normal(self._mean, self._std).entropy().sum(dim=-1)
-
-    @property
-    def params(self) -> tuple[torch.Tensor, ...]:
-        """Return ``(mean, std)`` of the Gaussian before squashing."""
-        return (self._mean, self._std)
-
-    def log_prob(self, outputs: torch.Tensor) -> torch.Tensor:
-        """Compute the log probability of squashed and scaled outputs, summed over the last dimension."""
-        # Undo action scaling and reuse cached pre-squash samples when available
-        squashed = (outputs - self.range_offset) / self.range_scale
-        log_det_scale = torch.log(self.range_scale).expand(self.output_dim).sum()
-        if outputs is self._last_sample:
-            pre_squash = self._pre_squash
-        else:
-            pre_squash = torch.atanh(squashed.clamp(-1.0 + 1e-6, 1.0 - 1e-6))
-
-        # Correct the Gaussian density for tanh squashing and action scaling
-        log_prob = Normal(self._mean, self._std).log_prob(pre_squash) - _tanh_log_abs_det_jacobian(pre_squash)
-        return log_prob.sum(dim=-1) - log_det_scale
-
-    def kl_divergence(self, old_params: tuple[torch.Tensor, ...], new_params: tuple[torch.Tensor, ...]) -> torch.Tensor:
-        """Compute KL(old || new), which is invariant to the squashing since it is a bijection."""
-        old_mean, old_std = old_params
-        new_mean, new_std = new_params
-        return torch.distributions.kl_divergence(Normal(old_mean, old_std), Normal(new_mean, new_std)).sum(dim=-1)
-
-    def init_mlp_weights(self, mlp: nn.Module) -> None:
-        """Initialize the std head so that the initial standard deviation equals ``init_std``."""
-        if self.init_std is None:
-            return
-
-        # Invert the bounded log standard deviation mapping to initialize the output head
-        output_layer = mlp.output_layer
-        log_std_min, log_std_max = self.log_std_range
-        normalized = 2.0 * (np.log(self.init_std) - log_std_min) / (log_std_max - log_std_min) - 1.0
-        torch.nn.init.zeros_(output_layer.weight[self.output_dim :])
-        torch.nn.init.constant_(
-            output_layer.bias[self.output_dim :], float(np.arctanh(np.clip(normalized, -0.99, 0.99)))
-        )
-
-    def _scale(self, squashed: torch.Tensor) -> torch.Tensor:
-        """Map normalized actions to the fixed action range."""
-        return self.range_offset + self.range_scale * squashed
+    def forward(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        return mlp_output
 
 
-def _tanh_log_abs_det_jacobian(x: torch.Tensor) -> torch.Tensor:
-    r"""Compute :math:`\log(1 - \tanh^2(x))` in a numerically stable form."""
-    return 2.0 * (np.log(2.0) - x - torch.nn.functional.softplus(-2.0 * x))
+class _FirstSliceDeterministicOutput(nn.Module):
+    """Exportable module that extracts the mean from the MLP output (first slice of the second-to-last dimension)."""
+
+    def forward(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        return mlp_output[..., 0, :]
 
 
 class _SquashedMeanDeterministicOutput(nn.Module):
@@ -607,21 +611,7 @@ class _SquashedMeanDeterministicOutput(nn.Module):
 
     def forward(self, mlp_output: torch.Tensor) -> torch.Tensor:
         """Compute the squashed and scaled mean from the MLP output."""
-        return self.range_offset + self.range_scale * torch.tanh(mlp_output[..., 0, :])
-
-
-class _IdentityDeterministicOutput(nn.Module):
-    """Exportable module that returns the MLP output as is."""
-
-    def forward(self, mlp_output: torch.Tensor) -> torch.Tensor:
-        return mlp_output
-
-
-class _FirstSliceDeterministicOutput(nn.Module):
-    """Exportable module that extracts the mean from the MLP output (first slice of the second-to-last dimension)."""
-
-    def forward(self, mlp_output: torch.Tensor) -> torch.Tensor:
-        return mlp_output[..., 0, :]
+        return self.range_offset + self.range_scale * torch.tanh(mlp_output[..., 0, :])  # type: ignore
 
 
 class _BetaDeterministicOutput(nn.Module):

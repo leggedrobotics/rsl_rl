@@ -754,10 +754,10 @@ SquashedGaussianDistribution
      - tuple[float | list[float], float | list[float]]
      - ``(-1.0, 1.0)``
      - Scalar or per-action lower and upper limits.
-   * - ``log_std_range``
+   * - ``std_range``
      - tuple[float, float]
-     - ``(-5.0, 2.0)``
-     - Bounds for the learned pre-squash log standard deviation.
+     - ``(math.exp(-5.0), math.exp(2.0))``
+     - Bounds for the learned standard deviation before squashing. The minimum is floored at ``1e-6``.
    * - ``init_std``
      - float | None
      - ``None``

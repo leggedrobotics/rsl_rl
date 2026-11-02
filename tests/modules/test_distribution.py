@@ -8,6 +8,8 @@
 import math
 import torch
 
+import pytest
+
 from rsl_rl.modules import MLP, SquashedGaussianDistribution
 from rsl_rl.modules.distribution import BetaDistribution, GaussianDistribution, HeteroscedasticGaussianDistribution
 
@@ -338,9 +340,25 @@ def test_squashed_gaussian_per_dimension_ranges_and_sample_gradients() -> None:
     assert logits.grad is not None and torch.isfinite(logits.grad).all()
 
 
-def test_squashed_gaussian_initial_standard_deviation() -> None:
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({}, (math.exp(-5.0), math.exp(2.0))),
+        ({"std_range": (0.1, 2.0)}, (0.1, 2.0)),
+        ({"std_range": (0.0, 2.0)}, (1e-6, 2.0)),
+    ],
+)
+def test_squashed_gaussian_standard_deviation_range(kwargs: dict, expected: tuple[float, float]) -> None:
+    """Configured bounds apply to standard deviations before squashing, preserving the default range."""
+    distribution = SquashedGaussianDistribution(2, **kwargs)
+    distribution.update(torch.tensor([[[0.0, 0.0], [-100.0, 100.0]]]))
+    torch.testing.assert_close(distribution.std, torch.tensor([expected]))
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"std_range": (0.1, 2.0)}])
+def test_squashed_gaussian_initial_standard_deviation(kwargs: dict) -> None:
     """The optional initialization sets the learned std head independently of its inputs."""
-    distribution = SquashedGaussianDistribution(2, init_std=0.5)
+    distribution = SquashedGaussianDistribution(2, init_std=0.5, **kwargs)
     mlp = MLP(3, [2, 2], [8], "elu")
     distribution.init_mlp_weights(mlp)
     distribution.update(mlp(torch.randn(4, 3)))
