@@ -13,9 +13,8 @@ from .distribution import (
     HeteroscedasticGaussianDistribution,
     SquashedGaussianDistribution,
 )
-from .mlp import MLP
+from .mlp import MLP, ResidualMLP
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
-from .residual_mlp import ResidualMLP
 from .rnn import RNN, HiddenState
 
 __all__ = [

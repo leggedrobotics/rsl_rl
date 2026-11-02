@@ -9,7 +9,7 @@ from rsl_rl.runners.on_policy_runner import OnPolicyRunner
 
 
 class OffPolicyRunner(OnPolicyRunner):
-    """Off-policy runner for SAC.
+    """Off-policy runner for reinforcement learning algorithms.
 
     This runner uses the interaction, logging, and checkpointing loop provided by :class:`OnPolicyRunner`.
     """

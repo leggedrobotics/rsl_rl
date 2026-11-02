@@ -499,7 +499,7 @@ MLPModel
 
 For MLPModel and QMLPModel, ``network_cfg`` replaces the MLP and ignores ``hidden_dims`` and ``activation``.
 RNNModel and CNNModel do not accept ``network_cfg``. For ``class_name: ResidualMLP``, options are ``hidden_dim``
-(256), ``num_blocks`` (2), ``expansion`` (4), and ``bn_momentum`` (0.01). ResidualMLP requires
+(256), ``num_blocks`` (2), ``expansion`` (4), and ``batch_norm_momentum`` (0.01). ResidualMLP requires
 ``normalize_parameters`` after each optimizer step; only SAC calls it.
 
 QMLPModel
