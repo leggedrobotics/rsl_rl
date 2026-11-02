@@ -27,7 +27,11 @@ class QMLPModel(MLPModel):
         obs_set: str,
         output_dim: int,
         action_dim: int,
-        **kwargs: object,
+        hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
+        activation: str = "elu",
+        obs_normalization: bool = False,
+        distribution_cfg: dict | None = None,
+        network_cfg: dict | None = None,
     ) -> None:
         """Initialize the Q model.
 
@@ -37,28 +41,38 @@ class QMLPModel(MLPModel):
             obs_set: Observation set to use for this model (e.g., "critic").
             output_dim: Dimension of the output.
             action_dim: Dimension of the actions.
-            **kwargs: Additional arguments passed to :class:`MLPModel`.
+            hidden_dims: Hidden dimensions of the MLP.
+            activation: Activation function.
+            obs_normalization: Whether to normalize the observations before feeding them to the MLP.
+            distribution_cfg: Output distribution configuration. Only ``None`` is supported.
+            network_cfg: Configuration dictionary for an alternative network. ``None`` uses the default MLP.
         """
-        if kwargs.get("distribution_cfg") is not None:
-            raise ValueError("The Q model does not support an output distribution.")
-
-        # Include the action dimension when constructing the MLP head
+        if distribution_cfg is not None:
+            raise ValueError("The QMLPModel does not support an output distribution.")
         self.action_dim = action_dim
-        super().__init__(obs, obs_groups, obs_set, output_dim, **kwargs)  # type: ignore
+        super().__init__(
+            obs,
+            obs_groups,
+            obs_set,
+            output_dim,
+            hidden_dims=hidden_dims,
+            activation=activation,
+            obs_normalization=obs_normalization,
+            network_cfg=network_cfg,
+        )
 
-    def forward(self, obs: TensorDict, actions: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
-        """Forward pass of the state-action value model.
-
-        Args:
-            obs: Observation dictionary.
-            actions: Actions to concatenate with the observation latent.
-
-        Returns:
-            The scalar Q-values or categorical value logits.
-        """
-        # Concatenate normalized observations and actions before the MLP forward pass
+    def forward(self, obs: TensorDict, actions: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the state-action value model."""
         latent = torch.cat([self.get_latent(obs), actions], dim=-1)
         return self.mlp(latent)
+
+    def as_jit(self) -> torch.nn.Module:
+        """TorchScript export is not implemented for QMLPModel."""
+        raise NotImplementedError("QMLPModel does not support TorchScript export.")
+
+    def as_onnx(self) -> torch.nn.Module:
+        """ONNX export is not implemented for QMLPModel."""
+        raise NotImplementedError("QMLPModel does not support ONNX export.")
 
     def _get_latent_dim(self) -> int:
         """Return the combined observation and action dimension for the MLP head."""

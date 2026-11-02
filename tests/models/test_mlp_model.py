@@ -14,7 +14,7 @@ from tensordict import TensorDict
 import onnx
 import pytest
 
-from rsl_rl.models import MLPModel
+from rsl_rl.models import MLPModel, QMLPModel
 from tests.conftest import make_obs
 
 NUM_ENVS = 4
@@ -229,6 +229,15 @@ class TestMLPModelExport:
             )
             loaded = onnx.load(f.name)
             onnx.checker.check_model(loaded)
+
+
+@pytest.mark.parametrize("export_method", ["as_jit", "as_onnx"])
+def test_q_model_export_is_not_supported(export_method: str) -> None:
+    """Q models reject exporters that cannot accept their separate action input."""
+    obs = make_obs(NUM_ENVS, OBS_DIM)
+    model = QMLPModel(obs, OBS_GROUPS, "critic", 1, NUM_ACTIONS, hidden_dims=[16])
+    with pytest.raises(NotImplementedError, match="QMLPModel does not support"):
+        getattr(model, export_method)()
 
 
 @pytest.mark.parametrize("distribution", ["HeteroscedasticGaussianDistribution", "BetaDistribution"])
