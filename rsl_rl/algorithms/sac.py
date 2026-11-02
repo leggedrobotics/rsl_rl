@@ -385,8 +385,8 @@ class SAC:
             saved_dict["max_abs_return"] = self._max_abs_return.clone()
         return saved_dict
 
-    def default_load_cfg(self, loaded_dict: dict) -> dict:
-        """Return the default checkpoint-loading selection."""
+    def get_default_load_cfg(self) -> dict:
+        """Return the default selection for resuming this algorithm's own checkpoints."""
         return {"actor": True, "critic": True, "optimizer": True, "iteration": True}
 
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
@@ -396,7 +396,7 @@ class SAC:
         """
         # Resolve the default load configuration
         if load_cfg is None:
-            load_cfg = self.default_load_cfg(loaded_dict)
+            load_cfg = self.get_default_load_cfg()
 
         # Load the specified models and temperature
         if load_cfg.get("actor"):

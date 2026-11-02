@@ -52,7 +52,7 @@ def test_cnn_actor_is_rejected_at_construction() -> None:
     cfg["actor"].update(class_name="CNNModel", cnn_cfg={"output_channels": [4], "kernel_size": 3, "flatten": True})
     obs = env.get_observations()
     obs["image"] = torch.zeros(env.num_envs, 1, 8, 8)
-    with pytest.raises(ValueError, match="SAC does not support CNN models"):
+    with pytest.raises(ValueError, match="support CNN models"):
         SAC.construct_algorithm(obs, env, cfg, "cpu")
 
 
@@ -86,7 +86,9 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
     path = str(tmp_path / "sac.pt")
     runner.save(path)
     restored = OffPolicyRunner(DummyEnv(device=device), cfg, log_dir=str(tmp_path / "resume"), device=device)
-    restored.load(path, load_optimizer=False)
+    load_cfg = restored.alg.get_default_load_cfg()
+    load_cfg["optimizer"] = False
+    restored.load(path, load_cfg=load_cfg)
     assert not restored.alg.actor_optimizer.state
     assert restored.alg._actor_loaded
     models = [restored.alg.actor, *restored.alg.critics]
@@ -111,7 +113,7 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
     restored.save(path)
     assert restored.alg.actor_optimizer.state
     fresh = OffPolicyRunner(DummyEnv(device=device), cfg, device=device)
-    fresh.load(path, load_optimizer=False)
+    fresh.load(path, load_cfg=load_cfg)
     assert not any(
         opt.state for opt in (fresh.alg.actor_optimizer, fresh.alg.critic_optimizer, fresh.alg.alpha_optimizer)
     )

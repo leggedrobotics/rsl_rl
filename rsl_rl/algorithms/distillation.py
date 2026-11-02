@@ -137,7 +137,6 @@ class Distillation:
 
     def compute_returns(self, obs: TensorDict) -> None:
         """No-op since distillation does not use return targets."""
-        # Not needed for distillation
         pass
 
     def update(self) -> dict[str, float]:
@@ -220,16 +219,17 @@ class Distillation:
         }
         return saved_dict
 
-    def default_load_cfg(self, loaded_dict: dict) -> dict:
-        """Detect an RL teacher checkpoint or a full distillation checkpoint."""
-        if any("actor_state_dict" in key for key in loaded_dict):
-            return {"teacher": True, "iteration": False}
+    def get_default_load_cfg(self) -> dict:
+        """Return the default selection for resuming this algorithm's own checkpoints."""
         return {"student": True, "teacher": True, "optimizer": True, "iteration": True}
 
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load specified models from a saved dict."""
         if load_cfg is None:
-            load_cfg = self.default_load_cfg(loaded_dict)
+            if any("actor_state_dict" in key for key in loaded_dict):
+                load_cfg = {"teacher": True, "iteration": False}  # Load a previous RL checkpoint
+            else:
+                load_cfg = self.get_default_load_cfg()
 
         # Load the specified models
         if load_cfg.get("student"):

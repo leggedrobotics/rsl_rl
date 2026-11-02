@@ -363,7 +363,9 @@ def test_load_without_optimizer_restores_models_and_iteration(tmp_path: pathlib.
     path = str(tmp_path / "model.pt")
     runner.save(path)
     restored = _build_runner()
-    restored.load(path, load_optimizer=False)
+    load_cfg = restored.alg.get_default_load_cfg()
+    load_cfg["optimizer"] = False
+    restored.load(path, load_cfg=load_cfg)
     assert restored.current_learning_iteration == 7
     assert not restored.alg.optimizer.state
     for expected, actual in zip(runner.alg.actor.parameters(), restored.alg.actor.parameters()):

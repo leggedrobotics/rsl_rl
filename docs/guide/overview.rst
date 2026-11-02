@@ -192,23 +192,6 @@ A **Module** implements a building block for the **Model**. This could be a neur
 :class:`~rsl_rl.modules.distribution.GaussianDistribution`. Modules are initialized in the **Model** constructor and
 managed by the **Model**.
 
-Runner and algorithm protocol
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-``OnPolicyRunner``, ``DistillationRunner`` and ``OffPolicyRunner`` share one collection loop. An algorithm implements
-``act(obs)``, ``process_env_step(obs, rewards, dones, extras)``, ``compute_returns(obs)`` and ``update()``. Replay-based
-algorithms construct targets during ``update`` and leave ``compute_returns`` empty. ``update`` returns named scalar
-losses for logging. Algorithms expose ``learning_rate`` and ``get_policy().output_std``; the latter is defined after
-the first ``act``, including during replay warm-up.
-
-``train_mode`` and ``eval_mode`` control the models. ``save`` and ``load`` own checkpoint state and selection.
-The optional ``default_load_cfg`` is needed only for ``runner.load(..., load_optimizer=False)``.
-``broadcast_parameters`` synchronizes supported distributed algorithms. Algorithms that do not support distribution
-reject a distributed configuration during construction.
-
-Collection runs under ``torch.inference_mode``. Persistent tensors needed by later autograd must be updated in place.
-Lazy allocation of such tensors, including replay storage, uses ``torch.inference_mode(False)``.
-
 .. _additional-components:
 
 Additional Components

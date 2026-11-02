@@ -486,7 +486,7 @@ class TestCheckpoint:
             optimizer.step()
         checkpoint = source.save()
         restored, _ = _build_ppo(rnd_cfg=RND_CFG)
-        load_cfg = restored.default_load_cfg(checkpoint)
+        load_cfg = restored.get_default_load_cfg()
         load_cfg["optimizer"] = False
         restored.load(checkpoint, load_cfg, strict=True)
         assert not restored.optimizer.state
