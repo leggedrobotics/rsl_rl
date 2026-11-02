@@ -8,6 +8,7 @@
 from .log_writer import LogWriter
 from .neptune_log_writer import NeptuneLogWriter
 from .utils import (
+    CudaGraphCallable,
     check_nan,
     compile_model,
     get_param,
@@ -23,6 +24,7 @@ from .utils import (
 from .wandb_log_writer import WandbLogWriter
 
 __all__ = [
+    "CudaGraphCallable",
     "LogWriter",
     "NeptuneLogWriter",
     "WandbLogWriter",

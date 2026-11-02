@@ -325,7 +325,7 @@ def test_symmetry_replay_endpoints_and_actor_loss(augmentation: bool) -> None:
     }
     runner = OffPolicyRunner(DummyEnv(), cfg)
     runner.learn(2)
-    batch = runner.alg._augment_batch(runner.alg._sample_batch())
+    batch = runner.alg._sample_batch()
     if augmentation:
         batch_size = runner.alg.batch_size
         torch.testing.assert_close(

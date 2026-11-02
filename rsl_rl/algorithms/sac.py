@@ -11,7 +11,6 @@ import functools
 import math
 import torch
 import torch.nn as nn
-from collections.abc import Callable
 from dataclasses import dataclass
 from tensordict import TensorDict
 
@@ -20,27 +19,7 @@ from rsl_rl.extensions import Symmetry, resolve_symmetry_config
 from rsl_rl.models import CNNModel, MLPModel, QMLPModel
 from rsl_rl.modules import EmpiricalNormalization, SquashedGaussianDistribution
 from rsl_rl.storage import ReplayBuffer
-from rsl_rl.utils import compile_model, resolve_class, resolve_obs_groups, resolve_optimizer
-
-
-@dataclass
-class _Batch:
-    """A batch of replay transitions with n-step returns and bootstrap discounts."""
-
-    observations: TensorDict
-    """Observations at the start of each sampled transition."""
-
-    actions: torch.Tensor
-    """Actions taken at the start of each sampled transition."""
-
-    rewards: torch.Tensor
-    """Discounted n-step returns over the valid replay window."""
-
-    next_observations: TensorDict
-    """Observations after the last valid transition in each replay window."""
-
-    bootstrap_discounts: torch.Tensor
-    """Discount factors for bootstrapping, with zero values for terminated episodes."""
+from rsl_rl.utils import CudaGraphCallable, compile_model, resolve_class, resolve_obs_groups, resolve_optimizer
 
 
 class SAC:
@@ -266,8 +245,38 @@ class SAC:
     @torch.no_grad()
     def process_env_step(self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict) -> None:
         """Record one environment step using final observations for environments that reset."""
+        # Resolve termination flags and observation groups
+        done_mask = dones.reshape(-1).bool()
+        time_outs = extras.get("time_outs", torch.zeros_like(done_mask)).to(self.device).reshape(-1).bool()
+        critic_obs_groups = [obs_group for critic in self.critics for obs_group in critic.obs_groups]  # type: ignore
+        groups = list(dict.fromkeys(self.actor.obs_groups + critic_obs_groups))
+
+        # Replace reset observations with final observations for completed episodes
+        next_obs = obs.select(*groups).clone()
+        if done_mask.any():
+            if extras.get("final_obs") is None:
+                raise ValueError("SAC requires extras['final_obs'] on every step containing a done.")
+            final_obs = extras["final_obs"]
+            for key in groups:
+                mask = done_mask.reshape(-1, *([1] * (next_obs[key].ndim - 1)))
+                next_obs[key] = torch.where(mask, final_obs[key].to(self.device), next_obs[key])
+
+        # Construct the transition using observations and actions recorded by act()
+        transition = TensorDict(
+            {
+                "observations": self._observations.select(*groups),
+                "actions": self._actions,
+                "rewards": rewards.reshape(-1),
+                "next_observations": next_obs,
+                "dones": done_mask,
+                "terminated": done_mask & ~time_outs,
+            },
+            batch_size=[self.storage.num_envs],
+            device=self.device,
+        )
+
         # Record the transition and retain observations for normalization
-        self.storage.add(self._make_transition(obs, self._actions, rewards, dones, extras))  # type: ignore
+        self.storage.add(transition)
         self._pending_observations.append(self._observations.detach().clone())
 
         # Record discounted returns for reward normalization
@@ -314,9 +323,12 @@ class SAC:
         # Iterate over replay mini-batches
         for _ in range(self.num_updates):
             # Sample and augment transitions and normalize rewards if enabled
-            batch = self._augment_batch(self._sample_batch())
+            batch = self._sample_batch()
             if self.reward_normalization:
-                batch.rewards = batch.rewards / self._reward_scale()
+                batch.rewards = batch.rewards / torch.maximum(
+                    self._return_normalizer._std.squeeze() + 1e-8,  # type: ignore
+                    self._max_abs_return / self.reward_normalization_max_return,
+                )
 
             # Run the gradient update with the configured actor update interval
             update_actor = self.num_critic_updates % self.actor_update_interval == 0
@@ -419,13 +431,14 @@ class SAC:
             for scheduler, state in zip(self._schedulers, loaded_dict.get("scheduler_state_dicts", [])):
                 scheduler.load_state_dict(state)
 
-        # Reconfigure optimizers and CUDA graphs after loading
-        self._configure_optimizer_capture()
-
         # Restore the update counters
         if load_cfg.get("iteration"):
             self.num_env_steps = loaded_dict["num_env_steps"]
             self.num_critic_updates = loaded_dict["num_critic_updates"]
+
+        # Reconfigure optimizer for CUDA graph capture
+        self._configure_optimizer_capture()
+
         return load_cfg.get("iteration", False)
 
     def get_policy(self) -> MLPModel:
@@ -440,7 +453,7 @@ class SAC:
         Args:
             mode: ``torch.compile`` mode. Defaults to ``None``, in which case compilation is disabled.
         """
-        self.actor = compile_model(self._raw_actor, mode)
+        self.actor = compile_model(self._raw_actor, mode)  # type: ignore
         self.critics = nn.ModuleList([compile_model(critic, mode) for critic in self._raw_critics])
 
     @staticmethod
@@ -448,21 +461,25 @@ class SAC:
         """Construct the SAC algorithm."""
         # Resolve class callables and configs
         alg_class, alg_cfg = resolve_class(cfg["algorithm"])
-        alg_cfg = resolve_symmetry_config(alg_cfg, env)
         actor_class, actor_cfg = resolve_class(cfg["actor"])
         critic_class, critic_cfg = resolve_class(cfg["critic"])
 
         # Resolve observation groups
         cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], ["actor", "critic"])
 
+        # Resolve symmetry configuration if used
+        alg_cfg = resolve_symmetry_config(alg_cfg, env)
+
         # Initialize the actor and critics
         actor = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **actor_cfg).to(device)
-        num_critics = alg_cfg.pop("num_critics", 2)
+        print(f"Actor Model: {actor}")
+        num_critics = alg_cfg.pop("num_critics", 2)  # Number of critics to use in the ensemble
         critic_output_dim = alg_cfg.get("num_bins", 101) if alg_cfg.get("critic_loss", "mse") == "categorical" else 1
         critics = [
             critic_class(obs, cfg["obs_groups"], "critic", critic_output_dim, env.num_actions, **critic_cfg).to(device)
             for _ in range(num_critics)
         ]
+        print(f"Critic Models: {critics[0]} (x{num_critics})")
 
         # Initialize the storage
         storage = ReplayBuffer(
@@ -474,81 +491,43 @@ class SAC:
         )
 
         # Initialize the algorithm
-        alg = alg_class(actor, critics, storage, device=device, multi_gpu_cfg=cfg["multi_gpu"], **alg_cfg)
+        alg = alg_class(actor, critics, storage, device=device, **alg_cfg, multi_gpu_cfg=cfg["multi_gpu"])
 
         # Compile the algorithm's models if requested
         alg.compile(cfg.get("torch_compile_mode"))
 
         return alg
 
-    def _make_transition(
-        self, obs: TensorDict, actions: torch.Tensor, rewards: torch.Tensor, dones: torch.Tensor, extras: dict
-    ) -> TensorDict:
-        """Build replay data with explicit transition-end observations."""
-        # Resolve termination flags and observation groups
-        dones = dones.reshape(-1).bool()
-        time_outs = extras.get("time_outs", torch.zeros_like(dones)).to(self.device).reshape(-1).bool()
-        critic_obs_groups = [obs_group for critic in self.critics for obs_group in critic.obs_groups]
-        groups = list(dict.fromkeys(self.actor.obs_groups + critic_obs_groups))
-
-        # Replace reset observations with final observations for completed episodes
-        next_obs = obs.select(*groups).clone()
-        if dones.any():
-            if extras.get("final_obs") is None:
-                raise ValueError("SAC requires extras['final_obs'] on every step containing a done.")
-            final_obs = extras["final_obs"]
-            for key in groups:
-                mask = dones.reshape(-1, *([1] * (obs[key].ndim - 1)))
-                next_obs[key] = torch.where(mask, final_obs[key].to(self.device), obs[key])
-        # Construct the transition using observations and actions recorded by act()
-        return TensorDict(
-            {
-                "observations": self._observations.select(*groups),
-                "actions": actions,
-                "rewards": rewards.reshape(-1),
-                "next_observations": next_obs,
-                "dones": dones,
-                "terminated": dones & ~time_outs,
-            },
-            batch_size=[self.storage.num_envs],
-            device=self.device,
-        )
-
     def _sample_batch(self) -> _Batch:
-        """Reduce a replay window, bootstrapping partial windows from their last explicit successor."""
+        """Build n-step returns, bootstrapping from the next state of the last valid transition."""
         # Accumulate discounted rewards over valid replay transitions
-        batch = self.storage.sample(self.batch_size, length=self.n_steps)
-        rewards = (batch.window["rewards"] * self._discounts[: self.n_steps] * batch.valid).sum(1)
+        replay_batch = self.storage.sample(self.batch_size, length=self.n_steps)
+        rewards = (replay_batch.window["rewards"] * self._discounts[: self.n_steps] * replay_batch.valid).sum(1)
+        discounts = self._discounts[replay_batch.valid.sum(1)] * ~replay_batch.terminated
 
-        # Bootstrap from the last valid successor unless the episode terminated
-        discounts = self._discounts[batch.valid.sum(1)] * ~batch.terminated
-        return _Batch(
-            observations=batch.observations,
-            actions=batch.actions,
+        # Construct the batch
+        batch = _Batch(
+            observations=replay_batch.observations,
+            actions=replay_batch.actions,
             rewards=rewards,
-            next_observations=batch.next_observations,
+            next_observations=replay_batch.next_observations,
             bootstrap_discounts=discounts,
         )
 
-    def _augment_batch(self, batch: _Batch) -> _Batch:
-        """Augment observations, actions, and next observations using the symmetry extension."""
-        if self.symmetry is None or not self.symmetry.use_data_augmentation:
-            return batch
+        # Apply symmetry data augmentation if enabled
+        if self.symmetry is not None and self.symmetry.use_data_augmentation:
+            # Apply the same augmentation to current and next observations
+            augment = self.symmetry.data_augmentation_func
+            batch.observations, batch.actions = augment(
+                env=self.symmetry.env, obs=batch.observations, actions=batch.actions
+            )
+            batch.next_observations, _ = augment(env=self.symmetry.env, obs=batch.next_observations, actions=None)
+            # Repeat scalar targets to match the augmented observations and actions
+            num_aug = batch.actions.shape[0] // self.batch_size
+            batch.rewards = batch.rewards.repeat(num_aug)
+            batch.bootstrap_discounts = batch.bootstrap_discounts.repeat(num_aug)
 
-        # Apply the same augmentation to current and next observations
-        augment = self.symmetry.data_augmentation_func
-        observations, actions = augment(env=self.symmetry.env, obs=batch.observations, actions=batch.actions)
-        next_observations, _ = augment(env=self.symmetry.env, obs=batch.next_observations, actions=None)
-
-        # Repeat scalar targets to match the augmented observations and actions
-        num_aug = actions.shape[0] // self.batch_size
-        return _Batch(
-            observations=observations,
-            actions=actions,
-            rewards=batch.rewards.repeat(num_aug),
-            next_observations=next_observations,
-            bootstrap_discounts=batch.bootstrap_discounts.repeat(num_aug),
-        )
+        return batch
 
     def _gradient_step(
         self,
@@ -574,76 +553,15 @@ class SAC:
         self._update_target_critics()
         return stats
 
-    def _update_critics(self, batch: _Batch) -> dict[str, torch.Tensor]:
-        """Run one gradient step of the critics."""
-        alpha = self.log_alpha.detach().exp()
-        actions = self._critic_actions(batch.actions)
-        joint_batch = len(self._critic_batch_norms) > 0
-
-        with torch.autocast(
-            device_type=torch.device(self.device).type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
-        ):
-            # Compute the critic targets without gradients
-            with torch.no_grad():
-                with _BatchNormMode(self._actor_batch_norms, training=False):
-                    next_actions, next_log_probs = self._sample_actions(batch.next_observations)
-                next_actions = self._critic_actions(next_actions)
-                if joint_batch:
-                    # Update target batch statistics using current and next observations
-                    target_obs = torch.cat([batch.observations, batch.next_observations])
-                    target_actions = torch.cat([actions, next_actions])
-                    with _BatchNormMode(self._target_batch_norms, training=True):
-                        next_outputs = [
-                            critic(target_obs, target_actions)[batch.actions.shape[0] :]
-                            for critic in self.target_critics
-                        ]
-                else:
-                    next_outputs = [critic(batch.next_observations, next_actions) for critic in self.target_critics]
-                targets = self._compute_targets(next_outputs, batch, alpha * next_log_probs)
-
-            # Evaluate the current state-action values
-            if joint_batch:
-                with _BatchNormMode(self._critic_batch_norms, training=True):
-                    outputs = [critic(target_obs, target_actions)[: batch.actions.shape[0]] for critic in self.critics]
-            else:
-                outputs = [critic(batch.observations, actions) for critic in self.critics]
-
-            # Compute scalar or categorical critic losses
-            if self.critic_loss == "mse":
-                losses = [(output.squeeze(-1) - target).square().mean() for output, target in zip(outputs, targets)]
-            else:
-                losses = [
-                    -(target * torch.log_softmax(output.float(), dim=-1)).sum(dim=-1).mean()
-                    for output, target in zip(outputs, targets)
-                ]
-            critic_loss = torch.stack(losses).mean()
-
-        # Apply the gradients for the critics
-        self.critic_optimizer.zero_grad(set_to_none=True)
-        critic_loss.backward()
-        if self.max_grad_norm is not None:
-            nn.utils.clip_grad_norm_(self.critics.parameters(), self.max_grad_norm)
-        self.critic_optimizer.step()
-        _normalize_parameters(self.critics)
-
-        # Store the critic loss and mean Q-value
-        with torch.no_grad():
-            q_values = torch.stack([self._expected_value(output) for output in outputs])
-            stats = {"critic": critic_loss.detach(), "q_value": q_values.mean()}
-        return stats
-
     def _update_actor_and_alpha(self, batch: _Batch) -> dict[str, torch.Tensor]:
-        """Run one gradient step of the actor and entropy temperature."""
-        alpha = self.log_alpha.detach().exp()
-        joint_batch = len(self._actor_batch_norms) > 0
-
+        """Run one gradient step for the actor and entropy temperature."""
         with torch.autocast(
             device_type=torch.device(self.device).type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
         ):
             # Sample actions using joint batches when batch normalization is enabled
-            if joint_batch:
+            if len(self._actor_batch_norms) > 0:
                 with _BatchNormMode(self._actor_batch_norms, training=True):
-                    actions, log_probs = self._sample_actions(torch.cat([batch.observations, batch.next_observations]))
+                    actions, log_probs = self._sample_actions(torch.cat([batch.observations, batch.next_observations]))  # type: ignore
                 actions = actions[: batch.actions.shape[0]]
                 log_probs = log_probs[: batch.actions.shape[0]]
             else:
@@ -654,18 +572,20 @@ class SAC:
             try:
                 with _BatchNormMode(self._critic_batch_norms, training=False):
                     q_values = torch.stack([
-                        self._expected_value(critic(batch.observations, self._critic_actions(actions)))
+                        self._expected_value(critic(batch.observations, self._normalize_actions(actions)))
                         for critic in self.critics
                     ])
             finally:
                 self.critics.requires_grad_(True)
 
-            # Compute the actor objective and optional symmetry loss
+            # Compute the actor objective
             q_value = q_values.min(dim=0).values
-            actor_loss = (alpha * log_probs - q_value).mean()
+            actor_loss = (self.log_alpha.detach().exp() * log_probs - q_value).mean()
+
+            # Compute the symmetry loss and add it to the actor loss if enabled
             symmetry_loss = None
             if self.symmetry is not None:
-                symmetry_loss = self.symmetry.compute_loss(self.actor, copy.copy(batch), self.batch_size)
+                symmetry_loss = self.symmetry.compute_loss(self.actor, copy.copy(batch), self.batch_size)  # type: ignore
                 if self.symmetry.use_mirror_loss:
                     actor_loss = actor_loss + self.symmetry.mirror_loss_coeff * symmetry_loss
 
@@ -690,28 +610,94 @@ class SAC:
             stats["symmetry"] = symmetry_loss.detach()
         return stats
 
-    def _compute_targets(
-        self, next_outputs: list[torch.Tensor], batch: _Batch, entropy_bonus: torch.Tensor
-    ) -> list[torch.Tensor]:
-        """Compute the critic targets (values for scalar critics, probabilities for categorical critics)."""
-        rewards = batch.rewards
-        discounts = batch.bootstrap_discounts
+    def _update_critics(self, batch: _Batch) -> dict[str, torch.Tensor]:
+        """Run one gradient step for the critics."""
+        with torch.autocast(
+            device_type=torch.device(self.device).type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
+        ):
+            # Compute the critic targets without gradients
+            with torch.no_grad():
+                with _BatchNormMode(self._actor_batch_norms, training=False):
+                    next_actions, next_log_probs = self._sample_actions(batch.next_observations)
+                if len(self._critic_batch_norms) > 0:
+                    # Update target batch statistics using current and next observations
+                    target_obs = torch.cat([batch.observations, batch.next_observations])
+                    target_actions = torch.cat([
+                        self._normalize_actions(batch.actions),
+                        self._normalize_actions(next_actions),
+                    ])
+                    with _BatchNormMode(self._target_batch_norms, training=True):
+                        next_outputs = [
+                            critic(target_obs, target_actions)[batch.actions.shape[0] :]
+                            for critic in self.target_critics
+                        ]
+                else:
+                    next_outputs = [
+                        critic(batch.next_observations, self._normalize_actions(next_actions))
+                        for critic in self.target_critics
+                    ]
+                target = self._compute_target(next_outputs, batch, self.log_alpha.detach().exp() * next_log_probs)
 
-        # Select the critic with the lowest expected value for each successor
+            # Evaluate the current state-action values
+            if len(self._critic_batch_norms) > 0:
+                with _BatchNormMode(self._critic_batch_norms, training=True):
+                    outputs = [critic(target_obs, target_actions)[: batch.actions.shape[0]] for critic in self.critics]
+            else:
+                outputs = [
+                    critic(batch.observations, self._normalize_actions(batch.actions)) for critic in self.critics
+                ]
+
+            # Compute scalar or categorical critic losses
+            if self.critic_loss == "mse":
+                losses = [(output.squeeze(-1) - target).square().mean() for output in outputs]
+            else:
+                losses = [
+                    -(target * torch.log_softmax(output.float(), dim=-1)).sum(dim=-1).mean() for output in outputs
+                ]
+            critic_loss = torch.stack(losses).mean()
+
+        # Apply the gradients for the critics
+        self.critic_optimizer.zero_grad(set_to_none=True)
+        critic_loss.backward()
+        if self.max_grad_norm is not None:
+            nn.utils.clip_grad_norm_(self.critics.parameters(), self.max_grad_norm)
+        self.critic_optimizer.step()
+        _normalize_parameters(self.critics)
+
+        # Store the critic loss and mean Q-value
+        with torch.no_grad():
+            q_values = torch.stack([self._expected_value(output) for output in outputs])
+            stats = {"critic": critic_loss.detach(), "q_value": q_values.mean()}
+        return stats
+
+    @torch.no_grad()
+    def _update_target_critics(self) -> None:
+        """Interpolate target parameters and copy observation normalizers, retaining target batch statistics."""
+        # Interpolate the target critic parameters
+        torch._foreach_lerp_(list(self.target_critics.parameters()), list(self.critics.parameters()), self.tau)  # type: ignore
+
+        # Copy observation normalizers without overwriting target batch statistics
+        for target, source in zip(self.target_critics, self.critics):
+            for target_buffer, source_buffer in zip(target.obs_normalizer.buffers(), source.obs_normalizer.buffers()):  # type: ignore
+                target_buffer.copy_(source_buffer)
+
+    def _compute_target(
+        self, next_outputs: list[torch.Tensor], batch: _Batch, entropy_bonus: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute the shared critic target (values for scalar critics, probabilities for categorical critics)."""
+        # Select the critic with the lowest expected value
         next_values = [self._expected_value(output) for output in next_outputs]
         critic_indices = torch.stack(next_values).argmin(dim=0)
-        selected = torch.stack(next_outputs).gather(
+        next_output = torch.stack(next_outputs).gather(
             0, critic_indices.view(1, -1, 1).expand(1, -1, next_outputs[0].shape[-1])
-        )
-        next_outputs = [selected[0]] * len(self.critics)
+        )[0]
 
         # Bootstrap scalar values or project categorical distributions onto the fixed support
         if self.critic_loss == "mse":
-            return [rewards + discounts * (output.squeeze(-1) - entropy_bonus) for output in next_outputs]
-        return [
-            self._project(torch.softmax(output.float(), dim=-1), rewards, discounts, entropy_bonus)
-            for output in next_outputs
-        ]
+            return batch.rewards + batch.bootstrap_discounts * (next_output.squeeze(-1) - entropy_bonus)
+        return self._project(
+            torch.softmax(next_output.float(), dim=-1), batch.rewards, batch.bootstrap_discounts, entropy_bonus
+        )
 
     def _project(
         self, probs: torch.Tensor, rewards: torch.Tensor, discounts: torch.Tensor, entropy_bonus: torch.Tensor
@@ -738,27 +724,10 @@ class SAC:
             return output.squeeze(-1).float()
         return (torch.softmax(output.float(), dim=-1) * self._bin_values).sum(dim=-1)
 
-    def _critic_actions(self, actions: torch.Tensor) -> torch.Tensor:
+    def _normalize_actions(self, actions: torch.Tensor) -> torch.Tensor:
         """Express fixed-range actions in normalized coordinates for critic inputs."""
         distribution = self.actor.distribution
-        return (actions - distribution.range_offset) / distribution.range_scale
-
-    def _reward_scale(self) -> torch.Tensor:
-        """Compute the reward scale from discounted returns and the maximum absolute return."""
-        return torch.maximum(
-            self._return_normalizer._std.squeeze() + 1e-8, self._max_abs_return / self.reward_normalization_max_return
-        )
-
-    @torch.no_grad()
-    def _update_target_critics(self) -> None:
-        """Interpolate target parameters and copy observation normalizers, retaining target batch statistics."""
-        # Interpolate the target critic parameters
-        torch._foreach_lerp_(list(self.target_critics.parameters()), list(self.critics.parameters()), self.tau)
-
-        # Copy observation normalizers without overwriting target batch statistics
-        for target, source in zip(self.target_critics, self.critics):
-            for target_buffer, source_buffer in zip(target.obs_normalizer.buffers(), source.obs_normalizer.buffers()):
-                target_buffer.copy_(source_buffer)
+        return (actions - distribution.range_offset) / distribution.range_scale  # type: ignore
 
     def _sample_actions(self, obs: TensorDict) -> tuple[torch.Tensor, torch.Tensor]:
         """Sample actor actions and corrected log probabilities."""
@@ -784,60 +753,32 @@ class SAC:
 
         # Create separate graphs for updates with and without an actor step
         if self.use_cuda_graph:
-            self._graph_steps: dict[bool, _CudaGraphStep] = {
-                update_actor: _CudaGraphStep(
+            self._graph_steps: dict[bool, CudaGraphCallable] = {
+                update_actor: CudaGraphCallable(
                     functools.partial(self._gradient_step, update_actor=update_actor), self.device
                 )
                 for update_actor in (True, False)
             }
 
 
-class _CudaGraphStep:
-    """Run a function in a CUDA graph after a few eager warm-up calls.
+@dataclass
+class _Batch:
+    """A batch of replay transitions with n-step returns and bootstrap discounts."""
 
-    The inputs of each call are copied into static buffers before the graph is replayed. The function must only use
-    tensor operations that are valid during graph capture and return a dictionary of tensors.
-    """
+    observations: TensorDict
+    """Observations at the start of each sampled transition."""
 
-    def __init__(self, fn: Callable[..., dict[str, torch.Tensor]], device: str, num_warmup: int = 3) -> None:
-        """Initialize the graph wrapper.
+    actions: torch.Tensor
+    """Actions taken at the start of each sampled transition."""
 
-        Args:
-            fn: Function to capture. Must return a dictionary of tensors.
-            device: CUDA device on which to run warm-up calls and capture the graph.
-            num_warmup: Number of eager calls before graph capture.
-        """
-        self.fn = fn
-        self.num_warmup = num_warmup
-        self.num_calls = 0
-        self.graph: torch.cuda.CUDAGraph | None = None
-        self._stream = torch.cuda.Stream(device=device)
+    rewards: torch.Tensor
+    """Discounted n-step returns over the valid replay window."""
 
-    def __call__(self, *args: torch.Tensor | TensorDict) -> dict[str, torch.Tensor]:
-        """Run an eager warm-up call or replay the captured graph with new inputs."""
-        with torch.cuda.device(self._stream.device):
-            if self.graph is None and self.num_calls < self.num_warmup:
-                # Warm up optimizer state on the capture stream before recording a graph
-                self.num_calls += 1
-                self._stream.wait_stream(torch.cuda.current_stream())
-                with torch.cuda.stream(self._stream):
-                    outputs = self.fn(*args)
-                torch.cuda.current_stream().wait_stream(self._stream)
-                return outputs
-            if self.graph is None:
-                # Capture the update using inputs with fixed memory addresses
-                self._static_args = tuple(arg.clone() for arg in args)
-                self.graph = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(self.graph, stream=self._stream):
-                    self._static_outputs = self.fn(*self._static_args)
-            else:
-                # Copy new inputs into the buffers referenced by the captured graph
-                for static, arg in zip(self._static_args, args):
-                    static.copy_(arg)
+    next_observations: TensorDict
+    """Observations after the last valid transition in each replay window."""
 
-            # Replay the update and return independent copies of its outputs
-            self.graph.replay()
-            return {key: value.clone() for key, value in self._static_outputs.items()}
+    bootstrap_discounts: torch.Tensor
+    """Discount factors for bootstrapping, with zero values for terminated episodes."""
 
 
 class _BatchNormMode:
@@ -869,4 +810,4 @@ def _normalize_parameters(module: nn.Module) -> None:
     """Apply weight normalization of networks that define it after an optimizer step."""
     for submodule in module.modules():
         if submodule is not module and hasattr(submodule, "normalize_parameters"):
-            submodule.normalize_parameters()
+            submodule.normalize_parameters()  # type: ignore

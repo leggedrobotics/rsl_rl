@@ -342,6 +342,54 @@ def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.M
     return torch.compile(model, mode=mode)  # type: ignore
 
 
+class CudaGraphCallable:
+    """Run a function in a CUDA graph after a few eager warm-up calls.
+
+    The inputs of each call are copied into static buffers before the graph is replayed. The function must only use
+    tensor operations that are valid during graph capture and return a dictionary of tensors.
+    """
+
+    def __init__(self, fn: Callable[..., dict[str, torch.Tensor]], device: str, num_warmup: int = 3) -> None:
+        """Initialize the graph wrapper.
+
+        Args:
+            fn: Function to capture. Must return a dictionary of tensors.
+            device: CUDA device on which to run warm-up calls and capture the graph.
+            num_warmup: Number of eager calls before graph capture.
+        """
+        self.fn = fn
+        self.num_warmup = num_warmup
+        self.num_calls = 0
+        self.graph: torch.cuda.CUDAGraph | None = None
+        self._stream = torch.cuda.Stream(device=device)
+
+    def __call__(self, *args: torch.Tensor | TensorDict) -> dict[str, torch.Tensor]:
+        """Run an eager warm-up call or replay the captured graph with new inputs."""
+        with torch.cuda.device(self._stream.device):
+            if self.graph is None and self.num_calls < self.num_warmup:
+                # Run eager warm-up calls on the capture stream before recording the graph
+                self.num_calls += 1
+                self._stream.wait_stream(torch.cuda.current_stream())
+                with torch.cuda.stream(self._stream):
+                    outputs = self.fn(*args)
+                torch.cuda.current_stream().wait_stream(self._stream)
+                return outputs
+            if self.graph is None:
+                # Capture the function using inputs with fixed memory addresses
+                self._static_args = tuple(arg.clone() for arg in args)
+                self.graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(self.graph, stream=self._stream):
+                    self._static_outputs = self.fn(*self._static_args)
+            else:
+                # Copy new inputs into the buffers referenced by the captured graph
+                for static, arg in zip(self._static_args, args):
+                    static.copy_(arg)
+
+            # Replay the graph and return independent copies of its outputs
+            self.graph.replay()
+            return {key: value.clone() for key, value in self._static_outputs.items()}
+
+
 def reduce_gradients_in_buckets(params: Iterable[torch.nn.Parameter], world_size: int, bucket_mb: float) -> None:
     """Average gradients across GPUs in bounded-size buckets.
 

@@ -442,7 +442,7 @@ class PPO:
         # Resolve symmetry config if used
         alg_cfg = resolve_symmetry_config(alg_cfg, env)
 
-        # Initialize the policy
+        # Initialize the actor and critic
         actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **actor_cfg).to(device)
         print(f"Actor Model: {actor}")
         if alg_cfg.pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critic
