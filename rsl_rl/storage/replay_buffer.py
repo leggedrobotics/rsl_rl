@@ -12,48 +12,45 @@ from dataclasses import dataclass
 from tensordict import TensorDict
 
 
-@dataclass
-class ReplayBatch:
-    """A batch of replay transitions and chronological reward windows.
-
-    Observations and actions come from the first transition in each window. Next observations and termination flags
-    come from the last valid transition. The validity mask excludes transitions after episode boundaries or beyond
-    the newest stored step.
-    """
-
-    observations: TensorDict
-    """Observations at the first transition of each window."""
-
-    actions: torch.Tensor
-    """Actions at the first transition of each window."""
-
-    window: dict[str | tuple[str, ...], torch.Tensor]
-    """Raw rewards, episode flags, and extra fields over the sampled windows."""
-
-    valid: torch.Tensor
-    """Validity masks for window entries. Shape: (batch_size, length)."""
-
-    next_observations: TensorDict
-    """Observations after the last valid transition of each window."""
-
-    terminated: torch.Tensor
-    """Termination flags at the last valid transition of each window."""
-
-
 class ReplayBuffer:
-    """Lazy dense replay for SAC, with chronological per-environment transition windows.
+    """Storage for transitions collected from the environment.
 
-    Capacity counts transitions across environments and is rounded down to complete environment steps. Samples may
-    include consecutive positions after an anchor; validity masks exclude missing positions and episode boundaries.
-    The terminating transition itself remains valid. Invalid positions repeat the last valid position, so every
-    gathered value comes from initialized storage. Storage is allocated on the first :meth:`add`.
+    The replay buffer stores past transitions and returns random batches for learning. New transitions replace the
+    oldest ones when the buffer is full.
     """
+
+    @dataclass
+    class Batch:
+        """A batch of data returned by :meth:`ReplayBuffer.sample`.
+
+        Each batch entry contains one or more consecutive transitions from the same environment. Observations and
+        actions are taken from the first step. Next observations and termination flags are taken from the last valid
+        step. Rewards and done flags are included for every step, with a mask marking the valid entries.
+        """
+
+        observations: TensorDict
+        """Observations at the first transition of each window."""
+
+        actions: torch.Tensor
+        """Actions at the first transition of each window."""
+
+        window: dict[str | tuple[str, ...], torch.Tensor]
+        """Raw rewards, episode flags, and extra fields over the sampled windows."""
+
+        valid: torch.Tensor
+        """Validity masks for window entries. Shape: (batch_size, length)."""
+
+        next_observations: TensorDict
+        """Observations after the last valid transition of each window."""
+
+        terminated: torch.Tensor
+        """Termination flags at the last valid transition of each window."""
 
     def __init__(
         self,
         num_envs: int,
         capacity: int,
-        min_steps: int = 1,
+        min_steps_per_env: int = 1,
         max_memory_fraction: float | None = None,
         device: str = "cpu",
     ) -> None:
@@ -61,25 +58,18 @@ class ReplayBuffer:
 
         Args:
             num_envs: Number of environments.
-            capacity: Maximum number of transitions across all environments. Rounded down to complete environment
-                steps.
-            min_steps: Minimum number of steps per environment that must fit in the buffer.
-            max_memory_fraction: Maximum fraction of free GPU memory available for replay allocation. ``None``
-                disables the memory limit. Only applies to CUDA devices.
+            capacity: Maximum number of transitions across all environments. Rounded down to complete environment steps.
+            min_steps_per_env: Minimum number of steps per environment that must fit in the buffer.
+            max_memory_fraction: Maximum fraction of free GPU memory available for replay allocation. ``None`` disables
+                the memory limit. Only applies to CUDA devices.
             device: Device on which to store and sample transitions.
         """
-        # Check the replay capacity and memory limit
-        if num_envs < 1 or capacity < num_envs or min_steps < 1:
-            raise ValueError("Replay capacity must hold at least one step of all environments.")
-        if max_memory_fraction is not None and not 0 < max_memory_fraction <= 1:
-            raise ValueError("max_memory_fraction must lie in (0, 1].")
-
         # Replay parameters
         self.num_envs = num_envs
         self.num_slots = capacity // num_envs
-        self.device = device
-        self.min_steps = min_steps
+        self.min_steps_per_env = min_steps_per_env
         self.max_memory_fraction = max_memory_fraction
+        self.device = device
 
         # Initialize the write cursor and allocation state
         self.num_steps = 0
@@ -140,8 +130,8 @@ class ReplayBuffer:
                     self.num_slots = num_affordable_steps
 
             # Ensure the minimum replay window still fits
-            if self.num_slots < self.min_steps:
-                raise ValueError(f"Replay capacity must hold at least {self.min_steps} steps per environment.")
+            if self.num_slots < self.min_steps_per_env:
+                raise ValueError(f"Replay capacity must hold at least {self.min_steps_per_env} steps per environment.")
 
             # Allocate mutable tensors even when collection runs under inference mode
             with torch.inference_mode(False):
@@ -170,11 +160,11 @@ class ReplayBuffer:
         self.step = (self.step + 1) % self.num_slots
         self.num_steps = min(self.num_steps + 1, self.num_slots)
 
-    def sample(self, batch_size: int, length: int = 1) -> ReplayBatch:
+    def sample(self, batch_size: int, length: int = 1) -> ReplayBuffer.Batch:
         """Sample windows of consecutive transitions for independently selected environments.
 
         Windows stop at the first episode boundary or the newest stored transition. Invalid positions repeat the
-        last valid transition and are excluded by :attr:`ReplayBatch.valid`.
+        last valid transition and are excluded by :attr:`ReplayBuffer.Batch.valid`.
 
         Args:
             batch_size: Number of windows to sample.
@@ -216,7 +206,7 @@ class ReplayBuffer:
             last = indices[:, -1]
 
         # Construct the batch using the first and last valid transitions of each window
-        return ReplayBatch(
+        return ReplayBuffer.Batch(
             observations=TensorDict(
                 {key: value[first] for key, value in self._observations.items()},
                 batch_size=[batch_size],

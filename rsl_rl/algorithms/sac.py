@@ -485,7 +485,9 @@ class SAC:
         storage = ReplayBuffer(
             env.num_envs,
             alg_cfg.pop("replay_buffer_size", 100_000),
-            min_steps=max(alg_cfg.get("n_steps", 1), math.ceil(alg_cfg.get("learning_starts", 1000) / env.num_envs)),
+            min_steps_per_env=max(
+                alg_cfg.get("n_steps", 1), math.ceil(alg_cfg.get("learning_starts", 1000) / env.num_envs)
+            ),
             max_memory_fraction=alg_cfg.pop("max_replay_memory_fraction", None),
             device=device,
         )

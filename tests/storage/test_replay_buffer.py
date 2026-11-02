@@ -81,11 +81,11 @@ def test_lazy_memory_budget_checks_minimum_window(monkeypatch: pytest.MonkeyPatc
     """The optional cap uses the actual transition schema and rejects a window that no longer fits."""
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device=None: (10240, 40960))
     step = _make_transition(0.0)
-    replay = ReplayBuffer(2, 1000, min_steps=3, max_memory_fraction=0.5, device="cuda")
+    replay = ReplayBuffer(2, 1000, min_steps_per_env=3, max_memory_fraction=0.5, device="cuda")
     assert replay.data is None and replay.num_slots == 500
     with pytest.warns(UserWarning, match="Reducing replay"):
         replay.add(step)
     assert replay.num_slots == 116
-    undersized = ReplayBuffer(2, 1000, min_steps=117, max_memory_fraction=0.5, device="cuda")
+    undersized = ReplayBuffer(2, 1000, min_steps_per_env=117, max_memory_fraction=0.5, device="cuda")
     with pytest.warns(UserWarning, match="Reducing replay"), pytest.raises(ValueError, match="117 steps"):
         undersized.add(step)
