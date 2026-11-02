@@ -9,6 +9,14 @@ On-Policy Runner
    :undoc-members:
 
 
+Off-Policy Runner
+-----------------
+
+.. automodule:: rsl_rl.runners.off_policy_runner
+   :members:
+   :undoc-members:
+
+
 Distillation Runner
 -------------------
 
@@ -16,10 +24,3 @@ Distillation Runner
    :members:
    :undoc-members:
 
-
-Off-Policy Runner
------------------
-
-.. automodule:: rsl_rl.runners.off_policy_runner
-   :members:
-   :undoc-members:
