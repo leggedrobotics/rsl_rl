@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from functools import reduce
 
-from rsl_rl.utils import get_param, resolve_nn_activation
+from rsl_rl.utils import resolve_nn_activation
 
 
 class MLP(nn.Sequential):
@@ -83,17 +83,6 @@ class MLP(nn.Sequential):
     def output_layer(self) -> nn.Linear:
         """Return the output layer for distribution-specific initialization."""
         return [layer for layer in self if isinstance(layer, nn.Linear)][-1]
-
-    def init_weights(self, scales: float | tuple[float]) -> None:
-        """Initialize the weights of the MLP.
-
-        Args:
-            scales: Scale factor for the weights.
-        """
-        for idx, module in enumerate(self):
-            if isinstance(module, nn.Linear):
-                nn.init.orthogonal_(module.weight, gain=get_param(scales, idx))
-                nn.init.zeros_(module.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the MLP."""
