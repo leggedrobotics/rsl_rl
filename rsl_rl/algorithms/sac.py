@@ -152,7 +152,7 @@ class SAC:
 
         # Handles to the uncompiled modules for state_dict operations and export
         self._raw_actor = self.actor
-        self._raw_critics = list(self.critics)
+        self._raw_critics = self.critics
 
         # Initialize the entropy temperature and create the optimizers
         self.log_alpha = torch.tensor(math.log(init_alpha), device=self.device, requires_grad=True)
@@ -370,7 +370,7 @@ class SAC:
         """
         saved_dict = {
             "actor_state_dict": self._raw_actor.state_dict(),
-            "critic_state_dict": nn.ModuleList(self._raw_critics).state_dict(),
+            "critic_state_dict": self._raw_critics.state_dict(),
             "target_critic_state_dict": self.target_critics.state_dict(),
             "log_alpha": self.log_alpha.detach().clone(),
             "actor_optimizer_state_dict": self.actor_optimizer.state_dict(),
@@ -403,7 +403,7 @@ class SAC:
             self._raw_actor.load_state_dict(loaded_dict["actor_state_dict"], strict=strict)
             self._actor_loaded = True
         if load_cfg.get("critic"):
-            nn.ModuleList(self._raw_critics).load_state_dict(loaded_dict["critic_state_dict"], strict=strict)
+            self._raw_critics.load_state_dict(loaded_dict["critic_state_dict"], strict=strict)
             self.target_critics.load_state_dict(loaded_dict["target_critic_state_dict"], strict=strict)
             if self.reward_normalization:
                 self._return_normalizer.load_state_dict(loaded_dict["return_normalizer_state_dict"], strict=strict)
