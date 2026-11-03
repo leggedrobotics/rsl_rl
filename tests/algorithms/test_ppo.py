@@ -132,7 +132,7 @@ class TestGAEComputation:
             ppo.compute_returns(obs)
 
         torch.testing.assert_close(storage.advantages, torch.full((1, 1, 1), 2.0))
-        losses = ppo.update()
+        losses, _ = ppo.update()
         assert all(torch.isfinite(torch.tensor(value)) for value in losses.values())
         assert losses["surrogate"] == pytest.approx(-2.0)
 
@@ -377,8 +377,12 @@ class TestPPOLosses:
         ).mean()
         expected_loss.backward()
 
-        losses = ppo.update()
+        losses, stats = ppo.update()
         torch.testing.assert_close(losses["surrogate"], expected_loss.item(), atol=1e-6, rtol=1e-5)
+        assert "entropy" in losses
+        assert "Policy/entropy" not in stats
+        assert stats["Loss/learning_rate"] == ppo.learning_rate
+        assert stats["Policy/mean_std"] == ppo.actor.output_std.mean().item()
         for actual, expected in zip(actor.parameters(), reference.parameters()):
             torch.testing.assert_close(actual.grad, expected.grad)
 
@@ -390,7 +394,7 @@ class TestPPOLosses:
         ppo.storage.actions_log_prob.sub_(torch.log(torch.tensor(ratio)))
         ppo.storage.advantages.fill_(advantage)
 
-        losses = ppo.update()
+        losses, _ = ppo.update()
 
         assert losses["surrogate"] == pytest.approx(expected)
 
@@ -404,7 +408,7 @@ class TestPPOLosses:
         ppo.storage.returns.copy_(ppo.storage.values + return_offset)
         ppo.storage.values.sub_(1.0)
 
-        losses = ppo.update()
+        losses, _ = ppo.update()
 
         assert losses["value"] == pytest.approx(expected, abs=1e-6)
 
@@ -455,7 +459,7 @@ class TestMixedPrecision:
         ppo.compute_returns(obs)
 
         before = [p.clone() for p in ppo.actor.parameters()]
-        loss_dict = ppo.update()
+        loss_dict, _ = ppo.update()
 
         assert all(torch.isfinite(torch.tensor(v)) for v in loss_dict.values())
         after = list(ppo.actor.parameters())

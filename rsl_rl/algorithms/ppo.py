@@ -196,8 +196,8 @@ class PPO:
         if not self.normalize_advantage_per_mini_batch and st.advantages.numel() > 1:
             st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
 
-    def update(self) -> dict[str, float]:
-        """Run optimization epochs over stored batches and return mean losses."""
+    def update(self) -> tuple[dict[str, float], dict[str, float]]:
+        """Run optimization epochs over stored batches and return mean losses and statistics."""
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
@@ -358,10 +358,18 @@ class PPO:
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
 
+        # Construct the stats dictionary
+        stats_dict = {
+            "Loss/learning_rate": self.learning_rate,
+            "Policy/mean_std": self.actor.output_std.mean().item(),
+        }
+        if self.rnd:
+            stats_dict["Rnd/weight"] = self.rnd.weight
+
         # Clear the storage
         self.storage.clear()
 
-        return loss_dict
+        return loss_dict, stats_dict
 
     def train_mode(self) -> None:
         """Set train mode for learnable models."""

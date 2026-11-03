@@ -144,8 +144,8 @@ class Distillation:
         """No-op since distillation does not use return targets."""
         pass
 
-    def update(self) -> dict[str, float]:
-        """Run optimization epochs over stored batches and return mean losses."""
+    def update(self) -> tuple[dict[str, float], dict[str, float]]:
+        """Run optimization epochs over stored batches and return mean losses and statistics."""
         self.num_updates += 1
         mean_behavior_loss = 0
         loss = 0
@@ -199,10 +199,15 @@ class Distillation:
         # Construct the loss dictionary
         loss_dict = {"behavior": mean_behavior_loss}
 
+        # Construct the stats dictionary
+        stats_dict = {"Loss/learning_rate": self.learning_rate}
+        if self.student.distribution is not None:
+            stats_dict["Policy/mean_std"] = self.student.output_std.mean().item()
+
         # Clear the storage
         self.storage.clear()
 
-        return loss_dict
+        return loss_dict, stats_dict
 
     def train_mode(self) -> None:
         """Set train mode for the student and keep the teacher in eval mode."""

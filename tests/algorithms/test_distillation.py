@@ -79,7 +79,8 @@ class TestDistillationLoss:
         losses = []
         for _ in range(5):
             _fill_distillation_storage(alg, obs)
-            loss_dict = alg.update()
+            loss_dict, stats = alg.update()
+            assert stats == {"Loss/learning_rate": alg.learning_rate}
             losses.append(loss_dict["behavior"])
 
         # Loss should generally decrease; allow some noise — check first vs last
@@ -253,7 +254,7 @@ class TestDistillationMixedPrecision:
         _fill_distillation_storage(alg, obs)
 
         before = [p.clone() for p in alg.student.parameters()]
-        loss_dict = alg.update()
+        loss_dict, _ = alg.update()
 
         assert torch.isfinite(torch.tensor(loss_dict["behavior"]))
         after = list(alg.student.parameters())

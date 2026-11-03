@@ -161,9 +161,7 @@ class Logger:
         collect_time: float,
         learn_time: float,
         loss_dict: dict,
-        learning_rate: float,
-        action_std: torch.Tensor,
-        rnd_weight: float | None,
+        stats_dict: dict,
         print_minimal: bool = False,
         width: int = 80,
         pad: int = 40,
@@ -202,13 +200,11 @@ class Logger:
                         self.writer.add_scalar("Episode/" + key, value, it)  # type: ignore
                         extras_string += f"""{f"Mean episode {key}:":>{pad}} {value:.4f}\n"""
 
-            # Log losses
+            # Log losses and stats
             for key, value in loss_dict.items():
                 self.writer.add_scalar(f"Loss/{key}", value, it)
-            self.writer.add_scalar("Loss/learning_rate", learning_rate, it)
-
-            # Log std
-            self.writer.add_scalar("Policy/mean_std", action_std.mean().item(), it)
+            for key, value in (stats_dict or {}).items():
+                self.writer.add_scalar(key, value, it)
 
             # Log performance
             fps = int(collection_size / (collect_time + learn_time))
@@ -221,7 +217,6 @@ class Logger:
                 if self.cfg["algorithm"].get("rnd_cfg"):
                     self.writer.add_scalar("Rnd/mean_extrinsic_reward", statistics.mean(self.erewbuffer), it)
                     self.writer.add_scalar("Rnd/mean_intrinsic_reward", statistics.mean(self.irewbuffer), it)
-                    self.writer.add_scalar("Rnd/weight", rnd_weight, it)  # type: ignore
                 self.writer.add_scalar("Train/mean_reward", statistics.mean(self.rewbuffer), it)
                 self.writer.add_scalar("Train/mean_episode_length", statistics.mean(self.lenbuffer), it)
                 if not isinstance(self.writer, LogWriter):
@@ -248,9 +243,12 @@ class Logger:
                 f"""{"Learning time:":>{pad}} {learn_time:.3f}s \n"""
             )
 
-            # Print losses
+            # Print losses and stats
             for key, value in loss_dict.items():
                 log_string += f"""{f"Mean {key} loss:":>{pad}} {value:.4f}\n"""
+            for key, value in (stats_dict or {}).items():
+                name = key.split("/", 1)[1] if "/" in key else key
+                log_string += f"""{f"Mean {name}:":>{pad}} {value:.4f}\n"""
 
             # Print rewards and episode length
             if len(self.rewbuffer) > 0:
@@ -259,9 +257,6 @@ class Logger:
                     log_string += f"""{"Mean intrinsic reward:":>{pad}} {statistics.mean(self.irewbuffer):.2f}\n"""
                 log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(self.rewbuffer):.2f}\n"""
                 log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(self.lenbuffer):.2f}\n"""
-
-            # Print std
-            log_string += f"""{"Mean action std:":>{pad}} {action_std.mean().item():.2f}\n"""
 
             # Print episode extras
             if not print_minimal:

@@ -8,7 +8,8 @@
 from __future__ import annotations
 
 import pathlib
-import torch
+
+import pytest
 
 from rsl_rl.utils import LogWriter
 from rsl_rl.utils.logger import Logger
@@ -44,7 +45,12 @@ def _make_logger(log_dir: pathlib.Path) -> Logger:
     return logger
 
 
-def _log(logger: Logger, it: int) -> None:
+def _log(
+    logger: Logger,
+    it: int,
+    loss_dict: dict[str, float] | None = None,
+    stats_dict: dict[str, float] | None = None,
+) -> None:
     """Log one iteration with placeholder metrics."""
     logger.log(
         it=it,
@@ -52,11 +58,37 @@ def _log(logger: Logger, it: int) -> None:
         total_it=it + 1,
         collect_time=0.1,
         learn_time=0.1,
-        loss_dict={},
-        learning_rate=1e-3,
-        action_std=torch.ones(1),
-        rnd_weight=None,
+        loss_dict=loss_dict or {},
+        stats_dict=stats_dict,
     )
+
+
+def test_statistics_are_separate_from_losses(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Statistics retain their tags and console labels without being treated as optimization losses."""
+    logger = _make_logger(tmp_path)
+    stats_dict = {
+        "Policy/entropy": 0.2,
+        "Critic/q_value": 3.0,
+        "Loss/learning_rate": 1e-3,
+        "Policy/mean_std": 1.0,
+        "Rnd/weight": 0.5,
+        "Custom/statistic": 4.0,
+        "statistic": 5.0,
+        "Custom/nested/statistic": 6.0,
+    }
+    _log(logger, 0, {"actor": 1.0}, stats_dict)
+
+    assert {"Loss/actor", *stats_dict} <= set(logger.writer.tags)
+    assert not any(tag.startswith("Stats/") for tag in logger.writer.tags)
+    assert not {"Loss/entropy", "Loss/q_value"} & set(logger.writer.tags)
+    output = capsys.readouterr().out
+    assert "Mean actor loss:" in output
+    for name in ("entropy", "q_value", "learning_rate", "mean_std", "weight", "statistic", "nested/statistic"):
+        assert f"Mean {name}:" in output
+    for category in ("Policy/", "Critic/", "Loss/", "Rnd/", "Custom/"):
+        assert category not in output
+    assert "entropy loss:" not in output
+    assert "q_value loss:" not in output
 
 
 class TestVideoUpload:
