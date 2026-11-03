@@ -98,11 +98,9 @@ class OnPolicyRunner:
                         # Move to device
                         obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                         # Process the step
-                        self.alg.process_env_step(obs, rewards, dones, extras)
-                        # Extract intrinsic rewards if RND is used (only for logging)
-                        intrinsic_rewards = self.alg.intrinsic_rewards if self.cfg["algorithm"].get("rnd_cfg") else None
+                        step_dict = self.alg.process_env_step(obs, rewards, dones, extras)
                         # Book keeping
-                        self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
+                        self.logger.process_env_step(dones, extras, step_dict)
 
                     stop = time.time()
                     collect_time = stop - start

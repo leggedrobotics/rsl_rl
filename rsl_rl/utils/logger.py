@@ -50,17 +50,10 @@ class Logger:
 
         # Create buffers
         self.ep_extras = []
-        self.rewbuffer = deque(maxlen=100)
-        self.lenbuffer = deque(maxlen=100)
-        self.cur_reward_sum = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.step_buffers: dict[str, deque] = {}
+        self.length_buffer = deque(maxlen=100)
+        self.cur_step_sums: dict[str, torch.Tensor] = {}
         self.cur_episode_length = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-
-        # Create RND buffers
-        if self.cfg["algorithm"].get("rnd_cfg"):
-            self.erewbuffer = deque(maxlen=100)
-            self.irewbuffer = deque(maxlen=100)
-            self.cur_ereward_sum = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-            self.cur_ireward_sum = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # Decide whether to disable logging
         # Note: We only log from the process with rank 0 (main process)
@@ -120,10 +113,9 @@ class Logger:
 
     def process_env_step(
         self,
-        rewards: torch.Tensor,
         dones: torch.Tensor,
         extras: dict,
-        intrinsic_rewards: torch.Tensor | None = None,
+        step_dict: dict[str, torch.Tensor],
     ) -> None:
         """Add metrics from the environment step to the buffers."""
         if self.writer is not None:
@@ -132,26 +124,22 @@ class Logger:
             elif "log" in extras:
                 self.ep_extras.append(extras["log"])
 
-            # Update rewards and episode length
-            if intrinsic_rewards is not None:
-                self.cur_ereward_sum += rewards
-                self.cur_ireward_sum += intrinsic_rewards
-                self.cur_reward_sum += rewards + intrinsic_rewards
-            else:
-                self.cur_reward_sum += rewards
+            # Update step stats and episode length
+            for key, value in step_dict.items():
+                if key not in self.cur_step_sums:
+                    with torch.inference_mode(False):
+                        self.cur_step_sums[key] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+                    self.step_buffers[key] = deque(maxlen=100)
+                self.cur_step_sums[key] += value.detach().reshape(-1)
             self.cur_episode_length += 1
 
             # Clear data for completed episodes
-            new_ids = (dones > 0).nonzero(as_tuple=False)
-            self.rewbuffer.extend(self.cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-            self.lenbuffer.extend(self.cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
-            self.cur_reward_sum[new_ids] = 0
+            new_ids = (dones > 0).nonzero(as_tuple=False).flatten()
+            for key, value in self.cur_step_sums.items():
+                self.step_buffers[key].extend(value[new_ids].cpu().tolist())
+                value[new_ids] = 0
+            self.length_buffer.extend(self.cur_episode_length[new_ids].cpu().tolist())
             self.cur_episode_length[new_ids] = 0
-            if intrinsic_rewards is not None:
-                self.erewbuffer.extend(self.cur_ereward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                self.irewbuffer.extend(self.cur_ireward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                self.cur_ereward_sum[new_ids] = 0
-                self.cur_ireward_sum[new_ids] = 0
 
     def log(
         self,
@@ -212,19 +200,19 @@ class Logger:
             self.writer.add_scalar("Performance/collection_time", collect_time, it)
             self.writer.add_scalar("Performance/learning_time", learn_time, it)
 
-            # Log rewards and episode length
-            if len(self.rewbuffer) > 0:
-                if self.cfg["algorithm"].get("rnd_cfg"):
-                    self.writer.add_scalar("Rnd/mean_extrinsic_reward", statistics.mean(self.erewbuffer), it)
-                    self.writer.add_scalar("Rnd/mean_intrinsic_reward", statistics.mean(self.irewbuffer), it)
-                self.writer.add_scalar("Training/mean_reward", statistics.mean(self.rewbuffer), it)
-                self.writer.add_scalar("Training/mean_episode_length", statistics.mean(self.lenbuffer), it)
+            # Log step stats and episode length
+            episode_stats = {key: statistics.mean(buffer) for key, buffer in self.step_buffers.items() if buffer}
+            for key, value in episode_stats.items():
+                self.writer.add_scalar(key, value, it)
+            if len(self.length_buffer) > 0:
+                self.writer.add_scalar("Training/mean_episode_length", statistics.mean(self.length_buffer), it)
                 if not isinstance(self.writer, LogWriter):
+                    if "Training/mean_reward" in episode_stats:
+                        self.writer.add_scalar(
+                            "Training/mean_reward/time", episode_stats["Training/mean_reward"], int(self.tot_time)
+                        )
                     self.writer.add_scalar(
-                        "Training/mean_reward/time", statistics.mean(self.rewbuffer), int(self.tot_time)
-                    )
-                    self.writer.add_scalar(
-                        "Training/mean_episode_length/time", statistics.mean(self.lenbuffer), int(self.tot_time)
+                        "Training/mean_episode_length/time", statistics.mean(self.length_buffer), int(self.tot_time)
                     )
 
             # Print to console
@@ -250,13 +238,13 @@ class Logger:
                 name = key.split("/", 1)[1] if "/" in key else key
                 log_string += f"""{f"Mean {name}:":>{pad}} {value:.4f}\n"""
 
-            # Print rewards and episode length
-            if len(self.rewbuffer) > 0:
-                if self.cfg["algorithm"].get("rnd_cfg"):
-                    log_string += f"""{"Mean extrinsic reward:":>{pad}} {statistics.mean(self.erewbuffer):.2f}\n"""
-                    log_string += f"""{"Mean intrinsic reward:":>{pad}} {statistics.mean(self.irewbuffer):.2f}\n"""
-                log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(self.rewbuffer):.2f}\n"""
-                log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(self.lenbuffer):.2f}\n"""
+            # Print step stats and episode length
+            for key, value in episode_stats.items():
+                name = key.split("/", 1)[1] if "/" in key else key
+                name = name.removeprefix("mean_").replace("_", " ")
+                log_string += f"""{f"Mean {name}:":>{pad}} {value:.2f}\n"""
+            if len(self.length_buffer) > 0:
+                log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(self.length_buffer):.2f}\n"""
 
             # Print episode extras
             if not print_minimal:

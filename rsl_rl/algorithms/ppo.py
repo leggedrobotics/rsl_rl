@@ -142,8 +142,9 @@ class PPO:
 
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
-    ) -> None:
-        """Record one environment step."""
+    ) -> dict[str, torch.Tensor]:
+        """Record one environment step and return per-environment logging contributions."""
+        step_dict = {"Training/mean_reward": rewards}
         # Record the rewards and dones
         # Note: We clone here because later on we bootstrap the rewards based on timeouts
         self.transition.rewards = rewards.clone()
@@ -155,6 +156,9 @@ class PPO:
             self.intrinsic_rewards = self.rnd.get_intrinsic_reward(obs)
             # Add intrinsic rewards to extrinsic rewards
             self.transition.rewards += self.intrinsic_rewards
+            step_dict["Training/mean_reward"] = rewards + self.intrinsic_rewards
+            step_dict["Rnd/mean_extrinsic_reward"] = rewards
+            step_dict["Rnd/mean_intrinsic_reward"] = self.intrinsic_rewards
 
         # Bootstrapping on time outs
         if "time_outs" in extras:
@@ -168,6 +172,8 @@ class PPO:
         self.transition.clear()
         self.actor.reset(dones)
         self.critic.reset(dones)
+
+        return step_dict
 
     def compute_returns(self, obs: TensorDict) -> None:
         """Compute return and advantage targets from stored transitions."""

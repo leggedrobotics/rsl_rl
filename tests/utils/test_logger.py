@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import pathlib
+import torch
 
 import pytest
 
@@ -20,22 +21,24 @@ class RecordingWriter(LogWriter):
 
     def __init__(self) -> None:  # noqa: D107
         self.tags: list[str] = []
+        self.scalars: dict[str, float] = {}
         self.videos: list[tuple[pathlib.Path, int]] = []
 
     def add_scalar(self, tag: str, scalar_value: float, global_step: int) -> None:  # noqa: D102
         self.tags.append(tag)
+        self.scalars[tag] = scalar_value
 
     def save_video(self, video: pathlib.Path, it: int) -> None:  # noqa: D102
         self.videos.append((video, it))
 
 
-def _make_logger(log_dir: pathlib.Path) -> Logger:
+def _make_logger(log_dir: pathlib.Path, num_envs: int = 1) -> Logger:
     """Construct a Logger that writes to a RecordingWriter."""
     logger = Logger(
         log_dir=str(log_dir),
         cfg={"num_steps_per_env": 1, "algorithm": {}},
         env_cfg={},
-        num_envs=1,
+        num_envs=num_envs,
         is_distributed=False,
         gpu_world_size=1,
         gpu_global_rank=0,
@@ -122,14 +125,46 @@ class TestVideoUpload:
         assert logger.writer.videos == [(first, 0), (second, 1)]
 
 
+def test_step_metrics_accumulate_over_completed_episodes(tmp_path: pathlib.Path) -> None:
+    """Custom metrics preserve partial episodes across logging calls and reset environments independently."""
+    logger = _make_logger(tmp_path, num_envs=2)
+    with torch.inference_mode():
+        logger.process_env_step(
+            torch.tensor([False, True]),
+            {},
+            {"Training/mean_reward": torch.tensor([1.0, 10.0]), "Custom/total": torch.tensor([2.0, 20.0])},
+        )
+    _log(logger, 0)
+    assert logger.writer.scalars["Training/mean_reward"] == 10.0
+    assert logger.writer.scalars["Custom/total"] == 20.0
+
+    logger.process_env_step(
+        torch.tensor([False, False]),
+        {},
+        {"Training/mean_reward": torch.tensor([3.0, 30.0]), "Custom/total": torch.tensor([4.0, 40.0])},
+    )
+    _log(logger, 1)
+    assert logger.writer.scalars["Custom/total"] == 20.0
+
+    logger.process_env_step(
+        torch.tensor([True, True]),
+        {},
+        {"Training/mean_reward": torch.tensor([5.0, 50.0]), "Custom/total": torch.tensor([6.0, 60.0])},
+    )
+    _log(logger, 2)
+    assert logger.writer.scalars["Training/mean_reward"] == 33.0
+    assert logger.writer.scalars["Custom/total"] == 44.0
+    assert logger.writer.scalars["Training/mean_episode_length"] == 2.0
+    torch.testing.assert_close(logger.cur_step_sums["Custom/total"], torch.zeros(2))
+
+
 class TestTimeSeries:
     """Tests for the series logged against wall-clock time."""
 
     def test_log_writer_receives_no_time_series(self, tmp_path: pathlib.Path) -> None:
         """A LogWriter should only receive series indexed by iteration."""
         logger = _make_logger(tmp_path)
-        logger.rewbuffer.append(1.0)
-        logger.lenbuffer.append(10.0)
+        logger.process_env_step(torch.ones(1), {}, {"Training/mean_reward": torch.ones(1)})
 
         _log(logger, 0)
 

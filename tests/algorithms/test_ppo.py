@@ -275,7 +275,9 @@ class TestTimeoutBootstrapping:
         time_outs = torch.zeros(NUM_ENVS)
         time_outs[0] = 1.0  # Only env 0 times out
 
-        ppo.process_env_step(obs, raw_reward, dones, {"time_outs": time_outs})
+        step_dict = ppo.process_env_step(obs, raw_reward, dones, {"time_outs": time_outs})
+        assert set(step_dict) == {"Training/mean_reward"}
+        torch.testing.assert_close(step_dict["Training/mean_reward"], raw_reward)
 
         # The stored reward for env 0 should be: 1.0 + gamma * value[0]
         stored_reward_env0 = ppo.storage.rewards[0, 0, 0].item()
@@ -285,6 +287,25 @@ class TestTimeoutBootstrapping:
         # Env 1 should have raw reward only
         stored_reward_env1 = ppo.storage.rewards[0, 1, 0].item()
         assert abs(stored_reward_env1 - 1.0) < 1e-5
+
+    def test_rnd_step_metrics_exclude_timeout_bootstrap(self) -> None:
+        """Logged rewards include RND contributions without the value bootstrap used for training."""
+        ppo, obs = _build_ppo(rnd_cfg=RND_CFG)
+        ppo.act(obs)
+        intrinsic_rewards = torch.arange(NUM_ENVS, dtype=torch.float)
+        ppo.rnd.get_intrinsic_reward = lambda _obs: intrinsic_rewards
+        rewards = torch.ones(NUM_ENVS)
+        step_dict = ppo.process_env_step(obs, rewards, torch.ones(NUM_ENVS), {"time_outs": torch.ones(NUM_ENVS)})
+
+        assert set(step_dict) == {
+            "Training/mean_reward",
+            "Rnd/mean_extrinsic_reward",
+            "Rnd/mean_intrinsic_reward",
+        }
+        torch.testing.assert_close(step_dict["Training/mean_reward"], rewards + intrinsic_rewards)
+        torch.testing.assert_close(step_dict["Rnd/mean_extrinsic_reward"], rewards)
+        torch.testing.assert_close(step_dict["Rnd/mean_intrinsic_reward"], intrinsic_rewards)
+        torch.testing.assert_close(rewards, torch.ones(NUM_ENVS))
 
 
 class TestNormalizationUpdates:

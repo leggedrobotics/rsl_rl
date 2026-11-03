@@ -242,7 +242,9 @@ class SAC:
         return actions
 
     @torch.no_grad()
-    def process_env_step(self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict) -> None:
+    def process_env_step(
+        self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict
+    ) -> dict[str, torch.Tensor]:
         """Record one environment step using final observations for environments that reset."""
         # Resolve termination flags and observation groups
         done_mask = dones.reshape(-1).bool()
@@ -286,6 +288,8 @@ class SAC:
         self.actor.reset(dones)
         for critic in self.critics:
             critic.reset(dones)  # type: ignore
+
+        return {"Training/mean_reward": rewards}
 
     def compute_returns(self, obs: TensorDict) -> None:
         """Defer return computation to replay sampling in :meth:`update` (no-op)."""

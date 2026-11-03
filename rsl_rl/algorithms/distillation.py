@@ -129,8 +129,8 @@ class Distillation:
 
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
-    ) -> None:
-        """Record one environment step."""
+    ) -> dict[str, torch.Tensor]:
+        """Record one environment step and return per-environment logging contributions."""
         # Record the rewards and dones
         self.transition.rewards = rewards
         self.transition.dones = dones
@@ -139,6 +139,7 @@ class Distillation:
         self.transition.clear()
         self.student.reset(dones)
         self.teacher.reset(dones)
+        return {"Training/mean_reward": rewards}
 
     def compute_returns(self, obs: TensorDict) -> None:
         """No-op since distillation does not use return targets."""
