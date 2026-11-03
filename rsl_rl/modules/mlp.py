@@ -106,6 +106,7 @@ class ResidualMLP(nn.Module):
     r"""Residual MLP with batch normalization and hyperspherical weight normalization.
 
     The network follows the architecture used by FlashSAC and SimbaV2:
+
     - The input passes through batch normalization and a bias-free linear embedding layer.
     - The embedding passes through a stack of inverted-bottleneck residual blocks, each containing two sequences of
       a linear layer, batch normalization, and ReLU, followed by a skip connection.
