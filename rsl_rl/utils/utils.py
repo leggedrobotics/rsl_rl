@@ -356,18 +356,26 @@ def reduce_gradients_in_buckets(params: Iterable[torch.nn.Parameter], world_size
         bucket_mb: Maximum size, in megabytes, of a single packed buffer.
     """
     bucket_bytes = int(bucket_mb * 1024 * 1024)
-    grads = [param.grad.view(-1) for param in params if param.grad is not None]
+    grads = [param.grad for param in params if param.grad is not None]
     start = 0
     while start < len(grads):
         nbytes = grads[start].numel() * grads[start].element_size()
         if nbytes > bucket_bytes:
             # A single gradient larger than the bucket is reduced in contiguous slices
-            flat_grad = grads[start]
-            chunk_numel = max(1, bucket_bytes // flat_grad.element_size())
-            for offset in range(0, flat_grad.numel(), chunk_numel):
-                chunk = flat_grad.narrow(0, offset, min(chunk_numel, flat_grad.numel() - offset))
+            grad = grads[start]
+            flat_grad = grad.view(-1) if grad.is_contiguous() else None
+            chunk_numel = max(1, bucket_bytes // grad.element_size())
+            for offset in range(0, grad.numel(), chunk_numel):
+                length = min(chunk_numel, grad.numel() - offset)
+                if flat_grad is None:
+                    indices = torch.unravel_index(torch.arange(offset, offset + length, device=grad.device), grad.shape)
+                    chunk = grad[indices]
+                else:
+                    chunk = flat_grad.narrow(0, offset, length)
                 torch.distributed.all_reduce(chunk, op=torch.distributed.ReduceOp.SUM)
                 chunk /= world_size
+                if flat_grad is None:
+                    grad[indices] = chunk
             start += 1
             continue
 
@@ -381,13 +389,13 @@ def reduce_gradients_in_buckets(params: Iterable[torch.nn.Parameter], world_size
             filled_bytes += grad_bytes
             end += 1
 
-        packed = torch.cat(grads[start:end])
+        packed = torch.cat([grad.reshape(-1) for grad in grads[start:end]])
         torch.distributed.all_reduce(packed, op=torch.distributed.ReduceOp.SUM)
         packed /= world_size
         offset = 0
-        for flat_grad in grads[start:end]:
-            numel = flat_grad.numel()
-            flat_grad.copy_(packed[offset : offset + numel])
+        for grad in grads[start:end]:
+            numel = grad.numel()
+            grad.copy_(packed[offset : offset + numel].view_as(grad))
             offset += numel
         start = end
 

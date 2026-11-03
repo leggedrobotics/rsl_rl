@@ -223,6 +223,29 @@ class TestReduceParametersLocal:
         for param in params:
             assert param.grad is None
 
+    @pytest.mark.parametrize("bucket_bytes", [8, 256])
+    def test_noncontiguous_gradients_keep_storage_and_reduced_values(
+        self, monkeypatch: pytest.MonkeyPatch, bucket_bytes: int
+    ) -> None:
+        """Reduce transposed gradients in place without exceeding the bucket size."""
+        parameter = nn.Parameter(torch.arange(12.0).reshape(3, 4).t())
+        parameter.grad = torch.arange(12.0).reshape(3, 4).t()
+        original_grad = parameter.grad
+        expected = original_grad.clone() + 1
+        sizes = []
+
+        def all_reduce(value: torch.Tensor, op: Any) -> None:
+            sizes.append(value.numel() * value.element_size())
+            value.mul_(2).add_(2)
+
+        monkeypatch.setattr(torch.distributed, "all_reduce", all_reduce)
+        reduce_gradients_in_buckets([parameter], 2, bucket_bytes / (1024 * 1024))
+
+        assert parameter.grad is original_grad
+        assert not parameter.grad.is_contiguous()
+        assert max(sizes) <= bucket_bytes
+        torch.testing.assert_close(parameter.grad, expected)
+
 
 @pytest.mark.skipif(not _GLOO_AVAILABLE, reason="torch.distributed gloo backend is required")
 class TestDistributedAlgorithms:
