@@ -348,13 +348,12 @@ class SAC:
             for key, value in stats.items():
                 totals[key] = totals.get(key, 0.0) + value
 
-        # Construct the stats dictionary and devide by the number of updates
-        stats_dict: dict[str, float] = {}
+        # Construct the stats dictionary and divide by the number of updates
+        stats_dict = {"Optimizer/learning_rate": self.learning_rate}
+        stats_dict["Model/policy_std"] = self.actor.output_std.mean().item()
         if actor_updates > 0:
-            stats_dict["Policy/entropy"] = (totals.pop("entropy") / actor_updates).item()
-        stats_dict["Critic/q_value"] = (totals.pop("q_value") / self.num_updates).item()
-        stats_dict["Loss/learning_rate"] = self.learning_rate
-        stats_dict["Policy/mean_std"] = self.actor.output_std.mean().item()
+            stats_dict["Model/policy_entropy"] = (totals.pop("entropy") / actor_updates).item()
+        stats_dict["Model/critic_q_value"] = (totals.pop("q_value") / self.num_updates).item()
 
         # Construct the loss dictionary and divide by the number of updates
         loss_dict: dict[str, float] = {}

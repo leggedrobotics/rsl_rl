@@ -200,9 +200,9 @@ class Distillation:
         loss_dict = {"behavior": mean_behavior_loss}
 
         # Construct the stats dictionary
-        stats_dict = {"Loss/learning_rate": self.learning_rate}
+        stats_dict = {"Optimizer/learning_rate": self.learning_rate}
         if self.student.distribution is not None:
-            stats_dict["Policy/mean_std"] = self.student.output_std.mean().item()
+            stats_dict["Model/policy_std"] = self.student.output_std.mean().item()
 
         # Clear the storage
         self.storage.clear()

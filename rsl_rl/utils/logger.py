@@ -208,23 +208,23 @@ class Logger:
 
             # Log performance
             fps = int(collection_size / (collect_time + learn_time))
-            self.writer.add_scalar("Perf/total_fps", fps, it)
-            self.writer.add_scalar("Perf/collection_time", collect_time, it)
-            self.writer.add_scalar("Perf/learning_time", learn_time, it)
+            self.writer.add_scalar("Performance/total_fps", fps, it)
+            self.writer.add_scalar("Performance/collection_time", collect_time, it)
+            self.writer.add_scalar("Performance/learning_time", learn_time, it)
 
             # Log rewards and episode length
             if len(self.rewbuffer) > 0:
                 if self.cfg["algorithm"].get("rnd_cfg"):
                     self.writer.add_scalar("Rnd/mean_extrinsic_reward", statistics.mean(self.erewbuffer), it)
                     self.writer.add_scalar("Rnd/mean_intrinsic_reward", statistics.mean(self.irewbuffer), it)
-                self.writer.add_scalar("Train/mean_reward", statistics.mean(self.rewbuffer), it)
-                self.writer.add_scalar("Train/mean_episode_length", statistics.mean(self.lenbuffer), it)
+                self.writer.add_scalar("Training/mean_reward", statistics.mean(self.rewbuffer), it)
+                self.writer.add_scalar("Training/mean_episode_length", statistics.mean(self.lenbuffer), it)
                 if not isinstance(self.writer, LogWriter):
                     self.writer.add_scalar(
-                        "Train/mean_reward/time", statistics.mean(self.rewbuffer), int(self.tot_time)
+                        "Training/mean_reward/time", statistics.mean(self.rewbuffer), int(self.tot_time)
                     )
                     self.writer.add_scalar(
-                        "Train/mean_episode_length/time", statistics.mean(self.lenbuffer), int(self.tot_time)
+                        "Training/mean_episode_length/time", statistics.mean(self.lenbuffer), int(self.tot_time)
                     )
 
             # Print to console

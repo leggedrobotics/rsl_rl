@@ -141,9 +141,14 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
     losses, stats = alg.update()
     assert losses and all(torch.isfinite(torch.tensor(v)) for v in losses.values())
     assert set(losses) == {"actor", "critic", "alpha"}
-    assert {"Policy/entropy", "Critic/q_value", "Loss/learning_rate", "Policy/mean_std"} == stats.keys()
-    assert stats["Loss/learning_rate"] == alg.learning_rate
-    assert stats["Policy/mean_std"] == alg.actor.output_std.mean().item()
+    assert {
+        "Model/policy_entropy",
+        "Model/critic_q_value",
+        "Optimizer/learning_rate",
+        "Model/policy_std",
+    } == stats.keys()
+    assert stats["Optimizer/learning_rate"] == alg.learning_rate
+    assert stats["Model/policy_std"] == alg.actor.output_std.mean().item()
     assert alg.num_critic_updates == 4
     alg.storage.clear()
     assert alg.update() == ({}, {})

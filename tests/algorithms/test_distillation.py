@@ -80,7 +80,7 @@ class TestDistillationLoss:
         for _ in range(5):
             _fill_distillation_storage(alg, obs)
             loss_dict, stats = alg.update()
-            assert stats == {"Loss/learning_rate": alg.learning_rate}
+            assert stats == {"Optimizer/learning_rate": alg.learning_rate}
             losses.append(loss_dict["behavior"])
 
         # Loss should generally decrease; allow some noise — check first vs last

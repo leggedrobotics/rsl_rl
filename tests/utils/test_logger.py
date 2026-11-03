@@ -67,10 +67,10 @@ def test_statistics_are_separate_from_losses(tmp_path: pathlib.Path, capsys: pyt
     """Statistics retain their tags and console labels without being treated as optimization losses."""
     logger = _make_logger(tmp_path)
     stats_dict = {
-        "Policy/entropy": 0.2,
-        "Critic/q_value": 3.0,
-        "Loss/learning_rate": 1e-3,
-        "Policy/mean_std": 1.0,
+        "Model/policy_entropy": 0.2,
+        "Model/critic_q_value": 3.0,
+        "Optimizer/learning_rate": 1e-3,
+        "Model/policy_std": 1.0,
         "Rnd/weight": 0.5,
         "Custom/statistic": 4.0,
         "statistic": 5.0,
@@ -78,14 +78,28 @@ def test_statistics_are_separate_from_losses(tmp_path: pathlib.Path, capsys: pyt
     }
     _log(logger, 0, {"actor": 1.0}, stats_dict)
 
-    assert {"Loss/actor", *stats_dict} <= set(logger.writer.tags)
+    assert {
+        "Loss/actor",
+        "Performance/total_fps",
+        "Performance/collection_time",
+        "Performance/learning_time",
+        *stats_dict,
+    } <= set(logger.writer.tags)
     assert not any(tag.startswith("Stats/") for tag in logger.writer.tags)
     assert not {"Loss/entropy", "Loss/q_value"} & set(logger.writer.tags)
     output = capsys.readouterr().out
     assert "Mean actor loss:" in output
-    for name in ("entropy", "q_value", "learning_rate", "mean_std", "weight", "statistic", "nested/statistic"):
+    for name in (
+        "policy_entropy",
+        "critic_q_value",
+        "learning_rate",
+        "policy_std",
+        "weight",
+        "statistic",
+        "nested/statistic",
+    ):
         assert f"Mean {name}:" in output
-    for category in ("Policy/", "Critic/", "Loss/", "Rnd/", "Custom/"):
+    for category in ("Model/", "Loss/", "Optimizer/", "Rnd/", "Custom/"):
         assert category not in output
     assert "entropy loss:" not in output
     assert "q_value loss:" not in output
@@ -119,5 +133,5 @@ class TestTimeSeries:
 
         _log(logger, 0)
 
-        assert "Train/mean_reward" in logger.writer.tags
+        assert "Training/mean_reward" in logger.writer.tags
         assert not any(tag.endswith("/time") for tag in logger.writer.tags)

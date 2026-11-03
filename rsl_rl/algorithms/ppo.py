@@ -360,8 +360,8 @@ class PPO:
 
         # Construct the stats dictionary
         stats_dict = {
-            "Loss/learning_rate": self.learning_rate,
-            "Policy/mean_std": self.actor.output_std.mean().item(),
+            "Optimizer/learning_rate": self.learning_rate,
+            "Model/policy_std": self.actor.output_std.mean().item(),
         }
         if self.rnd:
             stats_dict["Rnd/weight"] = self.rnd.weight
