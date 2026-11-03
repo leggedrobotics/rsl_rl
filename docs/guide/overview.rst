@@ -33,17 +33,18 @@ Algorithms
    implementation includes clipped surrogate and value losses, entropy regularization, gradient clipping, and optional
    adaptive learning-rate scheduling based on the observed KL divergence.
 
+:class:`~rsl_rl.algorithms.sac.SAC`
+   SAC is a model-free, off-policy RL algorithm for continuous control. In each iteration, the algorithm stores
+   environment transitions in a replay buffer and optimizes an actor, an ensemble of state-action critics, and the
+   entropy temperature using sampled transitions. The implementation includes features inspired by FlashSAC, such as
+   categorical critics, reward normalization, and temporally correlated exploration noise.
+
 :class:`~rsl_rl.algorithms.distillation.Distillation`
    Distillation is a student-teacher behavior cloning algorithm. During data collection, the student acts while the
    teacher provides supervision targets. The student is then optimized with a configurable behavior loss, making this 
    algorithm useful for transferring policies from training-time privileged observation sets to observations available
    during real-world deployment.
 
-:class:`~rsl_rl.algorithms.sac.SAC`
-   SAC learns from chronological replay with scalar state-action critics and entropy-regularized actions.
-   FlashSAC options include residual networks, categorical critics, return scaling, held noise and cosine schedules.
-   CPU, single GPU, mixed precision, symmetry and CUDA graphs are supported; CNN, recurrent models and multi-GPU are rejected.
-   Done rows require ``extras["final_obs"]``; only exclusive timeouts bootstrap. See :class:`~rsl_rl.env.vec_env.VecEnv`.
 
 Models
 ^^^^^^

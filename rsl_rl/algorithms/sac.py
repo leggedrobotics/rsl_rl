@@ -25,9 +25,8 @@ from rsl_rl.utils import CudaGraphCallable, compile_model, resolve_class, resolv
 class SAC:
     """Soft Actor-Critic algorithm.
 
-    This algorithm uses an ensemble of state-action critics and chronological n-step replay. The default configuration
-    uses scalar critics and Gaussian exploration. Optional components inspired by FlashSAC include categorical critics,
-    held exploration noise, reward normalization, residual networks, and CUDA graphs.
+    Inspired by FlashSAC, this algorithm supports categorical critics, reward normalization, temporally correlated
+    exploration noise, and residual actor and critic networks.
 
     References:
         - Haarnoja et al. "Soft Actor-Critic Algorithms and Applications." arXiv preprint arXiv:1812.05905 (2018).
