@@ -249,8 +249,8 @@ PPO
      - float
      - ``25``
      - Maximum size, in megabytes, of a single packed gradient buffer used when reducing gradients
-       across GPUs during multi-GPU training. Matches
-       :class:`torch.nn.parallel.DistributedDataParallel`'s default ``bucket_cap_mb``.
+       across GPUs during multi-GPU training. Matches Torch's
+       :class:`DistributedDataParallel` default ``bucket_cap_mb``.
 
 SAC
 ^^^
@@ -783,7 +783,7 @@ SquashedGaussianDistribution
      - ``(math.exp(-5.0), math.exp(2.0))``
      - Minimum and maximum standard deviation of the Gaussian before applying the tanh function.
    * - ``action_range``
-     - tuple[float | list[float], float | list[float]]
+     - tuple[float | list, float | list]
      - ``(-1.0, 1.0)``
      - Interval ``(min, max)`` to which squashed samples are linearly rescaled. Each bound can be a scalar or a list
        with one value per action dimension.
