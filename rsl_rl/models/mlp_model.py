@@ -36,8 +36,8 @@ class MLPModel(nn.Module):
         hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
-        distribution_cfg: dict | None = None,
         network_cfg: dict | None = None,
+        distribution_cfg: dict | None = None,
     ) -> None:
         """Initialize the MLP-based model.
 
@@ -49,11 +49,11 @@ class MLPModel(nn.Module):
             hidden_dims: Hidden dimensions of the MLP.
             activation: Activation function of the MLP.
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
-            distribution_cfg: Configuration dictionary for the output distribution. If provided, the model outputs
-                stochastic values sampled from the distribution.
             network_cfg: Configuration dictionary for an alternative network. ``None`` uses :class:`~rsl_rl.modules.MLP`
                 with `hidden_dims` and `activation`. Otherwise, the network is constructed from the input and output
                 dimensions and its own configuration arguments.
+            distribution_cfg: Configuration dictionary for the output distribution. If provided, the model outputs
+                stochastic values sampled from the distribution.
         """
         super().__init__()
 
@@ -219,8 +219,8 @@ class QMLPModel(MLPModel):
         hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
-        distribution_cfg: dict | None = None,
         network_cfg: dict | None = None,
+        distribution_cfg: dict | None = None,
     ) -> None:
         """Initialize the Q model.
 
@@ -233,8 +233,8 @@ class QMLPModel(MLPModel):
             hidden_dims: Hidden dimensions of the MLP.
             activation: Activation function.
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
-            distribution_cfg: Output distribution configuration. Only ``None`` is supported.
             network_cfg: Configuration dictionary for an alternative network. ``None`` uses the default MLP.
+            distribution_cfg: Output distribution configuration. Only ``None`` is supported.
         """
         if distribution_cfg is not None:
             raise ValueError("The QMLPModel does not support an output distribution.")

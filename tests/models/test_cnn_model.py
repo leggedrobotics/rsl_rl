@@ -15,6 +15,7 @@ import onnx
 import pytest
 
 from rsl_rl.models import CNNModel
+from rsl_rl.modules import ResidualMLP
 from rsl_rl.modules.cnn import _compute_output_dim, _compute_padding
 
 NUM_ENVS = 2
@@ -47,6 +48,24 @@ def _make_cnn_model(**kwargs: object) -> tuple[CNNModel, TensorDict]:
     defaults.update(kwargs)
     model = CNNModel(obs, obs_groups, "actor", NUM_ACTIONS, **defaults)
     return model, obs
+
+
+def test_custom_network_forward_and_export() -> None:
+    """A custom network consumes CNN features, propagates gradients, and supports deterministic export."""
+    model, obs = _make_cnn_model(
+        cnn_cfg={"output_channels": [4], "kernel_size": 3, "stride": 2},
+        network_cfg={"class_name": "ResidualMLP", "hidden_dim": 8, "num_blocks": 1},
+    )
+    assert isinstance(model.mlp, ResidualMLP)
+    outputs = model(obs)
+    assert outputs.shape == (NUM_ENVS, NUM_ACTIONS)
+    outputs.square().mean().backward()
+    assert any(parameter.grad is not None and parameter.grad.abs().sum() > 0 for parameter in model.cnns.parameters())
+
+    model.eval()
+    expected = model(obs).detach()
+    exported = torch.jit.script(model.as_jit())
+    torch.testing.assert_close(exported(obs["policy"], [obs["image"]]), expected)
 
 
 class TestCNNLatentConcatenation:

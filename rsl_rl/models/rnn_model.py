@@ -36,6 +36,7 @@ class RNNModel(MLPModel):
         hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
+        network_cfg: dict | None = None,
         distribution_cfg: dict | None = None,
         rnn_type: str = "lstm",
         rnn_hidden_dim: int = 256,
@@ -51,6 +52,7 @@ class RNNModel(MLPModel):
             hidden_dims: Hidden dimensions of the MLP.
             activation: Activation function of the MLP.
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
+            network_cfg: Configuration dictionary for the network after the RNN. ``None`` uses the default MLP.
             distribution_cfg: Configuration dictionary for the output distribution.
             rnn_type: Type of RNN to use ("lstm" or "gru").
             rnn_hidden_dim: Dimension of the RNN hidden state.
@@ -67,6 +69,7 @@ class RNNModel(MLPModel):
             hidden_dims,
             activation,
             obs_normalization,
+            network_cfg,
             distribution_cfg,
         )
 

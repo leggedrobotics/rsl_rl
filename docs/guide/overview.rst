@@ -36,7 +36,7 @@ Algorithms
 :class:`~rsl_rl.algorithms.sac.SAC`
    SAC is a model-free, off-policy RL algorithm for continuous control. In each iteration, the algorithm stores
    environment transitions in a replay buffer and optimizes an actor, an ensemble of state-action critics, and the
-   entropy temperature using sampled transitions. The implementation includes features inspired by FlashSAC, including
+   entropy temperature using sampled transitions. The implementation includes features inspired by FlashSAC, such as
    categorical critics, reward normalization, and temporally correlated exploration noise.
 
 :class:`~rsl_rl.algorithms.distillation.Distillation`
@@ -269,7 +269,7 @@ trained policy for deployment. The environment is defined by the user and must i
    runner.export_policy_to_onnx("logs/my_experiment/exported", filename="policy.onnx")
 
 
-A trained policy can later be loaded to continue a previous training or to be replayed for evaluation as in the
+A trained policy can later be loaded to continue a previous training run or to be replayed for evaluation as in the
 following replay script:
 
 .. code-block:: python
