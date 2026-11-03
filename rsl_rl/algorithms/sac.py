@@ -367,10 +367,7 @@ class SAC:
         self.target_critics.eval()
 
     def save(self) -> dict:
-        """Return a dict of models, optimizers, temperature, and update counters for saving.
-
-        Replay data and environment state are not included.
-        """
+        """Return a dict of models, optimizers, temperature, and update counters for saving."""
         saved_dict = {
             "actor_state_dict": self._raw_actor.state_dict(),
             "critic_state_dict": self._raw_critics.state_dict(),
@@ -395,7 +392,8 @@ class SAC:
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load specified models from a saved dict.
 
-        Loading an actor disables uniform action sampling during warm-up.
+        .. note::
+            Loading an actor disables uniform action sampling during warm-up.
         """
         # Resolve the default load configuration
         if load_cfg is None:

@@ -23,3 +23,4 @@ CNN Model
 .. automodule:: rsl_rl.models.cnn_model
    :members:
    :undoc-members:
+

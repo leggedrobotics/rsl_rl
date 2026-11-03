@@ -36,7 +36,7 @@ Algorithms
 :class:`~rsl_rl.algorithms.sac.SAC`
    SAC is a model-free, off-policy RL algorithm for continuous control. In each iteration, the algorithm stores
    environment transitions in a replay buffer and optimizes an actor, an ensemble of state-action critics, and the
-   entropy temperature using sampled transitions. The implementation includes features inspired by FlashSAC, such as
+   entropy temperature using sampled transitions. The implementation includes features inspired by FlashSAC, including
    categorical critics, reward normalization, and temporally correlated exploration noise.
 
 :class:`~rsl_rl.algorithms.distillation.Distillation`
@@ -44,7 +44,6 @@ Algorithms
    teacher provides supervision targets. The student is then optimized with a configurable behavior loss, making this 
    algorithm useful for transferring policies from training-time privileged observation sets to observations available
    during real-world deployment.
-
 
 Models
 ^^^^^^
@@ -66,28 +65,32 @@ Models
    actor and critic to save memory.
 
 :class:`~rsl_rl.models.mlp_model.QMLPModel`
-   A state-action critic that combines observation groups with actions before an MLP.
+   An MLP-based model that concatenates selected observation groups and actions, optionally normalizes them, and 
+   processes them through an MLP. The model does not support stochastic outputs and is intended for Q-value estimation
+   in :class:`~rsl_rl.algorithms.sac.SAC`.
 
 Distributions
 ^^^^^^^^^^^^^
 
 :class:`~rsl_rl.modules.distribution.GaussianDistribution`
    A diagonal Gaussian distribution with state-independent standard deviation parameters. The mean is produced by the
-   model's MLP network output, while the standard deviation is learned globally and can use either a scalar or a 
+   model's MLP network output, while the standard deviation is learned globally and can use either a scalar or a
    log-scale.
 
 :class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution`
    A diagonal Gaussian distribution with state-dependent standard deviation. The model's MLP network predicts both mean
-   and standard-deviation terms per sample, allowing uncertainty to vary with the observation. As with the standard
-   Gaussian variant, both scalar and log-scale parameterizations are supported.
+   and standard deviation, allowing uncertainty to vary with the observation. As with the standard Gaussian variant,
+   both scalar and log-scale parameterizations are supported.
+
+:class:`~rsl_rl.modules.distribution.SquashedGaussianDistribution`
+   A diagonal Gaussian distribution with state-dependent standard deviation. The model's MLP network predicts both mean 
+   and log standard deviation for each observation. Samples are passed through ``tanh`` to constrain them to ``[-1, 1]`` 
+   and then linearly rescaled to a configurable action range.
 
 :class:`~rsl_rl.modules.distribution.BetaDistribution`
    A Beta distribution for bounded action spaces. Samples are naturally constrained to [0, 1] and linearly rescaled to a
    configurable action range. The concentration parameters are predicted by the model's MLP and constrained to guarantee
    a unimodal distribution.
-
-:class:`~rsl_rl.modules.distribution.SquashedGaussianDistribution`
-   A reparameterized, state-dependent Gaussian transformed by tanh and a fixed action range, with corrected log probabilities.
 
 Extensions
 ^^^^^^^^^^
@@ -104,8 +107,8 @@ Extensions
    function that defines how observations and actions are transformed. This can improve sample efficiency and promote
    symmetric behaviors for robots with structured morphology. Additionally, a mirror-loss regularization term can be
    added to the loss function to actively encourage symmetry in the policy. This extension is compatible with the
-   :class:`~rsl_rl.algorithms.ppo.PPO` and :class:`~rsl_rl.algorithms.sac.SAC` algorithms. For more details, please check
-   `this paper <https://arxiv.org/abs/2403.04359>`__.
+   :class:`~rsl_rl.algorithms.ppo.PPO` and :class:`~rsl_rl.algorithms.sac.SAC` algorithms. For more details, please
+   check `this paper <https://arxiv.org/abs/2403.04359>`__.
 
 Loggers
 ^^^^^^^
