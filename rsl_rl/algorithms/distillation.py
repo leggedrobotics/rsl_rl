@@ -24,7 +24,12 @@ from rsl_rl.utils import (
 
 
 class Distillation:
-    """Distillation algorithm for training a student model to mimic a teacher model."""
+    """Distillation algorithm for training a student model to mimic a teacher model.
+
+    Reference:
+        - Ross et al. "A Reduction of Imitation Learning and Structured Prediction to No-Regret
+          Online Learning." arXiv preprint arXiv:1011.0686 (2011).
+    """
 
     student: MLPModel
     """The student model."""
