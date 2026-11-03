@@ -31,7 +31,7 @@ def _make_train_cfg() -> dict:
             "distribution_cfg": {"class_name": "SquashedGaussianDistribution"},
         },
         "critic": {"class_name": "QMLPModel", "hidden_dims": [16, 16], "obs_normalization": True},
-        "algorithm": {"class_name": "SAC", "batch_size": 8, "learning_starts": 0, "replay_buffer_capacity": 40},
+        "algorithm": {"class_name": "SAC", "batch_size": 8, "num_warmup_transitions": 0, "replay_buffer_capacity": 40},
     }
 
 
@@ -72,12 +72,14 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
 
     assert OffPolicyRunner.learn is OnPolicyRunner.learn
     cfg = _make_train_cfg()
-    cfg["algorithm"].update(learning_starts=16, num_updates=4, actor_update_interval=1, use_cuda_graph=device != "cpu")
+    cfg["algorithm"].update(
+        num_warmup_transitions=16, num_updates=4, actor_update_interval=1, use_cuda_graph=device != "cpu"
+    )
     log_dir = tmp_path / "warmup"
     runner = OffPolicyRunner(DummyEnv(device=device), cfg, log_dir=str(log_dir), device=device)
     before = [p.detach().clone() for p in runner.alg.actor.parameters()]
     runner.learn(1)
-    assert runner.alg.storage.size == 12 < runner.alg.learning_starts
+    assert runner.alg.storage.size == 12 < runner.alg.num_warmup_transitions
     assert runner.alg.num_critic_updates == 0
     assert all(torch.equal(a, b) for a, b in zip(before, runner.alg.actor.parameters()))
     assert runner.alg.get_policy().output_std is not None
@@ -144,7 +146,7 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
 @pytest.mark.parametrize("scenario", ["boundaries", "wrapped", "independent"])
 def test_n_step_targets_at_episode_boundaries(device: str, scenario: str) -> None:
     """N-step returns stop at each episode boundary and bootstrap partial windows from their last successor."""
-    capacity, n_steps, rewards, ends, terminals, expected = {
+    capacity, num_return_steps, rewards, ends, terminals, expected = {
         "boundaries": (
             10,
             3,
@@ -193,7 +195,9 @@ def test_n_step_targets_at_episode_boundaries(device: str, scenario: str) -> Non
     env.num_envs = 2 if scenario == "independent" else 1
     cfg = _make_train_cfg()
     cfg["multi_gpu"] = None
-    cfg["algorithm"].update(replay_buffer_capacity=capacity, n_steps=n_steps, gamma=0.9, batch_size=256)
+    cfg["algorithm"].update(
+        replay_buffer_capacity=capacity, num_return_steps=num_return_steps, gamma=0.9, batch_size=256
+    )
     alg = SAC.construct_algorithm(env.get_observations(), env, cfg, device)
     for step, reward in enumerate(rewards):
         start = step + torch.arange(env.num_envs, device=device, dtype=torch.float) * 10
@@ -260,7 +264,7 @@ def test_terminal_observations_and_missing_final() -> None:
     with pytest.raises(NotImplementedError, match="Multi-GPU"):
         SAC.construct_algorithm(obs, DummyEnv(), cfg, "cpu")
     cfg["multi_gpu"] = None
-    cfg["algorithm"].update(replay_buffer_capacity=4, learning_starts=8)
+    cfg["algorithm"].update(replay_buffer_capacity=4, num_warmup_transitions=8)
     limited = SAC.construct_algorithm(obs, DummyEnv(), cfg, "cpu")
     limited.act(obs)
     with pytest.raises(ValueError, match="capacity"):
@@ -274,14 +278,14 @@ def test_opt_in_flash_components_and_export(network: str | None, mixed_precision
 
     cfg = _make_train_cfg()
     cfg["algorithm"].update(
-        critic_loss="categorical",
+        critic_loss_type="categorical",
         use_mixed_precision=mixed_precision,
         num_bins=11,
         target_entropy_std=0.15,
         reward_normalization=True,
-        exploration="held",
+        exploration_type="held",
         learning_rate_schedule="cosine",
-        schedule_updates=10,
+        num_schedule_updates=10,
         num_updates=2,
     )
     if network:
@@ -352,8 +356,8 @@ def test_cuda_graph_delayed_actor_and_resume() -> None:
         num_updates=12,
         actor_update_interval=2,
         learning_rate_schedule="cosine",
-        schedule_updates=100,
-        critic_loss="categorical",
+        num_schedule_updates=100,
+        critic_loss_type="categorical",
         num_bins=11,
     )
     for role in ("actor", "critic"):

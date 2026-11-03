@@ -287,7 +287,7 @@ SAC
      - int
      - ``256``
      - Number of transitions sampled per optimization step.
-   * - ``n_steps``
+   * - ``num_return_steps``
      - int
      - ``1``
      - Maximum number of environment steps used to compute return targets.
@@ -303,7 +303,7 @@ SAC
      - int
      - ``1``
      - Number of critic updates per actor update.
-   * - ``learning_starts``
+   * - ``num_warmup_transitions``
      - int
      - ``1000``
      - Minimum number of transitions in the replay buffer before optimization starts.
@@ -345,18 +345,19 @@ SAC
      - float | None
      - ``None``
      - Gaussian standard deviation used to compute the target entropy. Only used if ``target_entropy`` is ``None``.
-   * - ``critic_loss``
+   * - ``critic_loss_type``
      - str
      - ``"mse"``
      - Loss used for critic updates. Valid values: ``"mse"``, ``"categorical"``.
    * - ``num_bins``
      - int
      - ``101``
-     - Number of bins for categorical critics. Only used if ``critic_loss`` is ``"categorical"``.
+     - Number of bins for categorical critics. Only used if ``critic_loss_type`` is ``"categorical"``.
    * - ``value_range``
      - tuple[float, float]
      - ``(-5.0, 5.0)``
-     - Minimum and maximum values represented by categorical critics. Only used if ``critic_loss`` is ``"categorical"``.
+     - Minimum and maximum values represented by categorical critics. Only used if ``critic_loss_type`` is
+       ``"categorical"``.
    * - ``reward_normalization``
      - bool
      - ``False``
@@ -366,18 +367,19 @@ SAC
      - ``5.0``
      - Maximum absolute value of tracked discounted returns after reward normalization. Only used if 
        ``reward_normalization`` is ``True``.
-   * - ``exploration``
+   * - ``exploration_type``
      - str
      - ``"gaussian"``
      - Exploration noise. Valid values: ``"gaussian"`` (resampled each step), ``"held"`` (reused across multiple steps).
    * - ``noise_repeat_exponent``
      - float
      - ``2.0``
-     - Exponent of the power-law distribution for noise repetition counts. Only used if ``exploration`` is ``"held"``.
-   * - ``noise_repeat_max``
+     - Exponent of the power-law distribution for noise repetition counts. Only used if ``exploration_type`` is
+       ``"held"``.
+   * - ``max_noise_repeat_steps``
      - int
      - ``16``
-     - Maximum number of environment steps for which exploration noise is held. Only used if ``exploration`` is
+     - Maximum number of environment steps for which exploration noise is held. Only used if ``exploration_type`` is
        ``"held"``.
    * - ``learning_rate_schedule``
      - str
@@ -386,9 +388,9 @@ SAC
    * - ``final_learning_rate_ratio``
      - float
      - ``0.5``
-     - Final learning rate as a fraction of the initial learning rate. Only used if ``learning_rate_schedule`` is 
+     - Final learning rate as a fraction of the initial learning rate. Only used if ``learning_rate_schedule`` is
        ``"cosine"``.
-   * - ``schedule_updates``
+   * - ``num_schedule_updates``
      - int | None
      - ``None``
      - Number of optimization steps over which the cosine schedule runs. Required if ``learning_rate_schedule`` is

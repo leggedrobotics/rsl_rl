@@ -51,11 +51,11 @@ class SAC:
         # Update parameters
         num_updates: int = 1,
         batch_size: int = 256,
-        n_steps: int = 1,
+        num_return_steps: int = 1,
         gamma: float = 0.99,
         tau: float = 0.005,
         actor_update_interval: int = 1,
-        learning_starts: int = 1000,
+        num_warmup_transitions: int = 1000,
         # Optimizer parameters
         actor_learning_rate: float = 0.0003,
         critic_learning_rate: float = 0.0003,
@@ -68,20 +68,20 @@ class SAC:
         target_entropy: float | None = None,
         target_entropy_std: float | None = None,
         # Critic loss parameters
-        critic_loss: str = "mse",
+        critic_loss_type: str = "mse",
         num_bins: int = 101,
         value_range: tuple[float, float] = (-5.0, 5.0),
         # Reward normalization parameters
         reward_normalization: bool = False,
         reward_normalization_max_return: float = 5.0,
         # Exploration parameters
-        exploration: str = "gaussian",
+        exploration_type: str = "gaussian",
         noise_repeat_exponent: float = 2.0,
-        noise_repeat_max: int = 16,
+        max_noise_repeat_steps: int = 16,
         # Learning rate schedule parameters
         learning_rate_schedule: str = "constant",
         final_learning_rate_ratio: float = 0.5,
-        schedule_updates: int | None = None,
+        num_schedule_updates: int | None = None,
         # Execution parameters
         use_mixed_precision: bool = False,
         use_cuda_graph: bool = False,
@@ -105,14 +105,14 @@ class SAC:
             raise ValueError("SAC requires a SquashedGaussianDistribution actor.")
         if len(critics) < 2:
             raise ValueError("SAC requires at least two critics.")
-        if critic_loss not in ("mse", "categorical"):
-            raise ValueError(f"Unsupported critic loss: {critic_loss}. Expected 'mse' or 'categorical'.")
-        if exploration not in ("gaussian", "held"):
-            raise ValueError(f"Unsupported exploration mode: {exploration}. Expected 'gaussian' or 'held'.")
+        if critic_loss_type not in ("mse", "categorical"):
+            raise ValueError(f"Unsupported critic loss: {critic_loss_type}. Expected 'mse' or 'categorical'.")
+        if exploration_type not in ("gaussian", "held"):
+            raise ValueError(f"Unsupported exploration mode: {exploration_type}. Expected 'gaussian' or 'held'.")
         if learning_rate_schedule not in ("constant", "cosine"):
             raise ValueError("Unsupported learning rate schedule.")
-        if learning_rate_schedule == "cosine" and schedule_updates is None:
-            raise ValueError("A cosine schedule requires schedule_updates to be specified.")
+        if learning_rate_schedule == "cosine" and num_schedule_updates is None:
+            raise ValueError("A cosine schedule requires num_schedule_updates to be specified.")
 
         # Symmetry extension
         self.symmetry = Symmetry(**symmetry_cfg) if symmetry_cfg is not None else None
@@ -151,12 +151,12 @@ class SAC:
         # SAC parameters
         self.num_updates = num_updates
         self.batch_size = batch_size
-        self.n_steps = n_steps
-        self._discounts = gamma ** torch.arange(n_steps + 1, dtype=torch.float, device=self.device)
+        self.num_return_steps = num_return_steps
+        self._discounts = gamma ** torch.arange(num_return_steps + 1, dtype=torch.float, device=self.device)
         self.gamma = gamma
         self.tau = tau
         self.actor_update_interval = actor_update_interval
-        self.learning_starts = learning_starts
+        self.num_warmup_transitions = num_warmup_transitions
         self.max_grad_norm = max_grad_norm
         self.use_mixed_precision = use_mixed_precision
 
@@ -168,7 +168,7 @@ class SAC:
             )
 
         # Categorical critic parameters
-        self.critic_loss = critic_loss
+        self.critic_loss_type = critic_loss_type
         self.num_bins = num_bins
         self.value_range = value_range
         self._bin_values = torch.linspace(*value_range, num_bins, device=self.device)
@@ -182,8 +182,8 @@ class SAC:
         self._pending_returns: list[torch.Tensor] = []
 
         # Exploration parameters
-        self.exploration = exploration
-        repeats = torch.arange(1, noise_repeat_max + 1, dtype=torch.float, device=self.device)
+        self.exploration_type = exploration_type
+        repeats = torch.arange(1, max_noise_repeat_steps + 1, dtype=torch.float, device=self.device)
         self._noise_repeat_cdf = torch.cumsum(repeats**-noise_repeat_exponent, dim=0)
         self._noise_repeat_cdf /= self._noise_repeat_cdf[-1].clone()
         self._noise = torch.zeros(storage.num_envs, actor.distribution.output_dim, device=self.device)
@@ -201,7 +201,7 @@ class SAC:
                 self._schedulers.append(
                     torch.optim.lr_scheduler.CosineAnnealingLR(
                         model_optimizer,
-                        T_max=schedule_updates,  # type: ignore
+                        T_max=num_schedule_updates,  # type: ignore
                         eta_min=model_optimizer.param_groups[0]["lr"] * final_learning_rate_ratio,
                     )
                 )
@@ -224,10 +224,10 @@ class SAC:
 
         # Sample uniform actions during warm-up
         distribution = self.actor.distribution
-        if not self._actor_loaded and self.num_env_steps * self.storage.num_envs < self.learning_starts:
+        if not self._actor_loaded and self.num_env_steps * self.storage.num_envs < self.num_warmup_transitions:
             uniform_actions = torch.rand(obs.batch_size[0], distribution.output_dim, device=self.device) * 2.0 - 1.0
             actions = distribution.range_offset + distribution.range_scale * uniform_actions  # type: ignore
-        elif self.exploration == "held":
+        elif self.exploration_type == "held":
             # Resample noise and repetition counts for environments whose held noise has expired
             resample = self._noise_steps_left <= 0
             self._noise.copy_(torch.where(resample[:, None], torch.randn_like(self._noise), self._noise))
@@ -304,7 +304,7 @@ class SAC:
             self._pending_returns.clear()
 
         # Wait until enough transitions have been collected
-        if self.storage.size < self.learning_starts or not self.storage.size:
+        if self.storage.size < self.num_warmup_transitions or not self.storage.size:
             return {}
 
         # Initialize the loss accumulators
@@ -463,7 +463,9 @@ class SAC:
         actor = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **actor_cfg).to(device)
         print(f"Actor Model: {actor}")
         num_critics = alg_cfg.pop("num_critics", 2)  # Number of critics to use in the ensemble
-        critic_output_dim = alg_cfg.get("num_bins", 101) if alg_cfg.get("critic_loss", "mse") == "categorical" else 1
+        critic_output_dim = (
+            alg_cfg.get("num_bins", 101) if alg_cfg.get("critic_loss_type", "mse") == "categorical" else 1
+        )
         critics = [
             critic_class(obs, cfg["obs_groups"], "critic", critic_output_dim, env.num_actions, **critic_cfg).to(device)
             for _ in range(num_critics)
@@ -475,7 +477,8 @@ class SAC:
             env.num_envs,
             alg_cfg.pop("replay_buffer_capacity", 100_000),
             min_steps_per_env=max(
-                alg_cfg.get("n_steps", 1), math.ceil(alg_cfg.get("learning_starts", 1000) / env.num_envs)
+                alg_cfg.get("num_return_steps", 1),
+                math.ceil(alg_cfg.get("num_warmup_transitions", 1000) / env.num_envs),
             ),
             max_memory_fraction=alg_cfg.pop("max_replay_memory_fraction", None),
             device=device,
@@ -492,8 +495,10 @@ class SAC:
     def _sample_batch(self) -> _Batch:
         """Build n-step returns, bootstrapping from the next state of the last valid transition."""
         # Accumulate discounted rewards over valid replay transitions
-        replay_batch = self.storage.sample(self.batch_size, length=self.n_steps)
-        rewards = (replay_batch.window["rewards"] * self._discounts[: self.n_steps] * replay_batch.valid).sum(1)
+        replay_batch = self.storage.sample(self.batch_size, length=self.num_return_steps)
+        rewards = (replay_batch.window["rewards"] * self._discounts[: self.num_return_steps] * replay_batch.valid).sum(
+            1
+        )
         discounts = self._discounts[replay_batch.valid.sum(1)] * ~replay_batch.terminated
 
         # Construct the batch
@@ -639,7 +644,7 @@ class SAC:
                 ]
 
             # Compute scalar or categorical critic losses
-            if self.critic_loss == "mse":
+            if self.critic_loss_type == "mse":
                 losses = [(output.squeeze(-1) - target).square().mean() for output in outputs]
             else:
                 losses = [
@@ -684,7 +689,7 @@ class SAC:
         )[0]
 
         # Bootstrap scalar values or project categorical distributions onto the fixed support
-        if self.critic_loss == "mse":
+        if self.critic_loss_type == "mse":
             return batch.rewards + batch.bootstrap_discounts * (next_output.squeeze(-1) - entropy_bonus)
         return self._project(
             torch.softmax(next_output.float(), dim=-1), batch.rewards, batch.bootstrap_discounts, entropy_bonus
@@ -711,7 +716,7 @@ class SAC:
 
     def _expected_value(self, output: torch.Tensor) -> torch.Tensor:
         """Return the Q-value of a critic output."""
-        if self.critic_loss == "mse":
+        if self.critic_loss_type == "mse":
             return output.squeeze(-1).float()
         return (torch.softmax(output.float(), dim=-1) * self._bin_values).sum(dim=-1)
 
