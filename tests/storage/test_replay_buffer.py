@@ -36,11 +36,11 @@ def test_lazy_replay_ring_and_episode_validity() -> None:
     for row in range(100):
         values = sample.window["rewards"][row]
         anchor = int(values[0])
-        env_idx = int(sample.actions[row, 0])
+        env_id = int(sample.actions[row, 0])
         for offset in range(3):
             age = anchor + offset
             expected = 2 <= age <= 5
-            if env_idx == 0 and anchor <= 3 < age:
+            if env_id == 0 and anchor <= 3 < age:
                 expected = False
             assert bool(sample.valid[row, offset]) == expected
             if expected:
@@ -49,7 +49,7 @@ def test_lazy_replay_ring_and_episode_validity() -> None:
         assert (values[last:] == values[last]).all()
         assert sample.observations["policy"][row, 0] == anchor
         assert sample.next_observations["policy"][row, 0] == values[last] + 100
-        assert sample.terminated[row] == (env_idx == 0 and values[last] == 3)
+        assert sample.terminated[row] == (env_id == 0 and values[last] == 3)
     assert replay.num_steps == 4 and replay.size == 8
 
 

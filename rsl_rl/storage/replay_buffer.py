@@ -89,7 +89,7 @@ class ReplayBuffer:
         Args:
             num_envs: Number of environments.
             capacity: Maximum number of transitions across all environments. Rounded down to complete environment steps.
-            min_steps_per_env: Minimum number of steps per environment that must fit in the buffer.
+            min_steps_per_env: Minimum number of transitions per environment that must fit in the buffer.
             max_memory_fraction: Maximum fraction of free GPU memory available for replay allocation. ``None`` disables
                 the memory limit. Only applies to CUDA devices.
             device: Device on which to store and sample transitions.
@@ -200,51 +200,46 @@ class ReplayBuffer:
         Args:
             batch_size: Number of windows to sample.
             length: Maximum number of consecutive transitions in each window.
-
-        Returns:
-            The sampled transitions, raw reward windows, and validity masks.
         """
         if self.num_steps == 0:
             raise RuntimeError("Cannot sample empty replay.")
-        if batch_size < 1 or length < 1:
-            raise ValueError("Batch size and length must be positive.")
 
         # Sample anchor steps and environments independently
         anchor = torch.randint(self.num_steps, (batch_size,), device=self.device)
-        env_idx = torch.randint(self.num_envs, (batch_size,), device=self.device)
+        env_ids = torch.randint(self.num_envs, (batch_size,), device=self.device)
         oldest = (self.step - self.num_steps) % self.num_slots
 
-        # Select window entries in chronological order
+        # Compute the indices of sampled windows and their validity masks
         if length == 1:
             indices = ((oldest + anchor) % self.num_slots)[:, None]
             valid = torch.ones_like(indices, dtype=torch.bool)
         else:
-            offsets = torch.arange(length, device=self.device)
-            ages = anchor[:, None] + offsets
-            valid = ages < self.num_steps
-            indices = (oldest + ages.clamp(max=self.num_steps - 1)) % self.num_slots
+            anchor_offsets = torch.arange(length, device=self.device)
+            offsets = anchor[:, None] + anchor_offsets
+            valid = offsets < self.num_steps
+            indices = (oldest + offsets.clamp(max=self.num_steps - 1)) % self.num_slots
 
             # Stop at episode boundaries and repeat the last valid transition at invalid positions
-            dones = self.dones[indices, env_idx[:, None]]
+            dones = self.dones[indices, env_ids[:, None]]  # type: ignore
             alive = torch.cumprod((~dones[:, :-1]).long(), dim=1).bool()
             valid[:, 1:] &= alive
-            last_offset = valid.sum(1, keepdim=True) - 1
-            indices = indices.gather(1, torch.minimum(offsets, last_offset))
+            last_valid_offset = valid.sum(1, keepdim=True) - 1
+            indices = indices.gather(1, torch.minimum(anchor_offsets, last_valid_offset))
         first = indices[:, 0]
         last = indices[:, -1]
 
         # Construct the batch using the first and last valid transitions of each window
         return ReplayBuffer.Batch(
-            observations=self.observations[first, env_idx],
-            actions=self.actions[first, env_idx],
+            observations=self.observations[first, env_ids],  # type: ignore
+            actions=self.actions[first, env_ids],  # type: ignore
             window={
-                "rewards": self.rewards[indices, env_idx[:, None]],
-                "dones": self.dones[indices, env_idx[:, None]],
-                "terminated": self.terminated[indices, env_idx[:, None]],
+                "rewards": self.rewards[indices, env_ids[:, None]],  # type: ignore
+                "dones": self.dones[indices, env_ids[:, None]],  # type: ignore
+                "terminated": self.terminated[indices, env_ids[:, None]],  # type: ignore
             },
             valid=valid,
-            next_observations=self.next_observations[last, env_idx],
-            terminated=self.terminated[last, env_idx],
+            next_observations=self.next_observations[last, env_ids],  # type: ignore
+            terminated=self.terminated[last, env_ids],  # type: ignore
         )
 
     def clear(self) -> None:

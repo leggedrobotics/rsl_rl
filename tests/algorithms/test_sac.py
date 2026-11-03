@@ -31,7 +31,7 @@ def _make_train_cfg() -> dict:
             "distribution_cfg": {"class_name": "SquashedGaussianDistribution"},
         },
         "critic": {"class_name": "QMLPModel", "hidden_dims": [16, 16], "obs_normalization": True},
-        "algorithm": {"class_name": "SAC", "batch_size": 8, "learning_starts": 0, "replay_buffer_size": 40},
+        "algorithm": {"class_name": "SAC", "batch_size": 8, "learning_starts": 0, "replay_buffer_capacity": 40},
     }
 
 
@@ -193,7 +193,7 @@ def test_n_step_targets_at_episode_boundaries(device: str, scenario: str) -> Non
     env.num_envs = 2 if scenario == "independent" else 1
     cfg = _make_train_cfg()
     cfg["multi_gpu"] = None
-    cfg["algorithm"].update(replay_buffer_size=capacity, n_steps=n_steps, gamma=0.9, batch_size=256)
+    cfg["algorithm"].update(replay_buffer_capacity=capacity, n_steps=n_steps, gamma=0.9, batch_size=256)
     alg = SAC.construct_algorithm(env.get_observations(), env, cfg, device)
     for step, reward in enumerate(rewards):
         start = step + torch.arange(env.num_envs, device=device, dtype=torch.float) * 10
@@ -260,7 +260,7 @@ def test_terminal_observations_and_missing_final() -> None:
     with pytest.raises(NotImplementedError, match="Multi-GPU"):
         SAC.construct_algorithm(obs, DummyEnv(), cfg, "cpu")
     cfg["multi_gpu"] = None
-    cfg["algorithm"].update(replay_buffer_size=4, learning_starts=8)
+    cfg["algorithm"].update(replay_buffer_capacity=4, learning_starts=8)
     limited = SAC.construct_algorithm(obs, DummyEnv(), cfg, "cpu")
     limited.act(obs)
     with pytest.raises(ValueError, match="capacity"):

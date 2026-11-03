@@ -319,7 +319,7 @@ SAC
      - str
      - required
      - ``"SAC"``.
-   * - ``replay_buffer_size``
+   * - ``replay_buffer_capacity``
      - int
      - ``100000``
      - Total transitions across environments, allocated lazily with explicit successors.
@@ -885,7 +885,7 @@ SAC uses an explicit squashed Gaussian actor and state-action critics:
      class_name: QMLPModel
    algorithm:
      class_name: SAC
-     replay_buffer_size: 1000000
+     replay_buffer_capacity: 1000000
      num_critics: 2
      num_updates: 8
 
