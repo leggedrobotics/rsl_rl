@@ -176,7 +176,14 @@ class ResidualMLP(nn.Module):
             x = block(x)
 
         # Project the output and restore its leading dimensions
-        x = self.output_layer(self.output_norm(x))
+        if torch.jit.is_scripting():  # type: ignore
+            x = self.output_norm(x)
+        elif torch.onnx.is_in_onnx_export():  # Compute manually since ONNX does not support RMSNorm
+            x = x * torch.rsqrt(x.square().mean(dim=-1, keepdim=True) + self.output_norm.eps)  # type: ignore
+            x = x * self.output_norm.weight
+        else:
+            x = self.output_norm(x)
+        x = self.output_layer(x)
         return x.unflatten(-1, self.output_shape).unflatten(0, batch_shape)
 
     @torch.no_grad()

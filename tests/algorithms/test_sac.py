@@ -270,6 +270,8 @@ def test_terminal_observations_and_missing_final() -> None:
 @pytest.mark.parametrize(("network", "mixed_precision"), [(None, False), ("ResidualMLP", False), (None, True)])
 def test_opt_in_flash_components_and_export(network: str | None, mixed_precision: bool, tmp_path: Path) -> None:
     """Categorical updates, return scaling, held noise and residual export work through the standard runner."""
+    from onnx.reference import ReferenceEvaluator
+
     cfg = _make_train_cfg()
     cfg["algorithm"].update(
         critic_loss="categorical",
@@ -295,6 +297,11 @@ def test_opt_in_flash_components_and_export(network: str | None, mixed_precision
     runner.export_policy_to_jit(str(tmp_path))
     scripted = torch.jit.load(str(tmp_path / "policy.pt"))
     torch.testing.assert_close(scripted(sample["policy"]), expected)
+    if network == "ResidualMLP":
+        runner.export_policy_to_onnx(str(tmp_path))
+        evaluator = ReferenceEvaluator(str(tmp_path / "policy.onnx"))
+        actual = evaluator.run(None, {evaluator.input_names[0]: sample["policy"][:1].numpy()})[0]
+        torch.testing.assert_close(torch.from_numpy(actual), expected[:1])
     checkpoint = runner.alg.save()
     restored = OffPolicyRunner(DummyEnv(), cfg)
     restored.alg.load(checkpoint, None, True)
