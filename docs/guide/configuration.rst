@@ -758,27 +758,6 @@ HeteroscedasticGaussianDistribution
      - ``"scalar"``
      - Whether the standard deviation is stored directly or in log-space. Valid values: ``"scalar"``, ``"log"``.
 
-BetaDistribution
-^^^^^^^^^^^^^^^^
-
-.. list-table::
-   :header-rows: 1
-   :class: no-wrap-type-column
-
-   * - Key
-     - Type
-     - Default
-     - Description
-   * - ``class_name``
-     - str
-     - required
-     - Distribution class name. Valid values: ``"BetaDistribution"``.
-   * - ``action_range``
-     - tuple[float, float]
-     - ``(-1.0, 1.0)``
-     - Interval ``(min, max)`` to which samples are linearly rescaled. The Beta distribution naturally produces samples
-       in ``[0, 1]``, which are rescaled to this range.
-
 SquashedGaussianDistribution
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -808,6 +787,27 @@ SquashedGaussianDistribution
      - ``(-1.0, 1.0)``
      - Interval ``(min, max)`` to which squashed samples are linearly rescaled. Each bound can be a scalar or a list
        with one value per action dimension.
+
+BetaDistribution
+^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - Distribution class name. Valid values: ``"BetaDistribution"``.
+   * - ``action_range``
+     - tuple[float, float]
+     - ``(-1.0, 1.0)``
+     - Interval ``(min, max)`` to which samples are linearly rescaled. The Beta distribution naturally produces samples
+       in ``[0, 1]``, which are rescaled to this range.
 
 
 Extension Configuration
