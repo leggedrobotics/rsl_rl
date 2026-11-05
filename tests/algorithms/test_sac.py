@@ -14,6 +14,7 @@ from tensordict import TensorDict
 import pytest
 
 from rsl_rl.algorithms import SAC
+from rsl_rl.algorithms.sac import _Batch
 from rsl_rl.runners import OffPolicyRunner, OnPolicyRunner
 from tests.runners.test_on_policy_runner import DummyEnv
 
@@ -397,3 +398,77 @@ def test_cuda_graph_delayed_actor_and_resume() -> None:
     runner.learn(1)
     assert runner.alg.num_critic_updates == 60
     assert all(torch.isfinite(p).all() for p in runner.alg.actor.parameters())
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_nonfinite_final_observations_rejected_before_training(timeout: bool) -> None:
+    """Validate only consumed final rows, including both hard terminals and timeouts, before any update."""
+    alg = _build_sac()
+    obs = DummyEnv().get_observations()
+    final = obs.clone()
+    final["policy"][0] = float("nan")
+    dones = torch.tensor([True, False, False, False])
+    alg.act(obs)
+    alg.process_env_step(obs, torch.ones(4), dones, {"final_obs": final, "time_outs": dones & timeout})
+    before = [p.detach().clone() for p in alg.actor.parameters()]
+    with pytest.raises(ValueError, match=r"nonfinite final_obs.*policy"):
+        alg.update()
+    assert all(torch.equal(a, b) for a, b in zip(before, alg.actor.parameters()))
+    alg = _build_sac()
+    final["policy"][0] = 7.0
+    final["policy"][1:] = float("nan")
+    alg.act(obs)
+    alg.process_env_step(obs, torch.ones(4), dones, {"final_obs": final, "time_outs": dones & timeout})
+    torch.testing.assert_close(alg.storage.next_observations["policy"][0, 0], torch.full((8,), 7.0))
+    assert alg.storage.terminated[0, 0].item() == (not timeout)
+    assert torch.isfinite(alg.storage.next_observations["policy"][0]).all()
+
+
+@pytest.mark.parametrize("categorical", [False, True])
+@pytest.mark.parametrize("batch_norm", [False, True])
+@pytest.mark.parametrize("all_terminal", [False, True])
+def test_terminal_successors_never_poison_model_forwards(
+    categorical: bool, batch_norm: bool, all_terminal: bool
+) -> None:
+    """Terminal NaNs must not reach actor, critic, or running batch statistics."""
+    cfg = _make_train_cfg()
+    cfg["multi_gpu"] = None
+    cfg["algorithm"].update(critic_loss_type="categorical" if categorical else "mse", num_bins=11)
+    if batch_norm:
+        for role in ("actor", "critic"):
+            cfg[role]["network_cfg"] = {"class_name": "ResidualMLP", "hidden_dim": 16, "num_blocks": 1, "expansion": 2}
+    env = DummyEnv()
+    obs = env.get_observations()
+    alg = SAC.construct_algorithm(obs, env, cfg, "cpu")
+    successors = obs.clone()
+    terminals = torch.ones(4, dtype=torch.bool) if all_terminal else torch.tensor([True, False, True, False])
+    successors["policy"][terminals] = float("nan")
+    successors["policy"][~terminals] = 9.0
+    if not all_terminal:
+        successors["policy"][2] = 7.0
+    seen = []
+
+    def check_inputs(module: torch.nn.Module, inputs: tuple) -> None:
+        assert torch.isfinite(inputs[0]["policy"]).all()
+        seen.append(inputs[0]["policy"].detach().clone())
+
+    handles = [
+        model.register_forward_pre_hook(check_inputs) for model in [alg.actor, *alg.critics, *alg.target_critics]
+    ]
+    batch = _Batch(
+        observations=obs,
+        actions=torch.zeros(4, 4),
+        rewards=torch.ones(4),
+        next_observations=successors,
+        bootstrap_discounts=(~terminals).float() * alg.gamma,
+    )
+    losses = alg._gradient_step(batch, True)
+    for handle in handles:
+        handle.remove()
+    assert seen
+    if not all_terminal:
+        assert any((value == 9.0).all(dim=-1).any() for value in seen)
+        assert any((value == 7.0).all(dim=-1).any() for value in seen)
+    assert all(torch.isfinite(value).all() for value in losses.values())
+    for model in [alg.actor, *alg.critics, *alg.target_critics]:
+        assert all(torch.isfinite(value).all() for value in model.state_dict().values())
