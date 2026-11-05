@@ -262,8 +262,11 @@ class SAC:
                 raise ValueError("SAC requires extras['final_obs'] on every step containing a done.")
             final_obs = extras["final_obs"]
             for key in groups:
+                final = final_obs[key].to(self.device)
+                if not torch.isfinite(final[done_mask]).all():
+                    raise ValueError(f"SAC received nonfinite final_obs in observation group '{key}'.")
                 mask = done_mask.reshape(-1, *([1] * (next_obs[key].ndim - 1)))
-                next_obs[key] = torch.where(mask, final_obs[key].to(self.device), next_obs[key])
+                next_obs[key] = torch.where(mask, final, next_obs[key])
 
         # Construct the transition using observations and actions recorded by act()
         observations = self.transition.observations
@@ -539,6 +542,21 @@ class SAC:
         update_actor: bool,
     ) -> dict[str, torch.Tensor]:
         """Perform one fixed-shape optimizer step, suitable for lazy CUDA capture."""
+        finite_successors = torch.stack([
+            torch.isfinite(value).flatten(1).all(dim=1) for value in next_observations.values()
+        ]).all(dim=0)
+        use_successors = (bootstrap_discounts != 0) | finite_successors
+        next_observations = TensorDict(
+            {
+                key: torch.where(
+                    use_successors.reshape(-1, *([1] * (value.ndim - 1))),
+                    value,
+                    observations[key],
+                )
+                for key, value in next_observations.items()
+            },
+            batch_size=next_observations.batch_size,
+        )
         batch = _Batch(
             observations=observations,
             actions=actions,
