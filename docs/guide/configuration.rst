@@ -444,6 +444,36 @@ observations, so invalid terminal successors from externally populated replay ca
 BatchNorm statistics. Finite terminal successor inputs retain the original BatchNorm behavior. This replacement
 preserves fixed batch shapes for single-device CUDA graphs.
 
+SAC image observations
+~~~~~~~~~~~~~~~~~~~~~~
+
+Use ``CNNModel`` for an image actor and ``QCNNModel`` for an image critic. Both use the existing ``cnn_cfg`` interface.
+Each selected image group has shape ``(batch, channels, height, width)``; vector groups have shape ``(batch, features)``.
+Replay retains these shapes. Either model can use images alone or images plus vector groups, and actor/critic groups
+may differ. The critic concatenates runtime candidate actions after the image and vector features, before its MLP or
+configured ``network_cfg``. ``action_dim`` is inferred from ``env.num_actions``; do not add candidate actions to the
+observation groups. Q outputs are scalar values or categorical logits according to the SAC configuration.
+
+For example, set the following model and observation entries in an otherwise configured SAC runner:
+
+.. code-block:: python
+
+   cfg["obs_groups"] = {"actor": ["policy", "image"], "critic": ["critic", "image"]}
+   cfg["actor"] = {
+       "class_name": "CNNModel",
+       "hidden_dims": [256, 256],
+       "cnn_cfg": {"output_channels": [16, 32], "kernel_size": 3, "stride": 2, "flatten": True},
+       "distribution_cfg": {"class_name": "SquashedGaussianDistribution"},
+   }
+   cfg["critic"] = {
+       "class_name": "QCNNModel",
+       "hidden_dims": [256, 256],
+       "cnn_cfg": {"output_channels": [16, 32], "kernel_size": 3, "stride": 2, "flatten": True},
+   }
+
+SAC requires separate parameters for the actor and each critic, including image encoders. CNN actors support the
+standard runner's TorchScript and ONNX exports; state-action critic export is not supported.
+
 
 The SAC defaults are the configuration that worked best across Isaac Lab locomotion benchmark tasks. These runs used
 residual networks for the actor and critics, and an actor action range of ``(-2.0, 2.0)``:
@@ -526,7 +556,8 @@ Different algorithms use models for different purposes. For example, :class:`~rs
 and a critic, while :class:`~rsl_rl.algorithms.distillation.Distillation` uses a student and a teacher. Even though
 their function may differ, algorithms can generally use the same underlying model classes. Available models include
 :class:`~rsl_rl.models.mlp_model.MLPModel`, :class:`~rsl_rl.models.rnn_model.RNNModel`, and
-:class:`~rsl_rl.models.cnn_model.CNNModel`, and :class:`~rsl_rl.models.mlp_model.QMLPModel`.
+:class:`~rsl_rl.models.cnn_model.CNNModel`, :class:`~rsl_rl.models.mlp_model.QMLPModel`, and
+:class:`~rsl_rl.models.cnn_model.QCNNModel`.
 
 MLPModel
 ^^^^^^^^

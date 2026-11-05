@@ -245,7 +245,7 @@ class TestDistributedAlgorithms:
         spawn_gloo(_distillation_worker, False)
 
 
-def _sac_worker(rank: int, world_size: int, store_file: str, categorical: bool) -> None:
+def _sac_worker(rank: int, world_size: int, store_file: str, categorical: bool, cnn: bool) -> None:
     from rsl_rl.algorithms import SAC
     from tests.algorithms.test_sac import _make_train_cfg
     from tests.runners.test_on_policy_runner import DummyEnv
@@ -269,7 +269,11 @@ def _sac_worker(rank: int, world_size: int, store_file: str, categorical: bool) 
         )
         for role in ("actor", "critic"):
             cfg[role]["network_cfg"] = {"class_name": "ResidualMLP", "hidden_dim": 16, "num_blocks": 1, "expansion": 2}
-        env = DummyEnv()
+        if cnn:
+            for role, model in (("actor", "CNNModel"), ("critic", "QCNNModel")):
+                cfg[role].update(class_name=model, cnn_cfg={"output_channels": [4], "kernel_size": 3, "stride": 2})
+                cfg["obs_groups"][role] = ["policy", "image"]
+        env = DummyEnv(include_image=cnn)
         obs = env.get_observations()
         alg = SAC.construct_algorithm(obs, env, cfg, "cpu")
 
@@ -365,7 +369,7 @@ def _sac_worker(rank: int, world_size: int, store_file: str, categorical: bool) 
 
 
 @pytest.mark.skipif(not _GLOO_AVAILABLE, reason="torch.distributed gloo backend is required")
-@pytest.mark.parametrize("categorical", [False, True])
-def test_sac_distributed_updates_and_resume(categorical: bool) -> None:
+@pytest.mark.parametrize(("categorical", "cnn"), [(False, False), (True, True)])
+def test_sac_distributed_updates_and_resume(categorical: bool, cnn: bool) -> None:
     """Different local replay data must preserve globally synchronized learner state and normalization."""
-    spawn_gloo(_sac_worker, categorical)
+    spawn_gloo(_sac_worker, categorical, cnn)

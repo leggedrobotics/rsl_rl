@@ -17,7 +17,7 @@ from tensordict import TensorDict
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import Symmetry, resolve_symmetry_config
-from rsl_rl.models import CNNModel, MLPModel, QMLPModel
+from rsl_rl.models import MLPModel, QCNNModel, QMLPModel
 from rsl_rl.modules import EmpiricalNormalization, SquashedGaussianDistribution
 from rsl_rl.storage import ReplayBuffer
 from rsl_rl.utils import (
@@ -60,7 +60,7 @@ class SAC:
     def __init__(
         self,
         actor: MLPModel,
-        critics: list[QMLPModel],
+        critics: list[QMLPModel | QCNNModel],
         storage: ReplayBuffer,
         # Update parameters
         num_updates: int = 16,
@@ -123,14 +123,20 @@ class SAC:
                 raise ValueError("Distributed SAC does not support CUDA graph capture; set use_cuda_graph=False.")
         if actor.is_recurrent or any(critic.is_recurrent for critic in critics):
             raise ValueError("SAC does not yet support recurrent models.")
-        if isinstance(actor, CNNModel):
-            raise ValueError("SAC does not yet support CNN models.")
 
         # Validate configuration
         if not isinstance(actor.distribution, SquashedGaussianDistribution):
             raise ValueError("SAC requires a SquashedGaussianDistribution actor.")
         if len(critics) < 2:
             raise ValueError("SAC requires at least two critics.")
+        parameter_ids: set[int] = set()
+        for model in (actor, *critics):
+            model_ids = {id(parameter) for parameter in model.parameters()}
+            if parameter_ids & model_ids:
+                raise ValueError(
+                    "SAC requires separate parameters for the actor and each critic, including CNN encoders."
+                )
+            parameter_ids.update(model_ids)
         if critic_loss_type not in ("mse", "categorical"):
             raise ValueError(f"Unsupported critic loss: {critic_loss_type}. Expected 'mse' or 'categorical'.")
         if exploration_type not in ("gaussian", "held"):
@@ -273,8 +279,13 @@ class SAC:
         # Resolve termination flags and observation groups
         done_mask = dones.reshape(-1).bool()
         time_outs = extras.get("time_outs", torch.zeros_like(done_mask)).to(self.device).reshape(-1).bool()
-        critic_obs_groups = [obs_group for critic in self.critics for obs_group in critic.obs_groups]  # type: ignore
-        groups = list(dict.fromkeys(self.actor.obs_groups + critic_obs_groups))
+        groups = list(
+            dict.fromkeys(
+                group
+                for model in (self.actor, *self.critics)
+                for group in model.obs_groups + getattr(model, "obs_groups_2d", [])
+            )
+        )
 
         # Replace reset observations with final observations for completed episodes
         next_obs = obs.select(*groups).clone()
