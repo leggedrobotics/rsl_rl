@@ -474,6 +474,27 @@ For example, set the following model and observation entries in an otherwise con
 SAC requires separate parameters for the actor and each critic, including image encoders. CNN actors support the
 standard runner's TorchScript and ONNX exports; state-action critic export is not supported.
 
+SAC recurrent-model limitation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Recurrent actors and critics are explicitly rejected. The current replay ``length`` is an n-step return window,
+not a recurrent training sequence: ``ReplayBuffer.Batch`` provides only the initial observations/actions and the final
+successor observations. Its time-indexed ``window`` contains rewards and boundary flags, not observation/action
+sequences. The ``valid`` mask controls return accumulation, not recurrent loss padding. No hidden states are stored.
+
+``RNNModel`` expects a time-major observation sequence, padding masks and an initial hidden state during updates.
+Without these inputs its forward pass instead advances the rollout hidden state. Using it on independent random
+replay samples would mix unrelated episode histories and could overwrite the state used for environment interaction.
+Calling ``reset(dones)`` during collection alone cannot make that update correct.
+
+Correct recurrent SAC would require observation/action sequences with episode boundaries, burn-in or stored initial
+states, padding-aware losses, and separate history reconstruction for the actor, online critics and target critics.
+Target hidden states must be computed using target weights, not copied from an online critic. Timeout successors need
+the pre-reset history while the following episode starts from reset state; hard terminals must never bootstrap across
+that boundary. The actor's candidate-action Q evaluation must preserve replay history without mutating rollout or
+target hidden state. These changes span replay, model interfaces and learner updates and are intentionally deferred.
+No recurrent SAC support is claimed by this implementation.
+
 
 The SAC defaults are the configuration that worked best across Isaac Lab locomotion benchmark tasks. These runs used
 residual networks for the actor and critics, and an actor action range of ``(-2.0, 2.0)``:

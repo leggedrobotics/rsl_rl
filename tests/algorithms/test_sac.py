@@ -549,3 +549,14 @@ def test_sac_rejects_shared_model_parameters() -> None:
     alg.critics[0].cnns = alg.actor.cnns
     with pytest.raises(ValueError, match="separate parameters"):
         SAC(alg.actor, list(alg.critics), alg.storage)
+
+
+@pytest.mark.parametrize("role", ["actor", "critic"])
+def test_recurrent_models_are_rejected_before_construction(role: str) -> None:
+    """Reject recurrent configs explicitly instead of silently treating random replay as sequences."""
+    cfg = _make_train_cfg()
+    cfg[role]["class_name"] = "RNNModel"
+    cfg["multi_gpu"] = None
+    env = DummyEnv()
+    with pytest.raises(ValueError, match="does not yet support recurrent models"):
+        SAC.construct_algorithm(env.get_observations(), env, cfg, "cpu")

@@ -509,6 +509,8 @@ class SAC:
         alg_class, alg_cfg = resolve_class(cfg["algorithm"])
         actor_class, actor_cfg = resolve_class(cfg["actor"])
         critic_class, critic_cfg = resolve_class(cfg["critic"])
+        if actor_class.is_recurrent or critic_class.is_recurrent:
+            raise ValueError("SAC does not yet support recurrent models.")
 
         # Resolve observation groups
         cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], ["actor", "critic"])
