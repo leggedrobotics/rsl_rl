@@ -19,7 +19,7 @@ from typing import Any
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import Symmetry, resolve_symmetry_config
-from rsl_rl.models import CNNModel, MLPModel, QMLPModel
+from rsl_rl.models import MLPModel, QCNNModel, QMLPModel
 from rsl_rl.modules import EmpiricalNormalization, SquashedGaussianDistribution
 from rsl_rl.storage import ReplayBuffer
 from rsl_rl.utils import (
@@ -57,7 +57,7 @@ class SAC:
     def __init__(
         self,
         actor: MLPModel,
-        critics: list[QMLPModel],
+        critics: list[QMLPModel | QCNNModel],
         storage: ReplayBuffer,
         # Update parameters
         num_updates: int = 16,
@@ -120,14 +120,20 @@ class SAC:
                 raise ValueError("Distributed SAC does not support CUDA graph capture; set use_cuda_graph=False.")
         if actor.is_recurrent or any(critic.is_recurrent for critic in critics):
             raise ValueError("SAC does not yet support recurrent models.")
-        if isinstance(actor, CNNModel):
-            raise ValueError("SAC does not yet support CNN models.")
 
         # Validate configuration
         if not isinstance(actor.distribution, SquashedGaussianDistribution):
             raise ValueError("SAC requires a SquashedGaussianDistribution actor.")
         if len(critics) < 2:
             raise ValueError("SAC requires at least two critics.")
+        parameter_ids: set[int] = set()
+        for model in (actor, *critics):
+            model_ids = {id(parameter) for parameter in model.parameters()}
+            if parameter_ids & model_ids:
+                raise ValueError(
+                    "SAC requires separate parameters for the actor and each critic, including CNN encoders."
+                )
+            parameter_ids.update(model_ids)
         if critic_loss_type not in ("mse", "categorical"):
             raise ValueError(f"Unsupported critic loss: {critic_loss_type}. Expected 'mse' or 'categorical'.")
         if exploration_type not in ("gaussian", "held"):
@@ -223,8 +229,13 @@ class SAC:
         self._base_learning_rates = (actor_learning_rate, critic_learning_rate, alpha_learning_rate)
 
         # Observation groups stored in replay and flags for final observations that are not finite
-        critic_obs_groups = [obs_group for critic in self.critics for obs_group in critic.obs_groups]  # type: ignore
-        self._obs_groups = list(dict.fromkeys(self.actor.obs_groups + critic_obs_groups))
+        self._obs_groups = list(
+            dict.fromkeys(
+                group
+                for model in (self.actor, *self.critics)
+                for group in model.obs_groups + getattr(model, "obs_groups_2d", [])
+            )
+        )
         self._nonfinite_final_obs = torch.zeros(len(self._obs_groups), dtype=torch.bool, device=self.device)
         self._missing_final_obs = torch.zeros((), dtype=torch.bool, device=self.device)
 
@@ -455,8 +466,8 @@ class SAC:
         alg_class, alg_cfg = resolve_class(cfg["algorithm"])
         actor_class, actor_cfg = resolve_class(cfg["actor"])
         critic_class, critic_cfg = resolve_class(cfg["critic"])
-        if not issubclass(critic_class, QMLPModel):  # type: ignore
-            raise ValueError("SAC requires QMLPModel critics.")
+        if not issubclass(critic_class, (QMLPModel, QCNNModel)):  # type: ignore
+            raise ValueError("SAC requires QMLPModel or QCNNModel critics.")
 
         # Resolve observation groups
         cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], ["actor", "critic"])

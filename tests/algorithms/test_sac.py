@@ -44,17 +44,99 @@ def _build_sac() -> SAC:
     return SAC.construct_algorithm(env.get_observations(), env, cfg, "cpu")
 
 
-def test_cnn_actor_is_rejected_at_construction() -> None:
-    """Unsupported image actors fail before replay collection starts."""
-    env = DummyEnv()
+@pytest.mark.parametrize(
+    ("actor", "critic", "image_only", "categorical", "device"),
+    [
+        ("CNNModel", "QMLPModel", False, False, "cpu"),
+        ("MLPModel", "QCNNModel", False, False, "cpu"),
+        ("CNNModel", "QCNNModel", True, True, "cpu"),
+        pytest.param(
+            "CNNModel",
+            "QCNNModel",
+            False,
+            True,
+            "cuda:0",
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for CNN graph capture"),
+        ),
+    ],
+)
+def test_cnn_sac_training_and_export(
+    actor: str, critic: str, image_only: bool, categorical: bool, device: str, tmp_path: Path
+) -> None:
+    """Preserve image replay, learn both encoders and Q action gradients, and round-trip policy exports."""
+    from onnx.reference import ReferenceEvaluator
+
     cfg = _make_train_cfg()
-    cfg["multi_gpu"] = None
-    cfg["obs_groups"]["actor"] = ["policy", "image"]
-    cfg["actor"].update(class_name="CNNModel", cnn_cfg={"output_channels": [4], "kernel_size": 3, "flatten": True})
+    cfg["algorithm"].update(
+        critic_loss_type="categorical" if categorical else "mse",
+        num_bins=11,
+        num_updates=6,
+        num_return_steps=3,
+        use_cuda_graph=device != "cpu",
+    )
+    for role, model in (("actor", actor), ("critic", critic)):
+        cfg[role]["class_name"] = model
+        if "CNN" in model:
+            cfg["obs_groups"][role] = ["image"] if image_only else ["policy", "image"]
+            cfg[role]["cnn_cfg"] = {"output_channels": [4], "kernel_size": 3, "stride": 2, "flatten": True}
+        if categorical:
+            cfg[role]["network_cfg"] = {"class_name": "ResidualMLP", "hidden_dim": 16, "num_blocks": 1, "expansion": 2}
+    env = DummyEnv(device=device, include_image=True)
+    runner = OffPolicyRunner(env, cfg, device=device)
+    alg = runner.alg
     obs = env.get_observations()
-    obs["image"] = torch.zeros(env.num_envs, 1, 8, 8)
-    with pytest.raises(ValueError, match="support CNN models"):
-        SAC.construct_algorithm(obs, env, cfg, "cpu")
+    final = obs.clone()
+    final["image"].fill_(7.0)
+    dones = torch.tensor([True, True, False, False], device=device)
+    alg.act(obs)
+    alg.process_env_step(obs, torch.ones(4, device=device), dones, {"final_obs": final, "time_outs": dones})
+    torch.testing.assert_close(alg.storage.next_observations["image"][0, :2], final["image"][:2])
+    encoders = [model.cnns for model in [alg.actor, *alg.critics] if hasattr(model, "cnns")]
+    before = [[parameter.detach().clone() for parameter in encoder.parameters()] for encoder in encoders]
+    runner.learn(1)
+    for encoder, old in zip(encoders, before):
+        assert any(not torch.equal(value, parameter) for value, parameter in zip(old, encoder.parameters()))
+        assert all(
+            parameter.grad is not None and torch.isfinite(parameter.grad).all() for parameter in encoder.parameters()
+        )
+    batch = alg._sample_batch()
+    assert batch.observations["image"].shape == (8, 1, 16, 16)
+    assert batch.next_observations["image"].shape == (8, 1, 16, 16)
+    if device != "cpu":
+        assert alg._graph_updates
+    assert all(torch.isfinite(torch.tensor(value)) for value in alg.update()[0].values())
+    alg.eval_mode()
+    actions = alg.actor(obs)
+    q = alg._expected_value(alg.critics[0](obs, alg._normalize_actions(actions)))
+    parameters = list(alg.actor.cnns.parameters()) if hasattr(alg.actor, "cnns") else list(alg.actor.parameters())
+    gradients = torch.autograd.grad(q.sum(), [actions, *parameters])
+    assert all(torch.isfinite(gradient).all() for gradient in gradients)
+    assert gradients[0].abs().sum() > 0
+    assert any(gradient.abs().sum() > 0 for gradient in gradients[1:])
+    expected = alg.get_policy()(obs).detach().cpu()
+    runner.save(str(tmp_path / "cnn.pt"))
+    restored = OffPolicyRunner(env, cfg, device=device)
+    restored.load(str(tmp_path / "cnn.pt"), map_location=device)
+    restored.alg.eval_mode()
+    torch.testing.assert_close(restored.alg.actor(obs).cpu(), expected)
+    for source, target in zip(alg.critics, restored.alg.critics):
+        torch.testing.assert_close(source(obs, actions), target(obs, actions))
+    runner.export_policy_to_jit(str(tmp_path))
+    runner.export_policy_to_onnx(str(tmp_path))
+    scripted = torch.jit.load(str(tmp_path / "policy.pt"))
+    vector = torch.empty(4, 0) if image_only else obs["policy"].cpu()
+    actual = scripted(vector, [obs["image"].cpu()]) if actor == "CNNModel" else scripted(vector)
+    torch.testing.assert_close(actual, expected)
+    evaluator = ReferenceEvaluator(str(tmp_path / "policy.onnx"))
+    inputs = {"obs": vector[:1].numpy(), "image": obs["image"][:1].cpu().numpy()}
+    actual = evaluator.run(None, {name: inputs[name] for name in evaluator.input_names})[0]
+    torch.testing.assert_close(torch.from_numpy(actual), expected[:1], atol=1e-5, rtol=1e-5)
+
+    final["image"][0] = float("nan")
+    restored.alg.act(obs)
+    restored.alg.process_env_step(obs, torch.ones(4, device=device), dones, {"final_obs": final})
+    with pytest.raises(ValueError, match="nonfinite final_obs"):
+        restored.alg.update()
 
 
 def test_non_q_critic_is_rejected_at_construction() -> None:
@@ -63,7 +145,7 @@ def test_non_q_critic_is_rejected_at_construction() -> None:
     cfg = _make_train_cfg()
     cfg["multi_gpu"] = None
     cfg["critic"]["class_name"] = "MLPModel"
-    with pytest.raises(ValueError, match="requires QMLPModel critics"):
+    with pytest.raises(ValueError, match="requires QMLPModel or QCNNModel critics"):
         SAC.construct_algorithm(env.get_observations(), env, cfg, "cpu")
 
 
@@ -475,3 +557,15 @@ def test_terminal_successors_never_poison_model_forwards(
     assert all(torch.isfinite(value).all() for value in losses.values())
     for model in [alg.actor, *alg.critics, *alg.target_critics]:
         assert all(torch.isfinite(value).all() for value in model.state_dict().values())
+
+
+def test_sac_rejects_shared_model_parameters() -> None:
+    """Separate optimizers and critic targets require independently owned encoders."""
+    cfg = _make_train_cfg()
+    for role, name in (("actor", "CNNModel"), ("critic", "QCNNModel")):
+        cfg[role].update(class_name=name, cnn_cfg={"output_channels": [4], "kernel_size": 3})
+        cfg["obs_groups"][role] = ["policy", "image"]
+    alg = OffPolicyRunner(DummyEnv(include_image=True), cfg).alg
+    alg.critics[0].cnns = alg.actor.cnns
+    with pytest.raises(ValueError, match="separate parameters"):
+        SAC(alg.actor, list(alg.critics), alg.storage)
