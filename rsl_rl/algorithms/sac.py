@@ -202,6 +202,11 @@ class SAC:
         self.num_schedule_updates = num_schedule_updates
         self._base_learning_rates = (actor_learning_rate, critic_learning_rate, alpha_learning_rate)
 
+        # Observation groups stored in replay and flags for final observations that are not finite
+        critic_obs_groups = [obs_group for critic in self.critics for obs_group in critic.obs_groups]  # type: ignore
+        self._obs_groups = list(dict.fromkeys(self.actor.obs_groups + critic_obs_groups))
+        self._nonfinite_final_obs = torch.zeros(len(self._obs_groups), dtype=torch.bool, device=self.device)
+
         # Initialize update counters, actor state, and collection graphs
         self.num_env_steps = 0
         self.num_critic_updates = 0
@@ -236,8 +241,7 @@ class SAC:
         # Resolve termination flags and observation groups
         done_mask = dones.reshape(-1).bool()
         time_outs = extras.get("time_outs", torch.zeros_like(done_mask)).to(self.device).reshape(-1).bool()
-        critic_obs_groups = [obs_group for critic in self.critics for obs_group in critic.obs_groups]  # type: ignore
-        groups = list(dict.fromkeys(self.actor.obs_groups + critic_obs_groups))
+        groups = self._obs_groups
         final_obs = extras.get("final_obs")
         if final_obs is None:
             if done_mask.any():
@@ -274,6 +278,11 @@ class SAC:
 
     def update(self) -> tuple[dict[str, float], dict[str, float]]:
         """Update normalizers and models from replay samples and return mean losses and statistics."""
+        # Reject training on transitions whose consumed final observations are not finite
+        if self._nonfinite_final_obs.any():
+            groups = [group for group, flag in zip(self._obs_groups, self._nonfinite_final_obs.tolist()) if flag]
+            raise ValueError(f"SAC received nonfinite final_obs in observation groups {groups}.")
+
         # Update the observation normalizers using the transitions collected since the last update
         if self._num_steps_since_update:
             observations = self.storage.latest_observations(self._num_steps_since_update)
@@ -533,6 +542,14 @@ class SAC:
             batch_size=next_observations.batch_size,
         )
 
+        # Record final observations of completed episodes that are not finite; update() rejects them
+        nonfinite = []
+        for key in self._obs_groups:
+            value = final_observations[key]
+            mask = dones.reshape(-1, *([1] * (value.ndim - 1)))
+            nonfinite.append(~(torch.isfinite(value) | ~mask).all())
+        self._nonfinite_final_obs.logical_or_(torch.stack(nonfinite))
+
         # Record the transition
         transition = ReplayBuffer.Transition()
         transition.observations = observations
@@ -612,6 +629,19 @@ class SAC:
 
     def _gradient_step(self, batch: _Batch, update_actor: bool) -> dict[str, torch.Tensor]:
         """Perform one fixed-shape optimizer step."""
+        # Replace successors that are not finite with the current observations where they are not bootstrapped
+        finite_successors = torch.stack([
+            torch.isfinite(value).flatten(1).all(dim=1) for value in batch.next_observations.values()
+        ]).all(dim=0)
+        use_successors = (batch.bootstrap_discounts != 0) | finite_successors
+        batch.next_observations = TensorDict(
+            {
+                key: torch.where(use_successors.reshape(-1, *([1] * (value.ndim - 1))), value, batch.observations[key])
+                for key, value in batch.next_observations.items()
+            },
+            batch_size=batch.next_observations.batch_size,
+        )
+
         # Update the actor and temperature before the critics
         stats = self._update_actor_and_alpha(batch) if update_actor else {}
         stats.update(self._update_critics(batch))
