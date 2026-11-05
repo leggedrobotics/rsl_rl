@@ -10,6 +10,7 @@ import copy
 import functools
 import math
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -21,7 +22,14 @@ from rsl_rl.extensions import Symmetry, resolve_symmetry_config
 from rsl_rl.models import CNNModel, MLPModel, QMLPModel
 from rsl_rl.modules import EmpiricalNormalization, SquashedGaussianDistribution
 from rsl_rl.storage import ReplayBuffer
-from rsl_rl.utils import CudaGraphCallable, compile_model, resolve_class, resolve_obs_groups, resolve_optimizer
+from rsl_rl.utils import (
+    CudaGraphCallable,
+    compile_model,
+    reduce_gradients_in_buckets,
+    resolve_class,
+    resolve_obs_groups,
+    resolve_optimizer,
+)
 
 
 class SAC:
@@ -93,11 +101,23 @@ class SAC:
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        grad_reduce_bucket_mb: float = 25,
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
         # Not yet implemented features
-        if multi_gpu_cfg is not None:
-            raise NotImplementedError("Multi-GPU training is not yet supported for SAC.")
+        self.is_multi_gpu = multi_gpu_cfg is not None
+        self.gpu_global_rank = multi_gpu_cfg["global_rank"] if multi_gpu_cfg is not None else 0
+        self.gpu_world_size = multi_gpu_cfg["world_size"] if multi_gpu_cfg is not None else 1
+        self.grad_reduce_bucket_mb = grad_reduce_bucket_mb
+        if not math.isfinite(grad_reduce_bucket_mb) or grad_reduce_bucket_mb <= 0:
+            raise ValueError("grad_reduce_bucket_mb must be positive and finite.")
+        if self.is_multi_gpu:
+            if not dist.is_initialized():
+                raise ValueError("Distributed SAC requires an initialized process group.")
+            if dist.get_world_size() != self.gpu_world_size or dist.get_rank() != self.gpu_global_rank:
+                raise ValueError("SAC multi_gpu_cfg does not match the initialized process group.")
+            if use_cuda_graph:
+                raise ValueError("Distributed SAC does not support CUDA graph capture; set use_cuda_graph=False.")
         if actor.is_recurrent or any(critic.is_recurrent for critic in critics):
             raise ValueError("SAC does not yet support recurrent models.")
         if isinstance(actor, CNNModel):
@@ -206,6 +226,7 @@ class SAC:
         critic_obs_groups = [obs_group for critic in self.critics for obs_group in critic.obs_groups]  # type: ignore
         self._obs_groups = list(dict.fromkeys(self.actor.obs_groups + critic_obs_groups))
         self._nonfinite_final_obs = torch.zeros(len(self._obs_groups), dtype=torch.bool, device=self.device)
+        self._missing_final_obs = torch.zeros((), dtype=torch.bool, device=self.device)
 
         # Initialize update counters, actor state, and collection graphs
         self.num_env_steps = 0
@@ -217,6 +238,7 @@ class SAC:
 
         # Configure optimizer state for CUDA graph capture
         self._configure_optimizer_capture()
+        self.broadcast_parameters()
 
     @torch.no_grad()
     def act(self, obs: TensorDict) -> torch.Tensor:
@@ -244,8 +266,7 @@ class SAC:
         groups = self._obs_groups
         final_obs = extras.get("final_obs")
         if final_obs is None:
-            if done_mask.any():
-                raise ValueError("SAC requires extras['final_obs'] on every step containing a done.")
+            self._missing_final_obs.logical_or_(done_mask.any())
             final_obs = obs
 
         # Record the transition and update the episode state
@@ -278,10 +299,16 @@ class SAC:
 
     def update(self) -> tuple[dict[str, float], dict[str, float]]:
         """Update normalizers and models from replay samples and return mean losses and statistics."""
-        # Reject training on transitions whose consumed final observations are not finite
-        if self._nonfinite_final_obs.any():
-            groups = [group for group, flag in zip(self._obs_groups, self._nonfinite_final_obs.tolist()) if flag]
-            raise ValueError(f"SAC received nonfinite final_obs in observation groups {groups}.")
+        # Reject training on missing or nonfinite final observations, consistently across ranks
+        errors = torch.cat([self._missing_final_obs.view(1), self._nonfinite_final_obs]).long()
+        if self.is_multi_gpu:
+            dist.all_reduce(errors, op=dist.ReduceOp.MAX)
+        missing, *nonfinite = errors.tolist()
+        if missing:
+            raise ValueError("SAC requires extras['final_obs'] on every step containing a done (on every rank).")
+        if any(nonfinite):
+            groups = [group for group, flag in zip(self._obs_groups, nonfinite) if flag]
+            raise ValueError(f"SAC received nonfinite final_obs in observation groups {groups} on at least one rank.")
 
         # Update the observation normalizers using the transitions collected since the last update
         if self._num_steps_since_update:
@@ -290,9 +317,16 @@ class SAC:
             for critic in self.critics:
                 critic.update_normalization(observations)  # type: ignore
             self._num_steps_since_update = 0
+        if self.is_multi_gpu:
+            dist.all_reduce(self._max_abs_return, op=dist.ReduceOp.MAX)
 
         # Wait until enough transitions have been collected
-        if self.storage.size < self.num_warmup_transitions or not self.storage.size:
+        ready = self.storage.size >= self.num_warmup_transitions and self.storage.size > 0
+        if self.is_multi_gpu:
+            ready_tensor = torch.tensor(ready, device=self.device, dtype=torch.long)
+            dist.all_reduce(ready_tensor, op=dist.ReduceOp.MIN)
+            ready = bool(ready_tensor)
+        if not ready:
             return {}, self._get_learning_rate_stats() | _to_floats(self._get_model_stats())
 
         # Run all gradient updates of this iteration, captured as a single CUDA graph if enabled
@@ -462,6 +496,42 @@ class SAC:
         alg.compile(cfg.get("torch_compile_mode"))
 
         return alg
+
+    @torch.no_grad()
+    def broadcast_parameters(self) -> None:
+        """Synchronize online models, targets, normalizers, temperature and update counters from rank zero."""
+        if not self.is_multi_gpu:
+            return
+        for model in (self._raw_actor, self._raw_critics, self.target_critics, self._return_normalizer):
+            for tensor in model.state_dict().values():
+                dist.broadcast(tensor, src=0)
+        dist.broadcast(self.log_alpha, src=0)
+        dist.broadcast(self._max_abs_return, src=0)
+        counters = torch.tensor(
+            [self.num_env_steps, self.num_critic_updates, int(self._actor_loaded)], device=self.device
+        )
+        dist.broadcast(counters, src=0)
+        self.num_env_steps, self.num_critic_updates, actor_loaded = counters.tolist()
+        self._num_critic_updates_tensor.fill_(self.num_critic_updates)
+        self._actor_loaded = bool(actor_loaded)
+
+    def reduce_parameters(self, optimizer: torch.optim.Optimizer) -> None:
+        """Average optimizer gradients across ranks before clipping and stepping."""
+        if self.is_multi_gpu:
+            parameters = (parameter for group in optimizer.param_groups for parameter in group["params"])
+            reduce_gradients_in_buckets(parameters, self.gpu_world_size, self.grad_reduce_bucket_mb)
+
+    @torch.no_grad()
+    def _synchronize_batch_norm_buffers(self) -> None:
+        """Average local running statistics; forward passes still use local minibatch statistics."""
+        if not self.is_multi_gpu:
+            return
+        for layer in self._actor_batch_norms + self._critic_batch_norms + self._target_batch_norms:
+            for buffer in layer.buffers():
+                floating = buffer.is_floating_point()
+                dist.all_reduce(buffer, op=dist.ReduceOp.SUM if floating else dist.ReduceOp.MAX)
+                if floating:
+                    buffer.div_(self.gpu_world_size)
 
     def _sample_batch(self) -> _Batch:
         """Build n-step returns, bootstrapping from the next state of the last valid transition."""
@@ -646,6 +716,7 @@ class SAC:
         stats = self._update_actor_and_alpha(batch) if update_actor else {}
         stats.update(self._update_critics(batch))
         self._update_target_critics()
+        self._synchronize_batch_norm_buffers()
         return stats
 
     def _update_actor_and_alpha(self, batch: _Batch) -> dict[str, torch.Tensor]:
@@ -687,6 +758,7 @@ class SAC:
         # Apply the gradients for the actor
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
+        self.reduce_parameters(self.actor_optimizer)
         if self.max_grad_norm is not None:
             nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
         self.actor_optimizer.step()
@@ -697,6 +769,7 @@ class SAC:
         alpha_loss = self.log_alpha.exp() * (entropy - self.target_entropy)
         self.alpha_optimizer.zero_grad(set_to_none=True)
         alpha_loss.backward()
+        self.reduce_parameters(self.alpha_optimizer)
         self.alpha_optimizer.step()
 
         # Store the losses and sampled entropy
@@ -750,6 +823,7 @@ class SAC:
         # Apply the gradients for the critics
         self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
+        self.reduce_parameters(self.critic_optimizer)
         if self.max_grad_norm is not None:
             nn.utils.clip_grad_norm_(self.critics.parameters(), self.max_grad_norm)
         self.critic_optimizer.step()
