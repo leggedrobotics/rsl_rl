@@ -413,6 +413,42 @@ SAC
      - dict | None
      - ``None``
      - Optional symmetry extension configuration.
+   * - ``grad_reduce_bucket_mb``
+     - float
+     - ``25``
+     - Maximum gradient-reduction buffer size in megabytes for distributed training.
+
+SAC distributed training
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+``OffPolicyRunner`` uses the same ``torchrun``/NCCL setup as ``OnPolicyRunner``. Pass
+``device=f"cuda:{os.environ['LOCAL_RANK']}"`` to each runner and create its environments on that device.
+The standalone algorithm also accepts an already initialized Gloo process group for CPU execution via ``multi_gpu_cfg``.
+Set ``use_cuda_graph=False`` for distributed SAC; collective capture is explicitly unsupported.
+
+Replay capacity, warm-up transitions, and batch size are per rank. Every rank must use the same model and algorithm
+configuration and call collection and updates in the same order. An update starts only when every rank's replay is
+ready. Actor, critic, target, temperature, and normalizer state are initially broadcast from rank zero. Actor, critic,
+and temperature gradients are averaged before clipping or stepping. Observation and return normalizers compute global
+sample-weighted moments; the return-magnitude bound uses a global maximum. BatchNorm forward passes use local minibatch
+statistics, with running floating-point buffers averaged and integer counters synchronized after each learner step.
+This is not SyncBatchNorm.
+
+On resume, all ranks must load the same checkpoint and load configuration, including optimizer and scheduler state
+when continuing training. Replay and environment trajectories remain local and are not checkpointed; each rank refills
+replay before updates resume. Actor/critic update counters and schedules are restored from the checkpoint.
+
+SAC final observations
+~~~~~~~~~~~~~~~~~~~~~~
+
+The consumed ``final_obs`` rows must be finite for both hard terminals and timeouts. Invalid final rows are rejected
+before replay insertion; distributed SAC propagates this error to all ranks. Unused rows for environments that did not
+reset are ignored. Timeouts bootstrap from their final pre-reset observation. Hard terminals have zero bootstrap
+discount. Before learner forward passes, nonfinite terminal successor inputs are replaced by the corresponding current
+observations, so invalid terminal successors from externally populated replay cannot enter actor/critic forwards or
+BatchNorm statistics. Finite terminal successor inputs retain the original BatchNorm behavior. This replacement
+preserves fixed batch shapes for single-device CUDA graphs.
+
 
 Distillation
 ^^^^^^^^^^^^
