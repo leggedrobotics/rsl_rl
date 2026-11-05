@@ -165,6 +165,58 @@ class CNNModel(MLPModel):
         return self.obs_dim + self.cnn_latent_dim
 
 
+class QCNNModel(CNNModel):
+    """CNN-based state-action value model with actions concatenated after image encoding."""
+
+    def __init__(
+        self,
+        obs: TensorDict,
+        obs_groups: dict[str, list[str]],
+        obs_set: str,
+        output_dim: int,
+        action_dim: int,
+        hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
+        activation: str = "elu",
+        obs_normalization: bool = False,
+        network_cfg: dict | None = None,
+        distribution_cfg: dict | None = None,
+        cnn_cfg: dict[str, dict] | dict[str, Any] | None = None,
+        cnns: nn.ModuleDict | dict[str, nn.Module] | None = None,
+    ) -> None:
+        """Initialize CNN encoders and a Q head consuming encoded observations and runtime actions."""
+        if distribution_cfg is not None:
+            raise ValueError("The QCNNModel does not support an output distribution.")
+        self.action_dim = action_dim
+        super().__init__(
+            obs,
+            obs_groups,
+            obs_set,
+            output_dim,
+            hidden_dims=hidden_dims,
+            activation=activation,
+            obs_normalization=obs_normalization,
+            network_cfg=network_cfg,
+            cnn_cfg=cnn_cfg,
+            cnns=cnns,
+        )
+
+    def forward(self, obs: TensorDict, actions: torch.Tensor) -> torch.Tensor:
+        """Evaluate Q while retaining gradients through actions and image encoders."""
+        return self.mlp(torch.cat([self.get_latent(obs), actions], dim=-1))
+
+    def _get_latent_dim(self) -> int:
+        """Return the combined vector observation, image latent and action dimension."""
+        return super()._get_latent_dim() + self.action_dim
+
+    def as_jit(self) -> nn.Module:
+        """Reject the actor-only TorchScript export interface for state-action critics."""
+        raise NotImplementedError("QCNNModel does not support TorchScript export.")
+
+    def as_onnx(self) -> nn.Module:
+        """Reject the actor-only ONNX export interface for state-action critics."""
+        raise NotImplementedError("QCNNModel does not support ONNX export.")
+
+
 class _TorchCNNModel(nn.Module):
     """Exportable CNN model for JIT."""
 
