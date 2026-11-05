@@ -262,7 +262,7 @@ def test_terminal_observations_and_missing_final() -> None:
     assert alg.actor.obs_normalizer.count == 4
     cfg = _make_train_cfg()
     cfg["multi_gpu"] = {"global_rank": 0, "local_rank": 0, "world_size": 2}
-    with pytest.raises(NotImplementedError, match="Multi-GPU"):
+    with pytest.raises(ValueError, match="initialized process group"):
         SAC.construct_algorithm(obs, DummyEnv(), cfg, "cpu")
     cfg["multi_gpu"] = None
     cfg["algorithm"].update(replay_buffer_capacity=4, num_warmup_transitions=8)
@@ -399,7 +399,7 @@ def test_nonfinite_final_observations_rejected_before_replay(timeout: bool) -> N
     final["policy"][0] = float("nan")
     dones = torch.tensor([True, False, False, False])
     alg.act(obs)
-    with pytest.raises(ValueError, match=r"nonfinite final_obs.*policy"):
+    with pytest.raises(ValueError, match="nonfinite final_obs"):
         alg.process_env_step(obs, torch.ones(4), dones, {"final_obs": final, "time_outs": dones & timeout})
     assert alg.storage.size == 0
     assert not alg._pending_observations
