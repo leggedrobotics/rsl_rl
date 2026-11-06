@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import copy
 import math
 import torch
+import warnings
 from collections.abc import Generator
 from contextlib import contextmanager
 from tensordict import TensorDict
@@ -70,6 +72,7 @@ class SuperMimic:
         warmup_steps: int = 64,
         world_model_warmup_iterations: int = 500,
         action_noise: float = 0.1,
+        actor_ema_halflife: int | None = None,
         max_step_reward: float | None = None,
         use_mixed_precision: bool = False,
         max_grad_norm: float = 1.0,
@@ -79,6 +82,7 @@ class SuperMimic:
         """Initialize explicit task, models, replay and gradient-update cadence.
 
         Actor gradients also have a fixed elementwise clip of 0.1. The actor Adam optimizer uses betas (0.9, 0.95).
+        When enabled, the deployment EMA uses decay ``min(0.5 ** (1 / h), (1 + n) / (10 + n))`` after actor step n.
 
         Args:
             actor: History-conditioned deployment actor.
@@ -104,6 +108,8 @@ class SuperMimic:
             warmup_steps: Stored steps per environment required before learning.
             world_model_warmup_iterations: Learner iterations fitting only dynamics.
             action_noise: Standard deviation of additive collection noise.
+            actor_ema_halflife: Deployment-only actor exponential moving average (EMA) half-life in actor optimizer
+                steps, e.g. 500. None disables it; use the same setting for training and deployment.
             max_step_reward: Optional per-step reward bound used to cap values at the maximum discounted return.
             use_mixed_precision: Enable BF16 matrix operations while integrating physical states in FP32.
             max_grad_norm: Global gradient-norm limit for each model.
@@ -134,6 +140,8 @@ class SuperMimic:
             raise ValueError("Invalid discount, lambda or final learning-rate ratio.")
         if action_noise < 0:
             raise ValueError("Action noise must be nonnegative.")
+        if actor_ema_halflife is not None and actor_ema_halflife < 1:
+            raise ValueError("actor_ema_halflife must be positive or None.")
         self.actor, self.world_model, self.critic = actor.to(device), world_model.to(device), critic.to(device)
         self._raw_critic = self.critic
         self.storage, self.task, self.obs_groups = storage, task, obs_groups
@@ -168,6 +176,10 @@ class SuperMimic:
         self._collected_steps = 0
         self._world_model_forward = self.world_model
         self._actor_forward = self.actor.forward_history
+        self.actor_ema_halflife = actor_ema_halflife
+        self.actor_ema = None if actor_ema_halflife is None else [p.detach().clone() for p in self.actor.parameters()]
+        self.actor_ema_updates = 0
+        self._actor_ema_policy: SuperMimicActor | None = None
 
     def _set(self, obs: TensorDict, name: str) -> torch.Tensor:
         """Read an explicit observation set with no policy-group fallback."""
@@ -388,7 +400,16 @@ class SuperMimic:
             nn.utils.clip_grad_value_(module.parameters(), clip_value)
         if torch.isfinite(norm):
             optimizer.step()
+            if name == "actor" and self.actor_ema is not None:
+                self._update_actor_ema()
         return norm.detach()
+
+    @torch.no_grad()
+    def _update_actor_ema(self) -> None:
+        """Average the live actor only after a successful optimizer step."""
+        self.actor_ema_updates += 1
+        decay = min(0.5 ** (1 / self.actor_ema_halflife), (1 + self.actor_ema_updates) / (10 + self.actor_ema_updates))
+        torch._foreach_lerp_(self.actor_ema, list(self.actor.parameters()), 1 - decay)
 
     def update(self) -> dict[str, float]:
         """Run accumulated learner updates; the runner's collection cadence remains external."""
@@ -439,9 +460,22 @@ class SuperMimic:
         self.world_model.eval()
         self.critic.eval()
 
+    @torch.no_grad()
     def get_policy(self) -> SuperMimicActor:
-        """Return the real-observation actor with stateless deployable export methods."""
-        return self.actor
+        """Return deployment weights, using the optional EMA with live normalization and collection-noise buffers."""
+        if self.actor_ema is None:
+            return self.actor
+        if self._actor_ema_policy is None:
+            with torch.inference_mode(False):
+                self._actor_ema_policy = copy.deepcopy(
+                    self.actor, {id(self.actor.task): self.actor.task}
+                ).requires_grad_(False)
+        policy = self._actor_ema_policy.eval()
+        for parameter, average in zip(policy.parameters(), self.actor_ema):
+            parameter.copy_(average)
+        for target, source in zip(policy.buffers(), self.actor.buffers()):
+            target.copy_(source)
+        return policy
 
     def default_load_cfg(self, loaded_dict: dict) -> dict:
         """Select an explicit full learner checkpoint, including the world model."""
@@ -449,13 +483,20 @@ class SuperMimic:
 
     def save(self) -> dict:
         """Save all trainable state; replay and simulator collection state are deliberately excluded."""
-        return {
+        saved = {
             "actor_state_dict": self.actor.state_dict(),
             "critic_state_dict": self._raw_critic.state_dict(),
             "world_model_state_dict": self.world_model.state_dict(),
             **{f"{key}_optimizer_state_dict": optimizer.state_dict() for key, optimizer in self.optimizers.items()},
             "iteration": self.iteration,
         }
+        if self.actor_ema is not None:
+            saved["actor_ema_state_dict"] = {
+                **saved["actor_state_dict"],
+                **dict(zip(dict(self.actor.named_parameters()), self.actor_ema)),
+            }
+            saved["actor_ema_updates"] = self.actor_ema_updates
+        return saved
 
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load an actor alone or a complete model selection; partial dynamics/critic restores are rejected."""
@@ -469,6 +510,17 @@ class SuperMimic:
         if not actor_only and "world_model_state_dict" not in loaded_dict:
             raise ValueError("A full SuperMimic checkpoint must explicitly contain world_model.")
         self.actor.load_state_dict(loaded_dict["actor_state_dict"], strict=strict)
+        if self.actor_ema is not None:
+            policy = self.get_policy()
+            policy.load_state_dict(loaded_dict.get("actor_ema_state_dict", self.actor.state_dict()), strict=strict)
+            with torch.no_grad():
+                for parameter, average in zip(policy.parameters(), self.actor_ema):
+                    average.copy_(parameter)
+            self.actor_ema_updates = (
+                loaded_dict.get("actor_ema_updates", 0) if "actor_ema_state_dict" in loaded_dict else 0
+            )
+        elif "actor_ema_state_dict" in loaded_dict:
+            warnings.warn("Checkpoint contains an actor EMA; set actor_ema_halflife to deploy it.", stacklevel=2)
         if not actor_only:
             self._raw_critic.load_state_dict(loaded_dict["critic_state_dict"], strict=strict)
             self.world_model.load_state_dict(loaded_dict["world_model_state_dict"], strict=strict)

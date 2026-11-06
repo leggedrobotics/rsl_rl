@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import torch
 from pathlib import Path
 from tensordict import TensorDict
@@ -251,6 +252,131 @@ def test_inference_device_moves_task_tensors() -> None:
     assert learner.task.offset.device.type == "meta"
 
 
+@pytest.mark.parametrize(
+    "device",
+    ["cpu", pytest.param("cuda:0", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable"))],
+)
+def test_actor_ema_is_passive_over_five_updates(device: str) -> None:
+    """Averaging and deployment queries preserve live models, optimizers, actions, losses and RNG exactly."""
+
+    def trajectory(halflife: int | None) -> list[tuple]:
+        torch.manual_seed(61)
+        env = ScalarEnv(device=device)
+        learner = _learner(env, updates_per_step=0.25, actor_ema_halflife=halflife)
+        result = []
+        for _ in range(5):
+            _collect(learner, env, 4)
+            metrics = learner.update()
+            torch.testing.assert_close(learner.get_policy().output_std, learner.actor.output_std, rtol=0, atol=0)
+            saved = copy.deepcopy(learner.save())
+            saved.pop("actor_ema_state_dict", None)
+            saved.pop("actor_ema_updates", None)
+            with torch.inference_mode():
+                action = learner.actor.forward_history(learner.actor.history, env.goal).clone()
+            result.append((saved, metrics, action, torch.get_rng_state(), torch.cuda.get_rng_state_all()))
+        assert learner.iteration == 5
+        if halflife is not None:
+            assert learner.actor_ema_updates == 5
+            assert any(not torch.equal(p, average) for p, average in zip(learner.actor.parameters(), learner.actor_ema))
+            for parameter, average in zip(learner.get_policy().parameters(), learner.actor_ema):
+                torch.testing.assert_close(parameter, average, rtol=0, atol=0)
+        return result
+
+    torch.testing.assert_close(trajectory(None), trajectory(500), rtol=0, atol=0)
+
+
+def test_actor_ema_matches_closed_form_and_keeps_live_buffers() -> None:
+    """Warm-start averaging follows its weighted sum; deployment synchronizes buffers without mutating training."""
+    from threading import Lock
+
+    learner = _learner(actor_ema_halflife=1)
+    learner.task.handle = Lock()
+    with torch.no_grad():
+        for average in learner.actor_ema:
+            average.zero_()
+        for value in range(1, 13):
+            for parameter in learner.actor.parameters():
+                parameter.fill_(value)
+            learner._update_actor_ema()
+    decays = [min(0.5, (1 + n) / (10 + n)) for n in range(1, 13)]
+    expected = sum((i + 1) * (1 - decay) * math.prod(decays[i + 1 :]) for i, decay in enumerate(decays))
+    with torch.inference_mode():
+        policy = learner.get_policy()
+    assert policy.task is learner.task
+    for parameter in policy.parameters():
+        torch.testing.assert_close(parameter, torch.full_like(parameter, expected))
+        assert not parameter.is_inference()
+    learner.actor.obs_norm.update(torch.randn(4, 2))
+    learner.actor.noise_std.fill_(0.3)
+    policy = learner.get_policy()
+    for target, source in zip(policy.buffers(), learner.actor.buffers()):
+        torch.testing.assert_close(target, source, rtol=0, atol=0)
+    assert not policy.training and learner.actor.training
+    before = copy.deepcopy(learner.save())
+    loss = sum(p.sum() for p in learner.actor.parameters()) * float("nan")
+    learner._apply(loss, "actor", learner.actor)
+    torch.testing.assert_close(learner.save(), before, rtol=0, atol=0)
+
+
+def test_actor_ema_closed_form_after_optimizer_steps() -> None:
+    """The average uses post-step parameters and reaches the half-life decay after warm-up."""
+    learner = _learner(actor_ema_halflife=2)
+    parameter = next(learner.actor.parameters())
+    initial, steps = parameter.detach().double().clone(), []
+    for _ in range(30):
+        learner._apply(sum(p.sum() for p in learner.actor.parameters()), "actor", learner.actor, clip_value=0.1)
+        steps.append(parameter.detach().double().clone())
+    decays = [min(0.5**0.5, (1 + n) / (10 + n)) for n in range(1, 31)]
+    expected = initial * math.prod(decays) + sum(
+        value * (1 - decay) * math.prod(decays[i + 1 :]) for i, (value, decay) in enumerate(zip(steps, decays))
+    )
+    assert learner.actor_ema_updates == 30
+    torch.testing.assert_close(learner.actor_ema[0], expected.float(), rtol=1e-6, atol=1e-7)
+
+
+def test_actor_ema_checkpoint_full_actor_only_and_legacy_loads() -> None:
+    """Full and actor-only loads restore EMA; legacy or disabled loads keep the live policy usable."""
+    learner, env = _learner(actor_ema_halflife=500), ScalarEnv()
+    _collect(learner, env, 4)
+    learner.update()
+    saved = copy.deepcopy(learner.save())
+    for selection in (None, {"actor": True}):
+        restored = _learner(actor_ema_halflife=500)
+        restored.load(saved, selection, strict=True)
+        assert restored.actor_ema_updates == learner.actor_ema_updates
+        torch.testing.assert_close(restored.get_policy().state_dict(), saved["actor_ema_state_dict"], rtol=0, atol=0)
+        if selection is None:
+            torch.testing.assert_close(restored.save(), saved, rtol=0, atol=0)
+        else:
+            assert not any(optimizer.state for optimizer in restored.optimizers.values())
+            assert restored.iteration == 0
+    disabled = _learner()
+    with pytest.warns(UserWarning, match="actor EMA; set actor_ema_halflife"):
+        disabled.load(saved, {"actor": True}, strict=True)
+    torch.testing.assert_close(disabled.get_policy().state_dict(), saved["actor_state_dict"], rtol=0, atol=0)
+    assert "actor_ema_state_dict" not in disabled.save()
+    legacy = {key: value for key, value in saved.items() if not key.startswith("actor_ema")}
+    restored.load(legacy, {"actor": True}, strict=True)
+    assert restored.actor_ema_updates == 0
+    torch.testing.assert_close(restored.get_policy().state_dict(), legacy["actor_state_dict"], rtol=0, atol=0)
+    fresh = _learner(actor_ema_halflife=500)
+    fresh.load(legacy, {"actor": True}, strict=True)
+    assert fresh.actor_ema_updates == 0
+    torch.testing.assert_close(fresh.get_policy().state_dict(), legacy["actor_state_dict"], rtol=0, atol=0)
+    malformed = copy.deepcopy(saved)
+    name = next(iter(dict(learner.actor.named_parameters())))
+    malformed["actor_ema_state_dict"][name] = torch.zeros(1, 1)
+    with pytest.raises(RuntimeError, match="size mismatch"):
+        restored.load(malformed, {"actor": True}, strict=True)
+
+
+@pytest.mark.parametrize("halflife", [0, -1])
+def test_actor_ema_rejects_nonpositive_halflife(halflife: int) -> None:
+    """An enabled EMA requires a positive half-life."""
+    with pytest.raises(ValueError, match="actor_ema_halflife"):
+        _learner(actor_ema_halflife=halflife)
+
+
 def test_learning_rate_tracks_learner_iterations_and_resume() -> None:
     """All optimizers share one clamped schedule despite unequal update counts."""
     learner, env = _learner(lr_decay_iterations=8, num_world_model_updates=2), ScalarEnv()
@@ -338,23 +464,34 @@ def test_value_cap_bounds_policy_bootstrap_and_critic_targets() -> None:
     assert 2.0 < learner.critic.mlp.output.bias.item() < 10.0
 
 
-@pytest.mark.parametrize(("load_optimizer", "goal_dim"), [(False, 0), (False, 1), (True, 1)])
-def test_checkpoint_normalized_jit_and_onnx(tmp_path: Path, load_optimizer: bool, goal_dim: int) -> None:
+@pytest.mark.parametrize(
+    ("load_optimizer", "goal_dim", "halflife"), [(False, 0, None), (False, 1, 500), (True, 1, None)]
+)
+def test_checkpoint_normalized_jit_and_onnx(
+    tmp_path: Path, load_optimizer: bool, goal_dim: int, halflife: int | None
+) -> None:
     """Full loads, fresh optimizers and stateless deployment preserve normalized policy outputs."""
-    runner = OffPolicyRunner(ScalarEnv(goal_dim=goal_dim), _cfg(), str(tmp_path / "logs"))
+    from onnx.reference import ReferenceEvaluator
+
+    runner = OffPolicyRunner(ScalarEnv(goal_dim=goal_dim), _cfg(actor_ema_halflife=halflife), str(tmp_path / "logs"))
     runner.learn(2)
     checkpoint = str(tmp_path / "learner.pt")
     runner.save(checkpoint)
-    restored = OffPolicyRunner(ScalarEnv(goal_dim=goal_dim), _cfg())
+    restored = OffPolicyRunner(ScalarEnv(goal_dim=goal_dim), _cfg(actor_ema_halflife=halflife))
     restored.load(checkpoint, load_optimizer=load_optimizer)
     assert restored.alg.iteration == runner.alg.iteration
     assert restored.alg.learning_rate == runner.alg.learning_rate
     assert restored.alg.storage.num_steps == 0 and not restored.alg.actor.history.any()
     for key in runner.alg.optimizers:
         assert bool(restored.alg.optimizers[key].state) is load_optimizer
+    policy = restored.get_inference_policy()
     history, goal = torch.randn(4, 2, 2), torch.randn(4, goal_dim)
-    runner.export_policy_to_jit(str(tmp_path))
-    runner.export_policy_to_onnx(str(tmp_path))
+    expected = policy.forward_history(history, goal)
+    torch.testing.assert_close(expected, runner.get_inference_policy().forward_history(history, goal), rtol=0, atol=0)
+    if halflife is not None:
+        assert not torch.equal(expected, restored.alg.actor.forward_history(history, goal))
+    restored.export_policy_to_jit(str(tmp_path))
+    restored.export_policy_to_onnx(str(tmp_path))
     onnx_model = onnx.load(str(tmp_path / "policy.onnx"))
     onnx.checker.check_model(onnx_model)
     assert [value.name for value in onnx_model.graph.input] == (
@@ -362,7 +499,25 @@ def test_checkpoint_normalized_jit_and_onnx(tmp_path: Path, load_optimizer: bool
     )
     exported = torch.jit.load(str(tmp_path / "policy.pt"))
     inputs = (history, goal) if goal_dim else (history,)
-    torch.testing.assert_close(exported(*inputs), runner.alg.actor.forward_history(history, goal))
+    torch.testing.assert_close(exported(*inputs), expected)
+    evaluator = ReferenceEvaluator(onnx_model)
+    actual = evaluator.run(None, dict(zip(evaluator.input_names, [value[:1].numpy() for value in inputs])))[0]
+    torch.testing.assert_close(torch.from_numpy(actual), expected[:1])
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_actor_ema_cpu_inference_survives_exports_from_cuda_runner(tmp_path: Path) -> None:
+    """Export and logging queries preserve the device of a returned inference policy."""
+    runner = OffPolicyRunner(ScalarEnv(device="cuda:0"), _cfg(actor_ema_halflife=500), device="cuda:0")
+    policy = runner.get_inference_policy(device="cpu")
+    sample = runner.env.get_observations().cpu()
+    with torch.inference_mode():
+        runner.export_policy_to_jit(str(tmp_path))
+        runner.export_policy_to_onnx(str(tmp_path))
+        torch.testing.assert_close(runner.alg.get_policy().output_std, runner.alg.actor.output_std.cpu())
+        assert policy(sample).shape == (4, 1)
+    assert all(p.device.type == "cpu" and not p.is_inference() for p in policy.parameters())
+    assert runner.alg.actor.history.device.type == "cuda"
 
 
 def test_checkpoint_selection_dimensions_and_strictness() -> None:
