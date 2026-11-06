@@ -624,6 +624,17 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
      - int
      - ``250000``
      - Shared cosine duration in learner iterations.
+   * - ``actor_ema_halflife``
+     - int | None
+     - ``None``
+     - Deployment-only actor exponential moving average (EMA) half-life in actor optimizer steps, e.g. ``500``.
+
+When enabled, inference and JIT/ONNX exports use EMA parameters with live normalization buffers.
+Collection and policy optimization keep using the live actor.
+After each successful actor step ``n``, the averaging decay is
+``min(0.5 ** (1 / h), (1 + n) / (10 + n))``, where ``h`` is the half-life and ``n`` starts at one.
+``None`` disables averaging. Use the same ``actor_ema_halflife`` setting for training and play/export.
+In Isaac Lab, pass ``agent.algorithm.actor_ema_halflife=500`` to play with or export that EMA actor.
 
 Model Configuration
 -------------------

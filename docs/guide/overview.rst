@@ -334,3 +334,9 @@ Full checkpoints contain ``actor_state_dict``, ``critic_state_dict``, ``world_mo
 ``runner.load(path, load_optimizer=False)`` loads all models and counters with fresh optimizers. For deployment use
 ``runner.load(path, load_cfg={"actor": True})``; other partial model selections are rejected. Model state-dict loading
 checks tensor shapes. Task coordinate meaning must match the training configuration.
+
+With ``actor_ema_halflife`` enabled, checkpoints also contain ``actor_ema_state_dict`` and ``actor_ema_updates``.
+Full and actor-only loads restore the averaged parameters and successful actor-step count.
+Checkpoints without these keys initialize the average from the loaded live actor and reset its count to zero.
+Enable the same half-life for play/export to deploy the EMA with live normalization buffers.
+Loading an EMA checkpoint with averaging disabled warns and uses the live actor.
