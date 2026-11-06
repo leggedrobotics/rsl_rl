@@ -75,7 +75,7 @@ class EmpiricalNormalization(nn.Module):
         delta_mean = mean_x - self._mean
         self._mean += rate * delta_mean
         self._var += rate * (var_x - self._var + delta_mean * (mean_x - self._mean))
-        self._std = torch.sqrt(self._var)
+        self._std.copy_(torch.sqrt(self._var))
 
     @torch.jit.unused
     def inverse(self, y: torch.Tensor) -> torch.Tensor:

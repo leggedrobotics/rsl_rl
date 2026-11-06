@@ -6,10 +6,18 @@
 """Building blocks for neural models."""
 
 from .cnn import CNN
-from .distribution import BetaDistribution, Distribution, GaussianDistribution, HeteroscedasticGaussianDistribution
+from .distribution import (
+    BetaDistribution,
+    Distribution,
+    GaussianDistribution,
+    HeteroscedasticGaussianDistribution,
+    SquashedGaussianDistribution,
+)
 from .mlp import MLP
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
+from .residual_mlp import ResidualMLP
 from .rnn import RNN, HiddenState
+from .world_model import WorldModel
 
 __all__ = [
     "CNN",
@@ -22,4 +30,7 @@ __all__ = [
     "GaussianDistribution",
     "HeteroscedasticGaussianDistribution",
     "HiddenState",
+    "ResidualMLP",
+    "SquashedGaussianDistribution",
+    "WorldModel",
 ]

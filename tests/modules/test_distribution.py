@@ -314,3 +314,37 @@ class TestBetaDistribution:
         dist.log_prob(samples).sum().backward()
         assert mlp_output.grad is not None
         assert not torch.all(mlp_output.grad == 0)
+
+
+def test_squashed_gaussian_per_dimension_ranges_and_sample_gradients() -> None:
+    """Both density paths match a float64 change-of-variables reference and retain gradients."""
+    from rsl_rl.modules import SquashedGaussianDistribution
+
+    distribution = SquashedGaussianDistribution(2, action_range=([-2.0, 1.0], [4.0, 3.0]))
+    logits = torch.tensor([[[0.2, -0.3], [0.0, 0.1]]], requires_grad=True)
+    distribution.update(logits)
+    noise = torch.tensor([[0.5, -0.8]])
+    actions = distribution.sample(noise)
+    mean, std = (value.double() for value in distribution.params)
+    z = mean + std * noise.double()
+    reference = (
+        torch.distributions.Normal(mean, std).log_prob(z)
+        - torch.log1p(-z.tanh().square())
+        - torch.tensor([3.0, 1.0], dtype=torch.float64).log()
+    ).sum(-1)
+    log_probs = distribution.log_prob(actions)
+    torch.testing.assert_close(log_probs.double(), reference, atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(distribution.log_prob(actions.clone()).double(), reference, atol=1e-6, rtol=1e-6)
+    (actions.sum() + log_probs.sum()).backward()
+    assert logits.grad is not None and torch.isfinite(logits.grad).all()
+
+
+def test_squashed_gaussian_initial_standard_deviation() -> None:
+    """The optional initialization sets the learned std head independently of its inputs."""
+    from rsl_rl.modules import MLP, SquashedGaussianDistribution
+
+    distribution = SquashedGaussianDistribution(2, init_std=0.5)
+    mlp = MLP(3, [2, 2], [8], "elu")
+    distribution.init_mlp_weights(mlp)
+    distribution.update(mlp(torch.randn(4, 3)))
+    torch.testing.assert_close(distribution.std, torch.full((4, 2), 0.5))

@@ -229,3 +229,24 @@ class TestMLPModelExport:
             )
             loaded = onnx.load(f.name)
             onnx.checker.check_model(loaded)
+
+
+@pytest.mark.parametrize("distribution", ["HeteroscedasticGaussianDistribution", "BetaDistribution"])
+@pytest.mark.parametrize("network", [None, "ResidualMLP"])
+def test_composed_network_distribution_initialization(distribution: str, network: str | None) -> None:
+    """Every supported head initializes through the shared output projection interface."""
+    obs = make_obs(NUM_ENVS, OBS_DIM)
+    network_cfg = {"class_name": network, "hidden_dim": 16, "num_blocks": 1} if network else None
+    model = MLPModel(
+        obs,
+        OBS_GROUPS,
+        "actor",
+        NUM_ACTIONS,
+        hidden_dims=[16],
+        distribution_cfg={"class_name": distribution},
+        network_cfg=network_cfg,
+    )
+    outputs = model(obs, stochastic_output=True)
+    assert outputs.shape == (NUM_ENVS, NUM_ACTIONS)
+    assert torch.isfinite(outputs).all()
+    torch.jit.script(model.eval().as_jit())

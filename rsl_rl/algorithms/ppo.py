@@ -384,17 +384,14 @@ class PPO:
             saved_dict["rnd_update_counter"] = self.rnd.update_counter
         return saved_dict
 
+    def default_load_cfg(self, loaded_dict: dict) -> dict:
+        """Return the default checkpoint-loading selection."""
+        return {"actor": True, "critic": True, "optimizer": True, "iteration": True, "rnd": True}
+
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load specified models from a saved dict."""
-        # If no load_cfg is provided, load all models and states
         if load_cfg is None:
-            load_cfg = {
-                "actor": True,
-                "critic": True,
-                "optimizer": True,
-                "iteration": True,
-                "rnd": True,
-            }
+            load_cfg = self.default_load_cfg(loaded_dict)
 
         # Load the specified models
         if load_cfg.get("actor"):

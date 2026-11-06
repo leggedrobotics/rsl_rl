@@ -48,7 +48,7 @@ Key Features
 ------------
 
 - **Minimal, readable codebase** with clear extension points for rapid prototyping.
-- **Robotics-first methods** including PPO and Student-Teacher Distillation.
+- **Robotics-first methods** including PPO, SAC and Student-Teacher Distillation.
 - **High-throughput training** with native Multi-GPU support.
 - **Proven performance** in numerous research publications.
 
