@@ -89,3 +89,16 @@ class TestTimeSeries:
 
         assert "Train/mean_reward" in logger.writer.tags
         assert not any(tag.endswith("/time") for tag in logger.writer.tags)
+
+
+def test_episode_metrics_keep_inputs_and_skip_empty_samples(tmp_path: pathlib.Path) -> None:
+    """Mixed-rank samples contribute to one metric without modifying the source."""
+    logger = _make_logger(tmp_path)
+    extras = {"score": 2, "empty": torch.empty(0)}
+    logger.ep_extras = [extras, {"score": torch.tensor([[4], [6]])}]
+
+    _log(logger, 0)
+
+    assert "Episode/score" in logger.writer.tags
+    assert "Episode/empty" not in logger.writer.tags
+    assert isinstance(extras["score"], int)

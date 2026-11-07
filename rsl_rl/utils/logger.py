@@ -183,18 +183,18 @@ class Logger:
             if self.ep_extras:
                 # Iterate over all keys in the episode info dictionary
                 for key in dict.fromkeys(k for ep_info in self.ep_extras for k in ep_info):
-                    infotensor = torch.tensor([], device=self.device)
-                    # Iterate over all steps
+                    values = []
                     for ep_info in self.ep_extras:
-                        # Handle missing, scalar, and zero dimensional tensors
-                        if key not in ep_info:
-                            continue
-                        if not isinstance(ep_info[key], torch.Tensor):
-                            ep_info[key] = torch.Tensor([ep_info[key]])
-                        if len(ep_info[key].shape) == 0:
-                            ep_info[key] = ep_info[key].unsqueeze(0)
-                        infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
-                    value = torch.mean(infotensor)
+                        if key in ep_info:
+                            sample = torch.as_tensor(ep_info[key], device=self.device).detach().reshape(-1)
+                            if sample.numel():
+                                values.append(sample)
+                    if not values:
+                        continue
+                    samples = torch.cat(values)
+                    if not samples.is_floating_point() or samples.dtype in (torch.float16, torch.bfloat16):
+                        samples = samples.float()
+                    value = samples.mean()
                     if "/" in key:
                         self.writer.add_scalar(key, value, it)  # type: ignore
                         extras_string += f"""{f"{key}:":>{pad}} {value:.4f}\n"""
