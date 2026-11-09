@@ -26,7 +26,13 @@ class SAC:
     """Soft Actor-Critic algorithm.
 
     Inspired by FlashSAC, this algorithm supports categorical critics, reward normalization, temporally correlated
-    exploration noise, and residual actor and critic networks.
+    exploration noise, n-step returns, CUDA graph updates, and batch-normalized residual actor and critic networks
+    (:class:`~rsl_rl.modules.mlp.ResidualMLP`, selected through the model's ``network_cfg``).
+
+    The defaults are the single configuration that worked best across Isaac Lab locomotion benchmark tasks: categorical
+    critics, reward normalization, held exploration noise, 3-step returns, a discount of 0.98, and learning rates of
+    1e-4. Those runs also used residual networks and an action range of ``(-2.0, 2.0)``, which are configured in the
+    actor and critic model configurations.
 
     References:
         - Haarnoja et al. "Soft Actor-Critic Algorithms and Applications." arXiv preprint arXiv:1812.05905 (2018).
@@ -49,33 +55,33 @@ class SAC:
         critics: list[QMLPModel],
         storage: ReplayBuffer,
         # Update parameters
-        num_updates: int = 1,
-        batch_size: int = 256,
-        num_return_steps: int = 1,
-        gamma: float = 0.99,
-        tau: float = 0.005,
-        actor_update_interval: int = 1,
-        num_warmup_transitions: int = 1000,
+        num_updates: int = 16,
+        batch_size: int = 2048,
+        num_return_steps: int = 3,
+        gamma: float = 0.98,
+        tau: float = 0.01,
+        actor_update_interval: int = 2,
+        num_warmup_transitions: int = 100_000,
         # Optimizer parameters
-        actor_learning_rate: float = 0.0003,
-        critic_learning_rate: float = 0.0003,
-        alpha_learning_rate: float = 0.0003,
+        actor_learning_rate: float = 0.0001,
+        critic_learning_rate: float = 0.0001,
+        alpha_learning_rate: float = 0.0001,
         max_grad_norm: float | None = None,
         optimizer: str = "adam",
         weight_decay: float = 0.0,
         # Entropy parameters
-        init_alpha: float = 0.2,
+        init_alpha: float = 0.01,
         target_entropy: float | None = None,
-        target_entropy_std: float | None = None,
+        target_entropy_std: float | None = 0.15,
         # Critic loss parameters
-        critic_loss_type: str = "mse",
+        critic_loss_type: str = "categorical",
         num_bins: int = 101,
         value_range: tuple[float, float] = (-5.0, 5.0),
         # Reward normalization parameters
-        reward_normalization: bool = False,
+        reward_normalization: bool = True,
         reward_normalization_max_return: float = 5.0,
         # Exploration parameters
-        exploration_type: str = "gaussian",
+        exploration_type: str = "held",
         noise_repeat_exponent: float = 2.0,
         max_noise_repeat_steps: int = 16,
         # Learning rate schedule parameters
@@ -464,7 +470,7 @@ class SAC:
         print(f"Actor Model: {actor}")
         num_critics = alg_cfg.pop("num_critics", 2)  # Number of critics to use in the ensemble
         critic_output_dim = (
-            alg_cfg.get("num_bins", 101) if alg_cfg.get("critic_loss_type", "mse") == "categorical" else 1
+            alg_cfg.get("num_bins", 101) if alg_cfg.get("critic_loss_type", "categorical") == "categorical" else 1
         )
         critics = [
             critic_class(obs, cfg["obs_groups"], "critic", critic_output_dim, env.num_actions, **critic_cfg).to(device)
@@ -475,10 +481,10 @@ class SAC:
         # Initialize the storage
         storage = ReplayBuffer(
             env.num_envs,
-            alg_cfg.pop("replay_buffer_capacity", 100_000),
+            alg_cfg.pop("replay_buffer_capacity", 10_000_000),
             min_steps_per_env=max(
-                alg_cfg.get("num_return_steps", 1),
-                math.ceil(alg_cfg.get("num_warmup_transitions", 1000) / env.num_envs),
+                alg_cfg.get("num_return_steps", 3),
+                math.ceil(alg_cfg.get("num_warmup_transitions", 100_000) / env.num_envs),
             ),
             max_memory_fraction=alg_cfg.pop("max_replay_memory_fraction", None),
             device=device,

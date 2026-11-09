@@ -273,7 +273,7 @@ SAC
      - Number of state-action critics. 
    * - ``replay_buffer_capacity``
      - int
-     - ``100000``
+     - ``10000000``
      - Number of transitions that can be stored in the replay buffer.
    * - ``max_replay_memory_fraction``
      - float | None
@@ -281,43 +281,43 @@ SAC
      - Maximum fraction of free GPU memory used for the replay buffer.
    * - ``num_updates``
      - int
-     - ``1``
+     - ``16``
      - Number of optimization steps per iteration.
    * - ``batch_size``
      - int
-     - ``256``
+     - ``2048``
      - Number of transitions sampled per optimization step.
    * - ``num_return_steps``
      - int
-     - ``1``
+     - ``3``
      - Maximum number of environment steps used to compute return targets.
    * - ``gamma``
      - float
-     - ``0.99``
+     - ``0.98``
      - Discount factor.
    * - ``tau``
      - float
-     - ``0.005``
+     - ``0.01``
      - Interpolation factor for updating the target critics.
    * - ``actor_update_interval``
      - int
-     - ``1``
+     - ``2``
      - Number of critic updates per actor update.
    * - ``num_warmup_transitions``
      - int
-     - ``1000``
+     - ``100000``
      - Minimum number of transitions in the replay buffer before optimization starts.
    * - ``actor_learning_rate``
      - float
-     - ``0.0003``
+     - ``0.0001``
      - Optimizer learning rate for the actor.
    * - ``critic_learning_rate``
      - float
-     - ``0.0003``
+     - ``0.0001``
      - Optimizer learning rate for the critics.
    * - ``alpha_learning_rate``
      - float
-     - ``0.0003``
+     - ``0.0001``
      - Optimizer learning rate for the entropy temperature.
    * - ``max_grad_norm``
      - float | None
@@ -334,7 +334,7 @@ SAC
      - Weight decay for the actor and critic optimizers.
    * - ``init_alpha``
      - float
-     - ``0.2``
+     - ``0.01``
      - Initial entropy temperature.
    * - ``target_entropy``
      - float | None
@@ -343,11 +343,11 @@ SAC
        the negative action dimension.
    * - ``target_entropy_std``
      - float | None
-     - ``None``
+     - ``0.15``
      - Gaussian standard deviation used to compute the target entropy. Only used if ``target_entropy`` is ``None``.
    * - ``critic_loss_type``
      - str
-     - ``"mse"``
+     - ``"categorical"``
      - Loss used for critic updates. Valid values: ``"mse"``, ``"categorical"``.
    * - ``num_bins``
      - int
@@ -360,7 +360,7 @@ SAC
        ``"categorical"``.
    * - ``reward_normalization``
      - bool
-     - ``False``
+     - ``True``
      - Whether to normalize rewards using statistics of discounted returns.
    * - ``reward_normalization_max_return``
      - float
@@ -369,7 +369,7 @@ SAC
        ``reward_normalization`` is ``True``.
    * - ``exploration_type``
      - str
-     - ``"gaussian"``
+     - ``"held"``
      - Exploration noise. Valid values: ``"gaussian"`` (resampled each step), ``"held"`` (reused across multiple steps).
    * - ``noise_repeat_exponent``
      - float
@@ -408,6 +408,28 @@ SAC
      - dict | None
      - ``None``
      - Optional symmetry extension configuration.
+
+The SAC defaults are the configuration that worked best across Isaac Lab locomotion benchmark tasks. These runs used
+residual networks for the actor and critics, and an actor action range of ``(-2.0, 2.0)``:
+
+.. code-block:: yaml
+
+   actor:
+     class_name: MLPModel
+     network_cfg:
+       class_name: ResidualMLP
+       hidden_dim: 128
+     distribution_cfg:
+       class_name: SquashedGaussianDistribution
+       action_range: [-2.0, 2.0]
+   critic:
+     class_name: QMLPModel
+     network_cfg:
+       class_name: ResidualMLP
+       hidden_dim: 256
+
+The action range is the setting most likely to need task-specific tuning. For example, joint-position tasks whose
+targets lie far from the default pose may need a larger range.
 
 Distillation
 ^^^^^^^^^^^^
