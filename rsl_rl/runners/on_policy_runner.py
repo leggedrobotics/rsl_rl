@@ -94,7 +94,7 @@ class OnPolicyRunner:
                         obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
                         # Check for NaN or Inf values from the environment
                         if self.cfg.get("check_for_nan", True):
-                            check_nan(obs, rewards, dones)
+                            check_nan(obs, rewards, dones, extras)
                         # Move to device
                         obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                         # Process the step

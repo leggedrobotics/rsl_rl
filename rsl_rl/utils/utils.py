@@ -287,8 +287,12 @@ def resolve_obs_groups(
     return obs_groups
 
 
-def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor) -> None:
-    """Raise ``ValueError`` if any environment output contains NaN or Inf."""
+def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict | None = None) -> None:
+    """Raise ``ValueError`` if any environment output contains NaN or Inf.
+
+    If ``extras`` contains ``"final_obs"``, the final observations of environments that are done are checked as well.
+    Entries of environments that are not done are ignored.
+    """
     for key, tensor in obs.items():
         if not torch.isfinite(tensor).all():
             has_nan = torch.isnan(tensor).any()
@@ -314,6 +318,18 @@ def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor) -> No
             f"The dones returned by the environment contain {value_name} values. This usually indicates a bug in the"
             " environment's termination logic."
         )
+    if extras is not None and extras.get("final_obs") is not None:
+        done_mask = dones.reshape(-1).bool()
+        for key, tensor in extras["final_obs"].items():
+            tensor = tensor[done_mask.to(tensor.device)]
+            if not torch.isfinite(tensor).all():
+                has_nan = torch.isnan(tensor).any()
+                has_inf = torch.isinf(tensor).any()
+                value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
+                raise ValueError(
+                    f"The final observation group '{key}' returned by the environment contains {value_name} values."
+                    " This usually indicates a bug in the environment's step() function."
+                )
 
 
 def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.Module:
