@@ -70,7 +70,7 @@ def test_cnn_sac_training_and_export(
     cfg["algorithm"].update(
         critic_loss_type="categorical" if categorical else "mse",
         num_bins=11,
-        num_updates=6,
+        num_updates=8,
         num_return_steps=3,
         use_cuda_graph=device != "cpu",
     )
@@ -103,7 +103,7 @@ def test_cnn_sac_training_and_export(
     assert batch.observations["image"].shape == (8, 1, 16, 16)
     assert batch.next_observations["image"].shape == (8, 1, 16, 16)
     if device != "cpu":
-        assert alg._graph_steps[True].graph is not None
+        assert all(step.graph is not None for step in alg._graph_steps.values())
     assert all(torch.isfinite(torch.tensor(value)) for value in alg.update().values())
     alg.eval_mode()
     actions = alg.actor(obs)

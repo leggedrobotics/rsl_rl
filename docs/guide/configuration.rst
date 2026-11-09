@@ -413,6 +413,28 @@ SAC
      - ``25``
      - Maximum gradient-reduction buffer size in megabytes for distributed training.
 
+The SAC defaults are the configuration that worked best across Isaac Lab locomotion benchmark tasks. These runs used
+residual networks for the actor and critics, and an actor action range of ``(-2.0, 2.0)``:
+
+.. code-block:: yaml
+
+   actor:
+     class_name: MLPModel
+     network_cfg:
+       class_name: ResidualMLP
+       hidden_dim: 128
+     distribution_cfg:
+       class_name: SquashedGaussianDistribution
+       action_range: [-2.0, 2.0]
+   critic:
+     class_name: QMLPModel
+     network_cfg:
+       class_name: ResidualMLP
+       hidden_dim: 256
+
+The action range is the setting most likely to need task-specific tuning. For example, joint-position tasks whose
+targets lie far from the default pose may need a larger range.
+
 SAC distributed training
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -437,7 +459,8 @@ SAC final observations
 ~~~~~~~~~~~~~~~~~~~~~~
 
 The consumed ``final_obs`` rows must be finite for both hard terminals and timeouts. Invalid final rows are rejected
-before replay insertion; distributed SAC propagates this error to all ranks. Unused rows for environments that did not
+before replay insertion; the standalone distributed SAC algorithm propagates this error to all ranks. The runner's
+own finite check may raise earlier on the affected rank. Unused rows for environments that did not
 reset are ignored. Timeouts bootstrap from their final pre-reset observation. Hard terminals have zero bootstrap
 discount. Before learner forward passes, nonfinite terminal successor inputs are replaced by the corresponding current
 observations, so invalid terminal successors from externally populated replay cannot enter actor/critic forwards or
@@ -479,8 +502,8 @@ SAC recurrent-model limitation
 
 Recurrent actors and critics are explicitly rejected. The current replay ``length`` is an n-step return window,
 not a recurrent training sequence: ``ReplayBuffer.Batch`` provides only the initial observations/actions and the final
-successor observations. Its time-indexed ``window`` contains rewards and boundary flags, not observation/action
-sequences. The ``valid`` mask controls return accumulation, not recurrent loss padding. No hidden states are stored.
+successor observations. Its time-indexed ``rewards`` tensor does not include observation/action sequences.
+The ``valid`` mask controls return accumulation, not recurrent loss padding. No hidden states are stored.
 
 ``RNNModel`` expects a time-major observation sequence, padding masks and an initial hidden state during updates.
 Without these inputs its forward pass instead advances the rollout hidden state. Using it on independent random
@@ -494,29 +517,6 @@ the pre-reset history while the following episode starts from reset state; hard 
 that boundary. The actor's candidate-action Q evaluation must preserve replay history without mutating rollout or
 target hidden state. These changes span replay, model interfaces and learner updates and are intentionally deferred.
 No recurrent SAC support is claimed by this implementation.
-
-
-The SAC defaults are the configuration that worked best across Isaac Lab locomotion benchmark tasks. These runs used
-residual networks for the actor and critics, and an actor action range of ``(-2.0, 2.0)``:
-
-.. code-block:: yaml
-
-   actor:
-     class_name: MLPModel
-     network_cfg:
-       class_name: ResidualMLP
-       hidden_dim: 128
-     distribution_cfg:
-       class_name: SquashedGaussianDistribution
-       action_range: [-2.0, 2.0]
-   critic:
-     class_name: QMLPModel
-     network_cfg:
-       class_name: ResidualMLP
-       hidden_dim: 256
-
-The action range is the setting most likely to need task-specific tuning. For example, joint-position tasks whose
-targets lie far from the default pose may need a larger range.
 
 Distillation
 ^^^^^^^^^^^^
