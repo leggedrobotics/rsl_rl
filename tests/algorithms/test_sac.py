@@ -71,7 +71,7 @@ def test_cnn_sac_training_and_export(
     cfg["algorithm"].update(
         critic_loss_type="categorical" if categorical else "mse",
         num_bins=11,
-        num_updates=6,
+        num_updates=8,
         num_return_steps=3,
         use_cuda_graph=device != "cpu",
     )
