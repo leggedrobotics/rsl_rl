@@ -502,9 +502,7 @@ class SAC:
         """Build n-step returns, bootstrapping from the next state of the last valid transition."""
         # Accumulate discounted rewards over valid replay transitions
         replay_batch = self.storage.sample(self.batch_size, length=self.num_return_steps)
-        rewards = (replay_batch.window["rewards"] * self._discounts[: self.num_return_steps] * replay_batch.valid).sum(
-            1
-        )
+        rewards = (replay_batch.rewards * self._discounts[: self.num_return_steps] * replay_batch.valid).sum(1)
         discounts = self._discounts[replay_batch.valid.sum(1)] * ~replay_batch.terminated
 
         # Construct the batch

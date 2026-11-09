@@ -55,7 +55,7 @@ class ReplayBuffer:
 
         Each batch entry contains one or more consecutive transitions from the same environment. Observations and
         actions are taken from the first step. Next observations and termination flags are taken from the last valid
-        step. Rewards and done flags are included for every step, with a mask marking the valid entries.
+        step. Rewards are included for every step, with a mask marking the valid entries.
         """
 
         observations: TensorDict
@@ -64,8 +64,8 @@ class ReplayBuffer:
         actions: torch.Tensor
         """Actions at the first transition of each window."""
 
-        window: dict[str, torch.Tensor]
-        """Raw rewards and episode flags over the sampled windows."""
+        rewards: torch.Tensor
+        """Raw rewards over the sampled windows. Shape: (batch_size, length)."""
 
         valid: torch.Tensor
         """Validity masks for window entries. Shape: (batch_size, length)."""
@@ -232,11 +232,7 @@ class ReplayBuffer:
         return ReplayBuffer.Batch(
             observations=self.observations[first, env_ids],  # type: ignore
             actions=self.actions[first, env_ids],  # type: ignore
-            window={
-                "rewards": self.rewards[indices, env_ids[:, None]],  # type: ignore
-                "dones": self.dones[indices, env_ids[:, None]],  # type: ignore
-                "terminated": self.terminated[indices, env_ids[:, None]],  # type: ignore
-            },
+            rewards=self.rewards[indices, env_ids[:, None]],  # type: ignore
             valid=valid,
             next_observations=self.next_observations[last, env_ids],  # type: ignore
             terminated=self.terminated[last, env_ids],  # type: ignore

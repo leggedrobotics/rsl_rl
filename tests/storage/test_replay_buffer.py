@@ -34,7 +34,7 @@ def test_lazy_replay_ring_and_episode_validity() -> None:
     torch.manual_seed(0)
     sample = replay.sample(100, length=3)
     for row in range(100):
-        values = sample.window["rewards"][row]
+        values = sample.rewards[row]
         anchor = int(values[0])
         env_id = int(sample.actions[row, 0])
         for offset in range(3):
@@ -83,7 +83,7 @@ def test_collection_allocation_and_clear() -> None:
     assert step.rewards is None
     sample = replay.sample(8, length=3)
     assert torch.equal(sample.observations["policy"], torch.full((8, 1), 7.0))
-    assert torch.equal(sample.window["rewards"], torch.full((8, 3), 7.0))
+    assert torch.equal(sample.rewards, torch.full((8, 3), 7.0))
     assert torch.equal(sample.next_observations["policy"], torch.full((8, 1), 107.0))
     assert sample.valid.tolist() == [[True, False, False]] * 8
 
