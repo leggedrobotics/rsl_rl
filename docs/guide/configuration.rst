@@ -255,8 +255,8 @@ PPO
 SAC
 ^^^
 .. note::
-   SAC requires :class:`~rsl_rl.models.mlp_model.QMLPModel` critics and an actor with a
-   :class:`~rsl_rl.modules.distribution.SquashedGaussianDistribution`. We recommend using 
+   SAC requires :class:`~rsl_rl.models.mlp_model.QMLPModel` or :class:`~rsl_rl.models.cnn_model.QCNNModel` critics
+   and an actor with a :class:`~rsl_rl.modules.distribution.SquashedGaussianDistribution`. We recommend using
    :class:`~rsl_rl.modules.mlp.ResidualMLP` networks for the actor and critics, selected through the model's
    ``network_cfg`` as described in :ref:`Model Configuration <model-configuration>`.
 
@@ -442,7 +442,8 @@ SAC final observations
 ~~~~~~~~~~~~~~~~~~~~~~
 
 The consumed ``final_obs`` rows must be finite for both hard terminals and timeouts. Invalid final rows are rejected
-before replay insertion; distributed SAC propagates this error to all ranks. Unused rows for environments that did not
+before replay insertion; the standalone distributed SAC algorithm propagates this error to all ranks. The runner's
+own finite check may raise earlier on the affected rank. Unused rows for environments that did not
 reset are ignored. Timeouts bootstrap from their final pre-reset observation. Hard terminals have zero bootstrap
 discount. Before learner forward passes, nonfinite terminal successor inputs are replaced by the corresponding current
 observations, so invalid terminal successors from externally populated replay cannot enter actor/critic forwards or
@@ -484,8 +485,8 @@ SAC recurrent-model limitation
 
 Recurrent actors and critics are explicitly rejected. The current replay ``length`` is an n-step return window,
 not a recurrent training sequence: ``ReplayBuffer.Batch`` provides only the initial observations/actions and the final
-successor observations. Its time-indexed ``window`` contains rewards and boundary flags, not observation/action
-sequences. The ``valid`` mask controls return accumulation, not recurrent loss padding. No hidden states are stored.
+successor observations. Its time-indexed ``rewards`` tensor does not include observation/action sequences.
+The ``valid`` mask controls return accumulation, not recurrent loss padding. No hidden states are stored.
 
 ``RNNModel`` expects a time-major observation sequence, padding masks and an initial hidden state during updates.
 Without these inputs its forward pass instead advances the rollout hidden state. Using it on independent random

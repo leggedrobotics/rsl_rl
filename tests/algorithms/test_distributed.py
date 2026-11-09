@@ -322,7 +322,7 @@ def _sac_worker(rank: int, world_size: int, store_file: str, categorical: bool, 
         torch.testing.assert_close(alg.actor.obs_normalizer.mean, torch.full((8,), 2.0))
         torch.testing.assert_close(alg.actor.obs_normalizer._var, torch.full((1, 8), 4.0))
         assert alg.actor.obs_normalizer.count == 16
-        returns = torch.tensor([1.0, 1.99, 2.0, 3.98])
+        returns = torch.tensor([1.0, 1.0 + alg.gamma, 2.0, 2.0 * (1.0 + alg.gamma)])
         torch.testing.assert_close(alg._return_normalizer.mean, returns.mean().reshape(1))
         torch.testing.assert_close(alg._return_normalizer._var, returns.var(unbiased=False).reshape(1, 1))
         torch.testing.assert_close(alg._max_abs_return, returns.max())
