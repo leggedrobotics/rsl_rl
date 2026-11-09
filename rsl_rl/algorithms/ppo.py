@@ -384,17 +384,14 @@ class PPO:
             saved_dict["rnd_update_counter"] = self.rnd.update_counter
         return saved_dict
 
+    def get_default_load_cfg(self) -> dict:
+        """Return the default selection for resuming this algorithm's own checkpoints."""
+        return {"actor": True, "critic": True, "optimizer": True, "iteration": True, "rnd": True}
+
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load specified models from a saved dict."""
-        # If no load_cfg is provided, load all models and states
         if load_cfg is None:
-            load_cfg = {
-                "actor": True,
-                "critic": True,
-                "optimizer": True,
-                "iteration": True,
-                "rnd": True,
-            }
+            load_cfg = self.get_default_load_cfg()
 
         # Load the specified models
         if load_cfg.get("actor"):
@@ -445,7 +442,7 @@ class PPO:
         # Resolve symmetry config if used
         alg_cfg = resolve_symmetry_config(alg_cfg, env)
 
-        # Initialize the policy
+        # Initialize the actor and critic
         actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **actor_cfg).to(device)
         print(f"Actor Model: {actor}")
         if alg_cfg.pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critic

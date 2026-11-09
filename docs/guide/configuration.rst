@@ -32,12 +32,11 @@ In the following sections, we list the available settings for each configuration
 Runner Configuration
 --------------------
 
-Currently, RSL-RL implements two runner classes:
-:class:`~rsl_rl.runners.on_policy_runner.OnPolicyRunner` and
-:class:`~rsl_rl.runners.distillation_runner.DistillationRunner`, which are configured as follows.
+RSL-RL's :class:`~rsl_rl.runners.on_policy_runner.OnPolicyRunner` and 
+:class:`~rsl_rl.runners.off_policy_runner.OffPolicyRunner` share the same configuration keys, which are listed below.
 
-OnPolicyRunner
-^^^^^^^^^^^^^^
+OnPolicyRunner & OffPolicyRunner
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. list-table::
    :header-rows: 1
@@ -154,8 +153,8 @@ backends are configured by passing a dictionary with the following keys:
 Algorithm Configuration
 -----------------------
 
-RSL-RL implements two algorithms, :class:`~rsl_rl.algorithms.ppo.PPO` and
-:class:`~rsl_rl.algorithms.distillation.Distillation`, which are configured as follows.
+RSL-RL implements :class:`~rsl_rl.algorithms.ppo.PPO`, :class:`~rsl_rl.algorithms.sac.SAC`, 
+and :class:`~rsl_rl.algorithms.distillation.Distillation`. Each algorithm has its own configuration listed below.
 
 PPO
 ^^^
@@ -250,8 +249,274 @@ PPO
      - float
      - ``25``
      - Maximum size, in megabytes, of a single packed gradient buffer used when reducing gradients
-       across GPUs during multi-GPU training. Matches
-       :class:`torch.nn.parallel.DistributedDataParallel`'s default ``bucket_cap_mb``.
+       across GPUs during multi-GPU training. Matches Torch's
+       :class:`DistributedDataParallel` default ``bucket_cap_mb``.
+
+SAC
+^^^
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - Algorithm class name. Valid values: ``"SAC"``.
+   * - ``num_critics``
+     - int
+     - ``2``
+     - Number of state-action critics. 
+   * - ``replay_buffer_capacity``
+     - int
+     - ``10000000``
+     - Number of transitions that can be stored in the replay buffer.
+   * - ``max_replay_memory_fraction``
+     - float | None
+     - ``None``
+     - Maximum fraction of free GPU memory used for the replay buffer.
+   * - ``num_updates``
+     - int
+     - ``16``
+     - Number of optimization steps per iteration.
+   * - ``batch_size``
+     - int
+     - ``2048``
+     - Number of transitions sampled per optimization step.
+   * - ``num_return_steps``
+     - int
+     - ``3``
+     - Maximum number of environment steps used to compute return targets.
+   * - ``gamma``
+     - float
+     - ``0.98``
+     - Discount factor.
+   * - ``tau``
+     - float
+     - ``0.01``
+     - Interpolation factor for updating the target critics.
+   * - ``actor_update_interval``
+     - int
+     - ``2``
+     - Number of critic updates per actor update.
+   * - ``num_warmup_transitions``
+     - int
+     - ``100000``
+     - Minimum number of transitions in the replay buffer before optimization starts.
+   * - ``actor_learning_rate``
+     - float
+     - ``0.0001``
+     - Optimizer learning rate for the actor.
+   * - ``critic_learning_rate``
+     - float
+     - ``0.0001``
+     - Optimizer learning rate for the critics.
+   * - ``alpha_learning_rate``
+     - float
+     - ``0.0001``
+     - Optimizer learning rate for the entropy temperature.
+   * - ``max_grad_norm``
+     - float | None
+     - ``None``
+     - Maximum gradient norm for gradient clipping of the actor and critics.
+   * - ``optimizer``
+     - str
+     - ``"adam"``
+     - Optimizer used for actor and critic updates. Valid values: see :func:`~rsl_rl.utils.utils.resolve_optimizer`.
+       The entropy temperature uses Adam.
+   * - ``weight_decay``
+     - float
+     - ``0.0``
+     - Weight decay for the actor and critic optimizers.
+   * - ``init_alpha``
+     - float
+     - ``0.01``
+     - Initial entropy temperature.
+   * - ``target_entropy``
+     - float | None
+     - ``None``
+     - Target policy entropy. If ``None``, the target is computed from ``target_entropy_std`` when provided, or set to
+       the negative action dimension.
+   * - ``target_entropy_std``
+     - float | None
+     - ``0.15``
+     - Gaussian standard deviation used to compute the target entropy. Only used if ``target_entropy`` is ``None``.
+   * - ``critic_loss_type``
+     - str
+     - ``"categorical"``
+     - Loss used for critic updates. Valid values: ``"mse"``, ``"categorical"``.
+   * - ``num_bins``
+     - int
+     - ``101``
+     - Number of bins for categorical critics. Only used if ``critic_loss_type`` is ``"categorical"``.
+   * - ``value_range``
+     - tuple[float, float]
+     - ``(-5.0, 5.0)``
+     - Minimum and maximum values represented by categorical critics. Only used if ``critic_loss_type`` is
+       ``"categorical"``.
+   * - ``reward_normalization``
+     - bool
+     - ``True``
+     - Whether to normalize rewards using statistics of discounted returns.
+   * - ``reward_normalization_max_return``
+     - float
+     - ``5.0``
+     - Maximum absolute value of tracked discounted returns after reward normalization. Only used if 
+       ``reward_normalization`` is ``True``.
+   * - ``exploration_type``
+     - str
+     - ``"held"``
+     - Exploration noise. Valid values: ``"gaussian"`` (resampled each step), ``"held"`` (reused across multiple steps).
+   * - ``noise_repeat_exponent``
+     - float
+     - ``2.0``
+     - Exponent of the power-law distribution for noise repetition counts. Only used if ``exploration_type`` is
+       ``"held"``.
+   * - ``max_noise_repeat_steps``
+     - int
+     - ``16``
+     - Maximum number of environment steps for which exploration noise is held. Only used if ``exploration_type`` is
+       ``"held"``.
+   * - ``learning_rate_schedule``
+     - str
+     - ``"constant"``
+     - Learning-rate schedule. Valid values: ``"constant"``, ``"cosine"``.
+   * - ``final_learning_rate_ratio``
+     - float
+     - ``0.5``
+     - Final learning rate as a fraction of the initial learning rate. Only used if ``learning_rate_schedule`` is
+       ``"cosine"``.
+   * - ``num_schedule_updates``
+     - int | None
+     - ``None``
+     - Number of optimization steps over which the cosine schedule runs. Required if ``learning_rate_schedule`` is
+       ``"cosine"``.
+   * - ``use_mixed_precision``
+     - bool
+     - ``False``
+     - Whether to run the forward pass and loss computation in bfloat16 autocast. Backward, gradient clipping, and
+       the optimizer step always stay in fp32.
+   * - ``use_cuda_graph``
+     - bool
+     - ``False``
+     - Whether to capture optimization steps in CUDA graphs.
+   * - ``symmetry_cfg``
+     - dict | None
+     - ``None``
+     - Optional symmetry extension configuration.
+   * - ``grad_reduce_bucket_mb``
+     - float
+     - ``25``
+     - Maximum gradient-reduction buffer size in megabytes for distributed training.
+
+The SAC defaults are the configuration that worked best across Isaac Lab locomotion benchmark tasks. These runs used
+residual networks for the actor and critics, and an actor action range of ``(-2.0, 2.0)``:
+
+.. code-block:: yaml
+
+   actor:
+     class_name: MLPModel
+     network_cfg:
+       class_name: ResidualMLP
+       hidden_dim: 128
+     distribution_cfg:
+       class_name: SquashedGaussianDistribution
+       action_range: [-2.0, 2.0]
+   critic:
+     class_name: QMLPModel
+     network_cfg:
+       class_name: ResidualMLP
+       hidden_dim: 256
+
+The action range is the setting most likely to need task-specific tuning. For example, joint-position tasks whose
+targets lie far from the default pose may need a larger range.
+
+SAC distributed training
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+``OffPolicyRunner`` uses the same ``torchrun``/NCCL setup as ``OnPolicyRunner``. Pass
+``device=f"cuda:{os.environ['LOCAL_RANK']}"`` to each runner and create its environments on that device.
+The standalone algorithm also accepts an already initialized Gloo process group for CPU execution via ``multi_gpu_cfg``.
+Set ``use_cuda_graph=False`` for distributed SAC; collective capture is explicitly unsupported.
+
+Replay capacity, warm-up transitions, and batch size are per rank. Every rank must use the same model and algorithm
+configuration and call collection and updates in the same order. An update starts only when every rank's replay is
+ready. Actor, critic, target, temperature, and normalizer state are initially broadcast from rank zero. Actor, critic,
+and temperature gradients are averaged before clipping or stepping. Observation and return normalizers compute global
+sample-weighted moments; the return-magnitude bound uses a global maximum. BatchNorm forward passes use local minibatch
+statistics, with running floating-point buffers averaged and integer counters synchronized after each learner step.
+This is not SyncBatchNorm.
+
+On resume, all ranks must load the same checkpoint and load configuration, including optimizer and scheduler state
+when continuing training. Replay and environment trajectories remain local and are not checkpointed; each rank refills
+replay before updates resume. Actor/critic update counters and schedules are restored from the checkpoint.
+
+SAC final observations
+~~~~~~~~~~~~~~~~~~~~~~
+
+The consumed ``final_obs`` rows must be finite for both hard terminals and timeouts. Invalid final rows are rejected
+before replay insertion; the standalone distributed SAC algorithm propagates this error to all ranks. The runner's
+own finite check may raise earlier on the affected rank. Unused rows for environments that did not
+reset are ignored. Timeouts bootstrap from their final pre-reset observation. Hard terminals have zero bootstrap
+discount. Before learner forward passes, nonfinite terminal successor inputs are replaced by the corresponding current
+observations, so invalid terminal successors from externally populated replay cannot enter actor/critic forwards or
+BatchNorm statistics. Finite terminal successor inputs retain the original BatchNorm behavior. This replacement
+preserves fixed batch shapes for single-device CUDA graphs.
+
+SAC image observations
+~~~~~~~~~~~~~~~~~~~~~~
+
+Use ``CNNModel`` for an image actor and ``QCNNModel`` for an image critic. Both use the existing ``cnn_cfg`` interface.
+Each selected image group has shape ``(batch, channels, height, width)``; vector groups have shape ``(batch, features)``.
+Replay retains these shapes. Either model can use images alone or images plus vector groups, and actor/critic groups
+may differ. The critic concatenates runtime candidate actions after the image and vector features, before its MLP or
+configured ``network_cfg``. ``action_dim`` is inferred from ``env.num_actions``; do not add candidate actions to the
+observation groups. Q outputs are scalar values or categorical logits according to the SAC configuration.
+
+For example, set the following model and observation entries in an otherwise configured SAC runner:
+
+.. code-block:: python
+
+   cfg["obs_groups"] = {"actor": ["policy", "image"], "critic": ["critic", "image"]}
+   cfg["actor"] = {
+       "class_name": "CNNModel",
+       "hidden_dims": [256, 256],
+       "cnn_cfg": {"output_channels": [16, 32], "kernel_size": 3, "stride": 2, "flatten": True},
+       "distribution_cfg": {"class_name": "SquashedGaussianDistribution"},
+   }
+   cfg["critic"] = {
+       "class_name": "QCNNModel",
+       "hidden_dims": [256, 256],
+       "cnn_cfg": {"output_channels": [16, 32], "kernel_size": 3, "stride": 2, "flatten": True},
+   }
+
+SAC requires separate parameters for the actor and each critic, including image encoders. CNN actors support the
+standard runner's TorchScript and ONNX exports; state-action critic export is not supported.
+
+SAC recurrent-model limitation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Recurrent actors and critics are explicitly rejected. The current replay ``length`` is an n-step return window,
+not a recurrent training sequence: ``ReplayBuffer.Batch`` provides only the initial observations/actions and the final
+successor observations. Its time-indexed ``rewards`` tensor does not include observation/action sequences.
+The ``valid`` mask controls return accumulation, not recurrent loss padding. No hidden states are stored.
+
+``RNNModel`` expects a time-major observation sequence, padding masks and an initial hidden state during updates.
+Without these inputs its forward pass instead advances the rollout hidden state. Using it on independent random
+replay samples would mix unrelated episode histories and could overwrite the state used for environment interaction.
+Calling ``reset(dones)`` during collection alone cannot make that update correct.
+
+Correct recurrent SAC would require observation/action sequences with episode boundaries, burn-in or stored initial
+states, padding-aware losses, and separate history reconstruction for the actor, online critics and target critics.
+Target hidden states must be computed using target weights, not copied from an online critic. Timeout successors need
+the pre-reset history while the following episode starts from reset state; hard terminals must never bootstrap across
+that boundary. The actor's candidate-action Q evaluation must preserve replay history without mutating rollout or
+target hidden state. These changes span replay, model interfaces and learner updates and are intentionally deferred.
+No recurrent SAC support is claimed by this implementation.
 
 Distillation
 ^^^^^^^^^^^^
@@ -304,14 +569,16 @@ Distillation
        across GPUs during multi-GPU training. Matches
        :class:`torch.nn.parallel.DistributedDataParallel`'s default ``bucket_cap_mb``.
 
+
 Model Configuration
 -------------------
 
 Different algorithms use models for different purposes. For example, :class:`~rsl_rl.algorithms.ppo.PPO` uses an actor
 and a critic, while :class:`~rsl_rl.algorithms.distillation.Distillation` uses a student and a teacher. Even though
-their function might be different, they can all use the same underlying model classes. RSL-RL currently implements
-three different models: :class:`~rsl_rl.models.mlp_model.MLPModel`, :class:`~rsl_rl.models.rnn_model.RNNModel`, and
-:class:`~rsl_rl.models.cnn_model.CNNModel`, which are configured as follows.
+their function may differ, algorithms can generally use the same underlying model classes. Available models include
+:class:`~rsl_rl.models.mlp_model.MLPModel`, :class:`~rsl_rl.models.rnn_model.RNNModel`, and
+:class:`~rsl_rl.models.cnn_model.CNNModel`, :class:`~rsl_rl.models.mlp_model.QMLPModel`, and
+:class:`~rsl_rl.models.cnn_model.QCNNModel`.
 
 MLPModel
 ^^^^^^^^
@@ -340,18 +607,59 @@ MLPModel
      - bool
      - ``False``
      - Whether to normalize the observations before passing them to the MLP.
+   * - ``network_cfg``
+     - dict | None
+     - ``None``
+     - Optional network configuration. If provided, the default MLP is replaced by the configured network, and
+       ``hidden_dims`` and ``activation`` are ignored.
    * - ``distribution_cfg``
      - dict | None
      - ``None``
      - Optional output distribution configuration. If provided, the model can output stochastic values sampled from 
        the specified distribution.
 
+The ``network_cfg`` dictionary contains the network's ``class_name`` and configuration parameters. For
+:class:`~rsl_rl.models.rnn_model.RNNModel` and :class:`~rsl_rl.models.cnn_model.CNNModel`, it replaces the MLP after the
+recurrent network or CNN encoders. To use the :class:`~rsl_rl.modules.mlp.ResidualMLP`, configure the following
+parameters:
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - Network class name. Valid values: ``"ResidualMLP"``.
+   * - ``hidden_dim``
+     - int
+     - ``256``
+     - Hidden dimension of the residual network.
+   * - ``num_blocks``
+     - int
+     - ``2``
+     - Number of residual blocks.
+   * - ``expansion``
+     - int
+     - ``4``
+     - Expansion factor for the hidden dimension within each residual block.
+   * - ``batch_norm_momentum``
+     - float
+     - ``0.01``
+     - Momentum for the running statistics of batch normalization.
+
+The :class:`~rsl_rl.modules.mlp.ResidualMLP` requires :meth:`~rsl_rl.modules.mlp.ResidualMLP.normalize_parameters` to be 
+called after each optimizer step. Currently, only :class:`~rsl_rl.algorithms.sac.SAC` performs this normalization.
+
 RNNModel
 ^^^^^^^^
 
-The :class:`~rsl_rl.models.rnn_model.RNNModel` inherits from the :class:`~rsl_rl.models.mlp_model.MLPModel` and thus
-shares the same configuration keys as the :class:`~rsl_rl.models.mlp_model.MLPModel`, with the addition of the following 
-keys:
+The :class:`~rsl_rl.models.rnn_model.RNNModel` inherits from the :class:`~rsl_rl.models.mlp_model.MLPModel` and shares
+the same configuration keys, with the addition of the following keys:
 
 .. list-table::
    :header-rows: 1
@@ -385,9 +693,8 @@ keys:
 CNNModel
 ^^^^^^^^
 
-The :class:`~rsl_rl.models.cnn_model.CNNModel` inherits from the :class:`~rsl_rl.models.mlp_model.MLPModel` and thus
-shares the same configuration keys as the :class:`~rsl_rl.models.mlp_model.MLPModel`, with the addition of the following 
-keys:
+The :class:`~rsl_rl.models.cnn_model.CNNModel` inherits from the :class:`~rsl_rl.models.mlp_model.MLPModel` and shares
+the same configuration keys, with the addition of the following keys:
 
 .. list-table::
    :header-rows: 1
@@ -469,15 +776,39 @@ configuration includes the following parameters:
      - ``True``
      - Whether to flatten the output tensor.
 
+QMLPModel
+^^^^^^^^^
+
+The :class:`~rsl_rl.models.mlp_model.QMLPModel` inherits from the :class:`~rsl_rl.models.mlp_model.MLPModel` and shares
+the same configuration keys, except that ``distribution_cfg`` must be ``None``.
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - Model class name. Valid values: ``"QMLPModel"``.
+   * - ...
+     - ...
+     - ...
+     - ...
+
 
 Distribution Configuration
 --------------------------
 
-RSL-RL implements three distributions that enable stochastic model outputs:
+RSL-RL provides the following distributions for stochastic model outputs:
 :class:`~rsl_rl.modules.distribution.GaussianDistribution`,
-:class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution` with state-dependent standard deviation, and
-:class:`~rsl_rl.modules.distribution.BetaDistribution` for naturally bounded action spaces, which may be configured as
-follows.
+:class:`~rsl_rl.modules.distribution.HeteroscedasticGaussianDistribution` with state-dependent standard deviation,
+:class:`~rsl_rl.modules.distribution.SquashedGaussianDistribution` for tanh-bounded Gaussian actions, and
+:class:`~rsl_rl.modules.distribution.BetaDistribution` for naturally bounded action spaces.
+
 
 GaussianDistribution
 ^^^^^^^^^^^^^^^^^^^^
@@ -539,6 +870,36 @@ HeteroscedasticGaussianDistribution
      - ``"scalar"``
      - Whether the standard deviation is stored directly or in log-space. Valid values: ``"scalar"``, ``"log"``.
 
+SquashedGaussianDistribution
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - Distribution class name. Valid values: ``"SquashedGaussianDistribution"``.
+   * - ``init_std``
+     - float | None
+     - ``None``
+     - Initial standard deviation before squashing (used to initialize the standard deviation head). ``None`` uses the
+       network's default initialization.
+   * - ``std_range``
+     - tuple[float, float]
+     - ``(math.exp(-5.0), math.exp(2.0))``
+     - Minimum and maximum standard deviation of the Gaussian before applying the tanh function.
+   * - ``action_range``
+     - tuple[float | list, float | list]
+     - ``(-1.0, 1.0)``
+     - Interval ``(min, max)`` to which squashed samples are linearly rescaled. Each bound can be a scalar or a list
+       with one value per action dimension.
+
 BetaDistribution
 ^^^^^^^^^^^^^^^^
 
@@ -560,11 +921,13 @@ BetaDistribution
      - Interval ``(min, max)`` to which samples are linearly rescaled. The Beta distribution naturally produces samples
        in ``[0, 1]``, which are rescaled to this range.
 
+
 Extension Configuration
 -----------------------
 
-RSL-RL currently features two extensions for :class:`~rsl_rl.algorithms.ppo.PPO`. Those are
-:class:`~rsl_rl.extensions.rnd.RandomNetworkDistillation` and :class:`Symmetry`, which may be configured as follows.
+:class:`~rsl_rl.extensions.rnd.RandomNetworkDistillation` is compatible with :class:`~rsl_rl.algorithms.ppo.PPO`, and
+:class:`~rsl_rl.extensions.symmetry.Symmetry` is compatible with :class:`~rsl_rl.algorithms.ppo.PPO` and
+:class:`~rsl_rl.algorithms.sac.SAC`. The configuration keys for both extensions are listed below.
 
 Random Network Distillation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -665,6 +1028,7 @@ already sufficient:
          class_name: GaussianDistribution
      critic:
        class_name: MLPModel
+
 
 .. _observation-configuration:
 

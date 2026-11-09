@@ -41,11 +41,11 @@ class EmpiricalNormalization(nn.Module):
     @property
     def std(self) -> torch.Tensor:
         """Return the current running standard deviation."""
-        return self._std.squeeze(0).clone()
+        return self._std.squeeze(0).clone()  # type: ignore
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize mean and variance of values based on empirical values."""
-        return (x - self._mean) / (self._std + self.eps)
+        return (x - self._mean) / (self._std + self.eps)  # type: ignore
 
     @torch.jit.unused
     def update(self, x: torch.Tensor) -> None:
@@ -75,12 +75,12 @@ class EmpiricalNormalization(nn.Module):
         delta_mean = mean_x - self._mean
         self._mean += rate * delta_mean
         self._var += rate * (var_x - self._var + delta_mean * (mean_x - self._mean))
-        self._std = torch.sqrt(self._var)
+        self._std.copy_(torch.sqrt(self._var))  # type: ignore
 
     @torch.jit.unused
     def inverse(self, y: torch.Tensor) -> torch.Tensor:
         """De-normalize values based on empirical values."""
-        return y * (self._std + self.eps) + self._mean
+        return y * (self._std + self.eps) + self._mean  # type: ignore
 
 
 class EmpiricalDiscountedVariationNormalization(nn.Module):

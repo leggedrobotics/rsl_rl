@@ -15,6 +15,7 @@ import onnx
 import pytest
 
 from rsl_rl.models import RNNModel
+from rsl_rl.modules import ResidualMLP
 from tests.conftest import make_obs
 
 NUM_ENVS = 4
@@ -36,6 +37,23 @@ def _make_rnn_model(rnn_type: str = "gru", **kwargs: object) -> tuple[RNNModel, 
     defaults.update(kwargs)
     model = RNNModel(obs, obs_groups, "actor", NUM_ACTIONS, **defaults)
     return model, obs
+
+
+def test_custom_network_forward_and_export() -> None:
+    """A custom network consumes recurrent features, propagates gradients, and supports deterministic export."""
+    model, obs = _make_rnn_model(network_cfg={"class_name": "ResidualMLP", "hidden_dim": 8, "num_blocks": 1})
+    assert isinstance(model.mlp, ResidualMLP)
+    outputs = model(obs)
+    assert outputs.shape == (NUM_ENVS, NUM_ACTIONS)
+    outputs.square().mean().backward()
+    assert any(parameter.grad is not None and parameter.grad.abs().sum() > 0 for parameter in model.rnn.parameters())
+
+    model.eval()
+    model.reset()
+    expected = model(obs[:1]).detach()
+    exported = torch.jit.script(model.as_jit())
+    exported.reset()
+    torch.testing.assert_close(exported(obs["policy"][:1]), expected)
 
 
 class TestHiddenStateReset:

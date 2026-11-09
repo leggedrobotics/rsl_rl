@@ -57,9 +57,15 @@ class OnPolicyRunner:
         """Run the learning loop for the specified number of iterations."""
         # Randomize initial episode lengths (for exploration)
         if init_at_random_ep_len:
-            self.env.episode_length_buf = torch.randint_like(
-                self.env.episode_length_buf, high=int(self.env.max_episode_length)
-            )
+            if isinstance(self.env.max_episode_length, torch.Tensor):
+                self.env.episode_length_buf = (
+                    torch.rand_like(self.env.episode_length_buf, dtype=torch.float)
+                    * self.env.max_episode_length.to(self.env.episode_length_buf.device)
+                ).to(self.env.episode_length_buf.dtype)
+            else:
+                self.env.episode_length_buf = torch.randint_like(
+                    self.env.episode_length_buf, high=int(self.env.max_episode_length)
+                )
 
         # Start learning
         obs = self.env.get_observations().to(self.device)
@@ -88,7 +94,7 @@ class OnPolicyRunner:
                         obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
                         # Check for NaN or Inf values from the environment
                         if self.cfg.get("check_for_nan", True):
-                            check_nan(obs, rewards, dones)
+                            check_nan(obs, rewards, dones, extras)
                         # Move to device
                         obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                         # Process the step
@@ -177,6 +183,7 @@ class OnPolicyRunner:
         """Export the model to a Torch JIT file."""
         jit_model = self.alg.get_policy().as_jit()
         jit_model.to("cpu")
+        jit_model.eval()
 
         if not os.path.exists(path):
             os.makedirs(path, exist_ok=True)

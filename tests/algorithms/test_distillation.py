@@ -168,6 +168,50 @@ class TestDistillationLoss:
                 torch.testing.assert_close(h_after, h_before)
 
 
+class TestCheckpoint:
+    """Tests for distillation checkpoint selection and restoration."""
+
+    def test_resume_with_default_selection_and_fresh_optimizer(self) -> None:
+        """Full resume restores training state, while callers can explicitly skip the optimizer."""
+        source, obs, _storage = _make_distillation_setup()
+        _fill_distillation_storage(source, obs)
+        source.update()
+        checkpoint = source.save()
+        restored, _obs, _storage = _make_distillation_setup()
+
+        assert restored.load(checkpoint, load_cfg=None, strict=True)
+        assert restored.teacher_loaded
+        assert len(restored.optimizer.state) == len(source.optimizer.state) > 0
+        for name, value in source.student.state_dict().items():
+            torch.testing.assert_close(restored.student.state_dict()[name], value)
+        for name, value in source.teacher.state_dict().items():
+            torch.testing.assert_close(restored.teacher.state_dict()[name], value)
+
+        fresh, _obs, _storage = _make_distillation_setup()
+        load_cfg = fresh.get_default_load_cfg()
+        load_cfg["optimizer"] = False
+        assert fresh.load(checkpoint, load_cfg, strict=True)
+        assert not fresh.optimizer.state
+        for name, value in source.student.state_dict().items():
+            torch.testing.assert_close(fresh.student.state_dict()[name], value)
+
+    @pytest.mark.parametrize("load_cfg", [None, {"teacher": True}])
+    def test_load_rl_checkpoint_as_teacher(self, load_cfg: dict | None) -> None:
+        """RL checkpoints load only the teacher through detection or explicit selection."""
+        source, _obs, _storage = _make_distillation_setup()
+        checkpoint = {"actor_state_dict": source.teacher.state_dict()}
+        restored, _obs, _storage = _make_distillation_setup()
+        student_before = {name: value.clone() for name, value in restored.student.state_dict().items()}
+
+        assert not restored.load(checkpoint, load_cfg, strict=True)
+        assert restored.teacher_loaded
+        assert not restored.optimizer.state
+        for name, value in checkpoint["actor_state_dict"].items():
+            torch.testing.assert_close(restored.teacher.state_dict()[name], value)
+        for name, value in student_before.items():
+            torch.testing.assert_close(restored.student.state_dict()[name], value)
+
+
 class TestGradientBudgetWarning:
     """Tests for the construction-time check on the gradient accumulation budget."""
 
