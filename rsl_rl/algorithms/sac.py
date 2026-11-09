@@ -568,12 +568,12 @@ class SAC:
                 actions, log_probs = self._sample_actions(batch.observations)
 
             # Evaluate policy actions without accumulating critic parameter gradients
+            normalized_actions = self._normalize_actions(actions)
             self.critics.requires_grad_(False)
             try:
                 with _BatchNormMode(self._critic_batch_norms, training=False):
                     q_values = torch.stack([
-                        self._expected_value(critic(batch.observations, self._normalize_actions(actions)))
-                        for critic in self.critics
+                        self._expected_value(critic(batch.observations, normalized_actions)) for critic in self.critics
                     ])
             finally:
                 self.critics.requires_grad_(True)
@@ -616,16 +616,15 @@ class SAC:
             device_type=torch.device(self.device).type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
         ):
             # Compute the critic targets without gradients
+            normalized_actions = self._normalize_actions(batch.actions)
             with torch.no_grad():
                 with _BatchNormMode(self._actor_batch_norms, training=False):
                     next_actions, next_log_probs = self._sample_actions(batch.next_observations)
+                normalized_next_actions = self._normalize_actions(next_actions)
                 if len(self._critic_batch_norms) > 0:
                     # Update target batch statistics using current and next observations
                     target_obs = torch.cat([batch.observations, batch.next_observations])
-                    target_actions = torch.cat([
-                        self._normalize_actions(batch.actions),
-                        self._normalize_actions(next_actions),
-                    ])
+                    target_actions = torch.cat([normalized_actions, normalized_next_actions])
                     with _BatchNormMode(self._target_batch_norms, training=True):
                         next_outputs = [
                             critic(target_obs, target_actions)[batch.actions.shape[0] :]
@@ -633,8 +632,7 @@ class SAC:
                         ]
                 else:
                     next_outputs = [
-                        critic(batch.next_observations, self._normalize_actions(next_actions))
-                        for critic in self.target_critics
+                        critic(batch.next_observations, normalized_next_actions) for critic in self.target_critics
                     ]
                 target = self._compute_target(next_outputs, batch, self.log_alpha.detach().exp() * next_log_probs)
 
@@ -643,9 +641,7 @@ class SAC:
                 with _BatchNormMode(self._critic_batch_norms, training=True):
                     outputs = [critic(target_obs, target_actions)[: batch.actions.shape[0]] for critic in self.critics]
             else:
-                outputs = [
-                    critic(batch.observations, self._normalize_actions(batch.actions)) for critic in self.critics
-                ]
+                outputs = [critic(batch.observations, normalized_actions) for critic in self.critics]
 
             # Compute scalar or categorical critic losses
             if self.critic_loss_type == "mse":
