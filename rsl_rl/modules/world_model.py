@@ -43,8 +43,8 @@ class WorldModel(nn.Module):
             activation="swish",
             norm="layer",
         )
-        nn.init.zeros_(self.net.output.weight)
-        nn.init.zeros_(self.net.output.bias)
+        nn.init.zeros_(self.net.output_layer.weight)
+        nn.init.zeros_(self.net.output_layer.bias)
         self.label_head = (
             MLP(feature_dim + context_dim, num_labels, label_hidden_dims, norm="layer") if num_labels else None
         )
