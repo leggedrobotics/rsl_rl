@@ -179,21 +179,45 @@ class ReplayBuffer:
 
         Storage is allocated on the first call using the shapes and dtypes of `transition`.
         """
+        self.write_transition(transition)
+        self.advance()
+
+    @torch.no_grad()
+    def write_transition(self, transition: ReplayBuffer.Transition) -> None:
+        """Copy one transition into the slot at the device-side write cursor and advance that cursor.
+
+        After the first call, which allocates the storage, this method only runs device operations, so it can be
+        captured in a CUDA graph. Each call must be followed by :meth:`advance`.
+        """
         # Initialize storage
         if self.observations is None:
             self._initialize_storage(transition)
 
-        # Copy the transition into the ring buffer and advance the write cursor
-        self.observations[self.step].copy_(transition.observations)  # type: ignore
-        self.actions[self.step].copy_(transition.actions)  # type: ignore
-        self.rewards[self.step].copy_(transition.rewards)  # type: ignore
-        self.next_observations[self.step].copy_(transition.next_observations)  # type: ignore
-        self.dones[self.step].copy_(transition.dones)  # type: ignore
-        self.terminated[self.step].copy_(transition.terminated)  # type: ignore
+        # Copy the transition into the ring buffer at the device-side write cursor
+        index = self._step_tensor.view(1)
+        for key, value in transition.observations.items(include_nested=True, leaves_only=True):  # type: ignore
+            self.observations[key].index_copy_(0, index, value.to(self.device).unsqueeze(0))  # type: ignore
+        for key, value in transition.next_observations.items(include_nested=True, leaves_only=True):  # type: ignore
+            self.next_observations[key].index_copy_(0, index, value.to(self.device).unsqueeze(0))  # type: ignore
+        self.actions.index_copy_(0, index, transition.actions.to(self.device).unsqueeze(0))  # type: ignore
+        self.rewards.index_copy_(0, index, transition.rewards.to(self.device).unsqueeze(0))  # type: ignore
+        self.dones.index_copy_(0, index, transition.dones.to(self.device).unsqueeze(0))  # type: ignore
+        self.terminated.index_copy_(0, index, transition.terminated.to(self.device).unsqueeze(0))  # type: ignore
+
+        # Advance the device-side write cursor
+        self._step_tensor.copy_((self._step_tensor + 1) % self.num_slots)
+        self._num_steps_tensor.copy_((self._num_steps_tensor + 1).clamp(max=self.num_slots))
+
+    def advance(self) -> None:
+        """Advance the host-side write cursor after :meth:`write_transition`."""
         self.step = (self.step + 1) % self.num_slots
         self.num_steps = min(self.num_steps + 1, self.num_slots)
-        self._step_tensor.fill_(self.step)
-        self._num_steps_tensor.fill_(self.num_steps)
+
+    def latest_observations(self, num_steps: int) -> TensorDict:
+        """Return the observations of the latest ``num_steps`` transitions, flattened over steps and environments."""
+        num_steps = min(num_steps, self.num_steps)
+        indices = torch.arange(self.step - num_steps, self.step, device=self.device) % self.num_slots
+        return self.observations[indices].reshape(-1)  # type: ignore
 
     def sample(self, batch_size: int, length: int = 1) -> ReplayBuffer.Batch:
         """Sample windows of consecutive transitions for independently selected environments.

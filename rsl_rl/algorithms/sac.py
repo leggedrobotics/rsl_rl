@@ -11,8 +11,10 @@ import functools
 import math
 import torch
 import torch.nn as nn
+from collections.abc import Callable
 from dataclasses import dataclass
 from tensordict import TensorDict
+from typing import Any
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import Symmetry, resolve_symmetry_config
@@ -185,7 +187,6 @@ class SAC:
         self._return_normalizer = EmpiricalNormalization(1, eps=0.0).to(self.device)
         self._returns = torch.zeros(storage.num_envs, device=self.device)
         self._max_abs_return = torch.zeros((), device=self.device)
-        self._pending_returns: list[torch.Tensor] = []
 
         # Exploration parameters
         self.exploration_type = exploration_type
@@ -206,12 +207,13 @@ class SAC:
         self.num_schedule_updates = num_schedule_updates
         self._base_learning_rates = (actor_learning_rate, critic_learning_rate, alpha_learning_rate)
 
-        # Initialize update counters, actor state, and pending observations
+        # Initialize update counters, actor state, and collection graphs
         self.num_env_steps = 0
         self.num_critic_updates = 0
         self._num_critic_updates_tensor = torch.zeros((), device=self.device)
+        self._num_steps_since_update = 0
         self._actor_loaded = False
-        self._pending_observations: list[TensorDict] = []
+        self._collection_graphs: dict[tuple, CudaGraphCallable] = {}
 
         # Configure optimizer state for CUDA graph capture
         self._configure_optimizer_capture()
@@ -219,27 +221,14 @@ class SAC:
     @torch.no_grad()
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Sample actions and store transition data."""
-        # Keep policy statistics available to the runner during uniform-action warm-up
-        with _BatchNormMode(self._actor_batch_norms, training=False):
-            actions = self.actor(obs, stochastic_output=True)
-
-        # Sample uniform actions during warm-up
-        distribution = self.actor.distribution
-        if not self._actor_loaded and self.num_env_steps * self.storage.num_envs < self.num_warmup_transitions:
-            uniform_actions = torch.rand(obs.batch_size[0], distribution.output_dim, device=self.device) * 2.0 - 1.0
-            actions = distribution.range_offset + distribution.range_scale * uniform_actions  # type: ignore
-        elif self.exploration_type == "held":
-            # Resample noise and repetition counts for environments whose held noise has expired
-            resample = self._noise_steps_left <= 0
-            self._noise.copy_(torch.where(resample[:, None], torch.randn_like(self._noise), self._noise))
-            repeats = torch.searchsorted(self._noise_repeat_cdf, torch.rand_like(self._noise_steps_left.float()))
-            self._noise_steps_left.copy_(torch.where(resample, repeats + 1, self._noise_steps_left) - 1)
-            actions = distribution.sample(noise=self._noise)  # type: ignore
+        # Sample uniform actions during warm-up unless an actor was loaded
+        uniform = not self._actor_loaded and self.num_env_steps * self.storage.num_envs < self.num_warmup_transitions
+        actions = self._run_collection_step(("act", uniform), functools.partial(self._act, uniform=uniform), obs)
 
         # Record observations and actions before env.step()
         self.transition.observations = obs
-        self.transition.actions = actions
-        return actions
+        self.transition.actions = actions["actions"]
+        return actions["actions"]
 
     @torch.no_grad()
     def process_env_step(self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict) -> None:
@@ -249,41 +238,30 @@ class SAC:
         time_outs = extras.get("time_outs", torch.zeros_like(done_mask)).to(self.device).reshape(-1).bool()
         critic_obs_groups = [obs_group for critic in self.critics for obs_group in critic.obs_groups]  # type: ignore
         groups = list(dict.fromkeys(self.actor.obs_groups + critic_obs_groups))
-
-        # Replace reset observations with final observations for completed episodes
-        next_obs = obs.select(*groups).clone()
         final_obs = extras.get("final_obs")
         if final_obs is None:
             if done_mask.any():
                 raise ValueError("SAC requires extras['final_obs'] on every step containing a done.")
-        else:
-            for key in groups:
-                mask = done_mask.reshape(-1, *([1] * (next_obs[key].ndim - 1)))
-                next_obs[key] = torch.where(mask, final_obs[key].to(self.device), next_obs[key])
+            final_obs = obs
 
-        # Construct the transition using observations and actions recorded by act()
-        observations = self.transition.observations
-        self.transition.observations = observations.select(*groups)
-        self.transition.rewards = rewards.reshape(-1)
-        self.transition.next_observations = next_obs
-        self.transition.dones = done_mask
-        self.transition.terminated = done_mask & ~time_outs
-
-        # Record the transition and retain observations for normalization
-        self.storage.add_transition(self.transition)
+        # Record the transition and update the episode state
+        self._run_collection_step(
+            ("process_env_step",),
+            self._process_env_step,
+            self.transition.observations.select(*groups),  # type: ignore
+            self.transition.actions,
+            obs.select(*groups),
+            rewards.reshape(-1),
+            done_mask,
+            time_outs,
+            TensorDict({key: final_obs[key] for key in groups}, batch_size=obs.batch_size).to(self.device),
+        )
+        self.storage.advance()
         self.transition.clear()
-        self._pending_observations.append(observations.detach().clone())
-
-        # Record discounted returns for reward normalization
-        if self.reward_normalization:
-            self._returns.mul_(self.gamma).add_(rewards.reshape(-1))
-            self._max_abs_return.copy_(torch.maximum(self._max_abs_return, self._returns.abs().max()))
-            self._pending_returns.append(self._returns.clone())
-            self._returns.mul_(~dones.reshape(-1).bool())
-
-        # Reset exploration and model state for completed episodes
-        self._noise_steps_left.mul_(~dones.reshape(-1).bool())
         self.num_env_steps += 1
+        self._num_steps_since_update += 1
+
+        # Reset model state for completed episodes
         self.actor.reset(dones)
         for critic in self.critics:
             critic.reset(dones)  # type: ignore
@@ -294,16 +272,13 @@ class SAC:
 
     def update(self) -> dict[str, float]:
         """Update normalizers and models from replay samples and return mean losses."""
-        # Update the normalizers using newly collected observations and returns
-        if self._pending_observations:
-            observations = torch.cat(self._pending_observations)  # type: ignore
+        # Update the observation normalizers using the transitions collected since the last update
+        if self._num_steps_since_update:
+            observations = self.storage.latest_observations(self._num_steps_since_update)
             self.actor.update_normalization(observations)  # type: ignore
             for critic in self.critics:
                 critic.update_normalization(observations)  # type: ignore
-            self._pending_observations.clear()
-        if self._pending_returns:
-            self._return_normalizer.update(torch.cat(self._pending_returns).unsqueeze(-1))
-            self._pending_returns.clear()
+            self._num_steps_since_update = 0
 
         # Wait until enough transitions have been collected
         if self.storage.size < self.num_warmup_transitions or not self.storage.size:
@@ -496,6 +471,75 @@ class SAC:
             batch.bootstrap_discounts = batch.bootstrap_discounts.repeat(num_aug)
 
         return batch
+
+    def _run_collection_step(self, key: tuple, fn: Callable[..., dict[str, torch.Tensor]], *args: Any) -> dict:
+        """Run a fixed-shape collection function eagerly or, with CUDA graphs enabled, as a replayed graph."""
+        if not self.use_cuda_graph:
+            return fn(*args)
+        if key not in self._collection_graphs:
+            self._collection_graphs[key] = CudaGraphCallable(fn, self.device)
+        return self._collection_graphs[key](*args)
+
+    def _act(self, obs: TensorDict, uniform: bool) -> dict[str, torch.Tensor]:
+        """Sample uniform or exploration actions using only device operations."""
+        # Keep policy statistics available to the runner during uniform-action warm-up
+        with _BatchNormMode(self._actor_batch_norms, training=False):
+            actions = self.actor(obs, stochastic_output=True)
+
+        # Sample uniform actions during warm-up
+        distribution = self.actor.distribution
+        if uniform:
+            uniform_actions = torch.rand(obs.batch_size[0], distribution.output_dim, device=self.device) * 2.0 - 1.0
+            actions = distribution.range_offset + distribution.range_scale * uniform_actions  # type: ignore
+        elif self.exploration_type == "held":
+            # Resample noise and repetition counts for environments whose held noise has expired
+            resample = self._noise_steps_left <= 0
+            self._noise.copy_(torch.where(resample[:, None], torch.randn_like(self._noise), self._noise))
+            repeats = torch.searchsorted(self._noise_repeat_cdf, torch.rand_like(self._noise_steps_left.float()))
+            self._noise_steps_left.copy_(torch.where(resample, repeats + 1, self._noise_steps_left) - 1)
+            actions = distribution.sample(noise=self._noise)  # type: ignore
+        return {"actions": actions}
+
+    def _process_env_step(
+        self,
+        observations: TensorDict,
+        actions: torch.Tensor,
+        next_observations: TensorDict,
+        rewards: torch.Tensor,
+        dones: torch.Tensor,
+        time_outs: torch.Tensor,
+        final_observations: TensorDict,
+    ) -> dict[str, torch.Tensor]:
+        """Store a transition and update the return statistics and exploration state using only device operations."""
+        # Replace reset observations with final observations for completed episodes
+        next_observations = TensorDict(
+            {
+                key: torch.where(dones.reshape(-1, *([1] * (value.ndim - 1))), final_observations[key], value)
+                for key, value in next_observations.items()
+            },
+            batch_size=next_observations.batch_size,
+        )
+
+        # Record the transition
+        transition = ReplayBuffer.Transition()
+        transition.observations = observations
+        transition.actions = actions
+        transition.rewards = rewards
+        transition.next_observations = next_observations
+        transition.dones = dones
+        transition.terminated = dones & ~time_outs
+        self.storage.write_transition(transition)
+
+        # Record discounted returns for reward normalization
+        if self.reward_normalization:
+            self._returns.mul_(self.gamma).add_(rewards)
+            self._max_abs_return.copy_(torch.maximum(self._max_abs_return, self._returns.abs().max()))
+            self._return_normalizer.update(self._returns.unsqueeze(-1))
+            self._returns.mul_(~dones)
+
+        # Reset exploration for completed episodes
+        self._noise_steps_left.mul_(~dones)
+        return {}
 
     def _run_updates(self, phase: int) -> dict[str, torch.Tensor]:
         """Run the gradient updates of one iteration and return the summed losses.

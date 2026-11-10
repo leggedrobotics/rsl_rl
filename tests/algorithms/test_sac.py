@@ -252,7 +252,7 @@ def test_terminal_observations_and_missing_final() -> None:
         dones,
         {
             "time_outs": torch.tensor([False, True, False, False]),
-            "final_obs": TensorDict({"policy": torch.full_like(obs["policy"], 9.0)}, batch_size=[4]),
+            "final_obs": {"policy": torch.full_like(obs["policy"], 9.0)},
         },
     )
     torch.testing.assert_close(alg.storage.next_observations["policy"][0, :2], torch.full((2, 8), 9.0))
