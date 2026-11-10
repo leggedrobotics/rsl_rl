@@ -297,7 +297,7 @@ def test_actor_ema_matches_closed_form_and_keeps_live_buffers() -> None:
         for value in range(1, 13):
             for parameter in learner.actor.parameters():
                 parameter.fill_(value)
-            learner._update_actor_ema()
+            learner._update_actor_ema(torch.tensor(True))
     decays = [min(0.5, (1 + n) / (10 + n)) for n in range(1, 13)]
     expected = sum((i + 1) * (1 - decay) * math.prod(decays[i + 1 :]) for i, decay in enumerate(decays))
     with torch.inference_mode():
