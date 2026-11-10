@@ -108,7 +108,7 @@ class SAC:
         multi_gpu_cfg: dict | None = None,
         grad_reduce_bucket_mb: float = 25,
         # Validation parameters
-        validate_final_obs: bool = True,
+        validate_final_obs: bool | None = None,
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
         # Not yet implemented features
@@ -248,7 +248,7 @@ class SAC:
         )
         self._nonfinite_final_obs = torch.zeros(len(self._obs_groups), dtype=torch.bool, device=self.device)
         self._missing_final_obs = torch.zeros((), dtype=torch.bool, device=self.device)
-        self.validate_final_obs = validate_final_obs
+        self.validate_final_obs = True if validate_final_obs is None else validate_final_obs
         self._final_obs_absent = False
 
         # Initialize update counters, actor state, and collection graphs
@@ -506,7 +506,8 @@ class SAC:
 
         # A configuration that enables the runner's NaN check covers final observations on a single GPU; across ranks,
         # SAC's own check is still needed to raise on every rank
-        alg_cfg.setdefault("validate_final_obs", cfg.get("multi_gpu") is not None or cfg.get("check_for_nan") is not True)
+        if alg_cfg.get("validate_final_obs") is None:
+            alg_cfg["validate_final_obs"] = cfg.get("multi_gpu") is not None or cfg.get("check_for_nan") is not True
 
         # Initialize the algorithm
         alg = alg_class(actor, critics, storage, device=device, **alg_cfg, multi_gpu_cfg=cfg["multi_gpu"])

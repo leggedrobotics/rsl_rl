@@ -413,11 +413,11 @@ SAC
      - ``25``
      - Maximum gradient-reduction buffer size in megabytes for distributed training.
    * - ``validate_final_obs``
-     - bool
-     - see description
+     - bool | None
+     - ``None``
      - Whether SAC rejects nonfinite final observations in :meth:`~rsl_rl.algorithms.sac.SAC.update`, which costs one
-       synchronization per iteration. Defaults to ``False`` on a single GPU if the runner configuration sets
-       ``check_for_nan=True``, whose check already covers final observations, and ``True`` otherwise.
+       synchronization per iteration. ``None`` resolves to ``False`` on a single GPU if the runner configuration sets
+       ``check_for_nan=True``, whose check already covers final observations, and to ``True`` otherwise.
 
 The SAC defaults are the configuration that worked best across Isaac Lab locomotion benchmark tasks. These runs used
 residual networks for the actor and critics, and an actor action range of ``(-2.0, 2.0)``:
