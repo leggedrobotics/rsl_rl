@@ -213,11 +213,19 @@ class ReplayBuffer:
         self.step = (self.step + 1) % self.num_slots
         self.num_steps = min(self.num_steps + 1, self.num_slots)
 
+    @property
+    def write_index(self) -> torch.Tensor:
+        """Device tensor with the slot that the next :meth:`write_transition` writes to."""
+        return self._step_tensor
+
+    def latest_indices(self, num_steps: int) -> torch.Tensor:
+        """Return the slots of the latest ``num_steps`` transitions, oldest first."""
+        num_steps = min(num_steps, self.num_steps)
+        return torch.arange(self.step - num_steps, self.step, device=self.device) % self.num_slots
+
     def latest_observations(self, num_steps: int) -> TensorDict:
         """Return the observations of the latest ``num_steps`` transitions, flattened over steps and environments."""
-        num_steps = min(num_steps, self.num_steps)
-        indices = torch.arange(self.step - num_steps, self.step, device=self.device) % self.num_slots
-        return self.observations[indices].reshape(-1)  # type: ignore
+        return self.observations[self.latest_indices(num_steps)].reshape(-1)  # type: ignore
 
     def sample(self, batch_size: int, length: int = 1) -> ReplayBuffer.Batch:
         """Sample windows of consecutive transitions for independently selected environments.
