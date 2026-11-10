@@ -371,27 +371,32 @@ class SuperMimic:
         }
         if self.value_cap is not None:
             metrics["terminal_saturation"] = (value.detach() > self.value_cap).float().mean()
-        metrics.update(self._fit_critic(features_tensor, reward.detach(), terminal.detach()))
+        reach = torch.cat((torch.ones_like(alive[:1]), alive[:-1])).detach()
+        metrics.update(self._fit_critic(features_tensor, reward.detach(), terminal.detach(), reach))
         return metrics
 
     def _fit_critic(
-        self, features: torch.Tensor, rewards: torch.Tensor, terminals: torch.Tensor
+        self, features: torch.Tensor, rewards: torch.Tensor, terminals: torch.Tensor, reach: torch.Tensor
     ) -> dict[str, torch.Tensor]:
-        """Fit scalar values on detached imagined features with TD(lambda) targets."""
+        """Fit scalar values on detached imagined features with TD(lambda) targets.
+
+        ``reach`` is the probability of reaching each imagined state without an earlier termination. The loss is
+        weighted by it, and the normalizer is updated with the replay start states only, so states after a
+        termination influence neither.
+        """
         with torch.no_grad():
-            self.critic.update_normalization(
-                TensorDict({"critic": features.flatten(0, 1)}, batch_size=[features.shape[0] * features.shape[1]])
-            )
+            self.critic.update_normalization(TensorDict({"critic": features[0]}, batch_size=features.shape[1:2]))
             targets = lambda_returns(rewards, terminals, self._cap(self._value(features)), self.gamma, self.gae_lambda)
             targets = self._cap(targets).flatten()
-        features = features[:-1].flatten(0, 1)
+        features, reach = features[:-1].flatten(0, 1), reach.flatten()
         losses = []
         for _ in range(self.critic_epochs):
             for indices in torch.randperm(features.shape[0], device=self.device).chunk(self.critic_minibatches):
                 with torch.autocast(
                     torch.device(self.device).type, dtype=torch.bfloat16, enabled=self.use_mixed_precision
                 ):
-                    loss = (self._value(features[indices]) - targets[indices]).square().mean()
+                    squared_errors = (self._value(features[indices]) - targets[indices]).square()
+                    loss = (reach[indices] * squared_errors).sum() / reach[indices].sum().clamp(min=1e-6)
                 self._apply(loss, "critic", self.critic)
                 losses.append(loss.detach())
         return {"critic_loss": torch.stack(losses).mean()}
