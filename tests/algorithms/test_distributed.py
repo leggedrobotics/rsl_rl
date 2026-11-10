@@ -372,3 +372,51 @@ def _sac_worker(rank: int, world_size: int, store_file: str, categorical: bool, 
 def test_sac_distributed_updates_and_resume(categorical: bool, cnn: bool) -> None:
     """Different local replay data must preserve globally synchronized learner state and normalization."""
     spawn_gloo(_sac_worker, categorical, cnn)
+
+
+_NCCL_GPUS_AVAILABLE = (
+    torch.distributed.is_available() and torch.distributed.is_nccl_available() and torch.cuda.device_count() >= 2
+)
+
+
+def _sac_cuda_graph_worker(rank: int, world_size: int, store_file: str) -> None:
+    from rsl_rl.algorithms import SAC
+    from tests.algorithms.test_sac import _make_train_cfg
+    from tests.runners.test_on_policy_runner import DummyEnv
+
+    device = f"cuda:{rank}"
+    torch.cuda.set_device(device)
+    store = torch.distributed.FileStore(store_file, world_size)
+    torch.distributed.init_process_group(
+        backend="nccl", store=store, rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=60)
+    )
+    torch.manual_seed(rank + 10)
+    cfg = _make_train_cfg()
+    cfg["multi_gpu"] = {"global_rank": rank, "world_size": world_size}
+    cfg["algorithm"].update(use_cuda_graph=True, num_updates=4, actor_update_interval=2, reward_normalization=True)
+    for role in ("actor", "critic"):
+        cfg[role]["network_cfg"] = {"class_name": "ResidualMLP", "hidden_dim": 16, "num_blocks": 1, "expansion": 2}
+    env = DummyEnv(device=device)
+    obs = env.get_observations()
+    alg = SAC.construct_algorithm(obs, env, cfg, device)
+    for _ in range(6):
+        with torch.inference_mode():
+            for _ in range(3):
+                obs, rewards, dones, extras = env.step(alg.act(obs))
+                alg.process_env_step(obs, rewards + rank, dones, {**extras, "final_obs": obs})
+        alg.update()
+    assert alg._graph_updates and all(graph.graph is not None for graph in alg._graph_updates.values())
+    assert alg._collection_graphs and all(graph.graph is not None for graph in alg._collection_graphs.values())
+    for model in (alg._raw_actor, alg._raw_critics, alg.target_critics, alg._return_normalizer):
+        for tensor in model.state_dict().values():
+            _assert_close_across_ranks(tensor.float())
+    _assert_close_across_ranks(alg.log_alpha.detach())
+    # Captured NCCL collectives must be released before the process group is destroyed, which otherwise hangs
+    alg.release_cuda_graphs()
+    torch.distributed.destroy_process_group()
+
+
+@pytest.mark.skipif(not _NCCL_GPUS_AVAILABLE, reason="NCCL and at least two GPUs are required")
+def test_sac_distributed_cuda_graphs_stay_synchronized_and_shut_down() -> None:
+    """Captured NCCL updates keep learner state identical across ranks, and released graphs allow a clean shutdown."""
+    spawn_gloo(_sac_cuda_graph_worker)
