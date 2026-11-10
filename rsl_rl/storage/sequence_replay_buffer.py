@@ -26,7 +26,8 @@ class SequenceReplayBuffer:
     Capacity counts transitions across environments and is rounded down to complete environment steps. Samples may
     include consecutive positions after an anchor; validity masks exclude missing positions and episode boundaries.
     The terminating transition itself remains valid. Invalid positions repeat the last valid position, so every
-    gathered value comes from initialized storage. Storage is allocated on the first :meth:`add`.
+    gathered value comes from initialized storage. Storage is allocated on the first :meth:`add`. Sampling reads
+    device copies of the write cursor, so it can be captured in a CUDA graph.
     """
 
     def __init__(
@@ -49,6 +50,8 @@ class SequenceReplayBuffer:
         self.max_memory_fraction = max_memory_fraction
         self.num_steps = 0
         self.step = 0
+        self._num_steps_tensor = torch.zeros((), dtype=torch.long, device=device)
+        self._step_tensor = torch.zeros((), dtype=torch.long, device=device)
         self.data: TensorDict | None = None
         self._data: dict[str | tuple[str, ...], torch.Tensor] = {}
         self._flat_data: dict[str | tuple[str, ...], torch.Tensor] = {}
@@ -92,6 +95,8 @@ class SequenceReplayBuffer:
             self._data[key][self.step].copy_(value)
         self.step = (self.step + 1) % self.num_slots
         self.num_steps = min(self.num_steps + 1, self.num_slots)
+        self._step_tensor.fill_(self.step)
+        self._num_steps_tensor.fill_(self.num_steps)
 
     def sample(self, batch_size: int, length: int = 1, history: int = 0) -> ReplayIndex:
         """Sample positions of shape ``[batch_size, history+length]``, clipping history at resets and oldest storage.
@@ -103,12 +108,13 @@ class SequenceReplayBuffer:
             raise RuntimeError("Cannot sample empty replay.")
         if batch_size < 1 or length < 1 or history < 0:
             raise ValueError("Batch size and length must be positive; history must be nonnegative.")
-        anchor = torch.randint(self.num_steps, (batch_size,), device=self.device)
+        num_steps = self._num_steps_tensor
+        anchor = (torch.rand(batch_size, device=self.device) * num_steps).long().clamp(max=num_steps - 1)
         env_idx = torch.randint(self.num_envs, (batch_size,), device=self.device)
         ages = anchor[:, None] + torch.arange(length, device=self.device)
-        stored = ages < self.num_steps
-        oldest = (self.step - self.num_steps) % self.num_slots
-        ids = ((oldest + ages.clamp(max=self.num_steps - 1)) % self.num_slots) * self.num_envs + env_idx[:, None]
+        stored = ages < num_steps
+        oldest = (self._step_tensor - num_steps) % self.num_slots
+        ids = ((oldest + torch.minimum(ages, num_steps - 1)) % self.num_slots) * self.num_envs + env_idx[:, None]
         valid = stored
         if length > 1:
             dones = self._flat_data["dones"][ids]
@@ -145,3 +151,5 @@ class SequenceReplayBuffer:
     def clear(self) -> None:
         """Discard stored transitions while retaining allocated memory."""
         self.num_steps = self.step = 0
+        self._num_steps_tensor.zero_()
+        self._step_tensor.zero_()
