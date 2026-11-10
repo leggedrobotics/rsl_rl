@@ -55,12 +55,11 @@ class EmpiricalNormalization(nn.Module):
         if self.until is not None and self.count >= self.until:
             return
 
-        count_x = x.shape[0]
+        count_x = torch.full_like(self.count, x.shape[0])  # type: ignore
         var_x = torch.var(x, dim=0, unbiased=False, keepdim=True)
         mean_x = torch.mean(x, dim=0, keepdim=True)
 
         if torch.distributed.is_initialized():
-            count_x = torch.tensor(x.shape[0], dtype=self.count.dtype, device=self.count.device)  # type: ignore
             # Compute the global mean first, then combine the local variances around that mean
             local_mean_x = mean_x
             torch.distributed.all_reduce(count_x)
