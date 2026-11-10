@@ -701,3 +701,17 @@ def test_critic_ignores_states_after_imagined_termination(monkeypatch: pytest.Mo
     reach[0] = 1.0
     features[1:] = 1e6
     assert torch.isfinite(torch.tensor(learner._fit_critic(features, rewards, terminals, reach)["critic_loss"].item()))
+
+
+def test_event_labels_condition_on_the_applied_action() -> None:
+    """At the same successor state, different applied actions can lead to different event predictions."""
+    learner = _learner()
+    with torch.no_grad():
+        for parameter in learner.world_model.label_head.parameters():
+            parameter.normal_(0, 1.0)
+    state = learner.task.representation.unflatten(torch.zeros(4, 1))
+    context, previous = torch.zeros(4, 1), torch.zeros(4, learner.task.action_history_length, 1)
+    with torch.no_grad():
+        _, low, _ = learner._predict(state, torch.full((4, 1), -1.0), context, previous)
+        _, high, _ = learner._predict(state, torch.full((4, 1), 1.0), context, previous)
+    assert not torch.allclose(low, high)
