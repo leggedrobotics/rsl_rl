@@ -695,6 +695,11 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
      - bool
      - ``False``
      - Enable BF16 matrix operations while integrating physical states in FP32.
+   * - ``use_cuda_graph``
+     - bool
+     - ``False``
+     - Capture each learner iteration in a CUDA graph. Requires a CUDA device and task heads without host
+       synchronization.
 
 When enabled, inference and JIT/ONNX exports use EMA parameters with live normalization buffers.
 Collection and policy optimization keep using the live actor.

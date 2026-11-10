@@ -715,3 +715,30 @@ def test_event_labels_condition_on_the_applied_action() -> None:
         _, low, _ = learner._predict(state, torch.full((4, 1), -1.0), context, previous)
         _, high, _ = learner._predict(state, torch.full((4, 1), 1.0), context, previous)
     assert not torch.allclose(low, high)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
+def test_cuda_graph_matches_eager_and_resumes() -> None:
+    """Graphed learner iterations match eager updates exactly and recapture after loading optimizer state."""
+
+    def train(use_cuda_graph: bool) -> tuple[SuperMimic, ScalarEnv, list[dict[str, float]]]:
+        torch.manual_seed(0)
+        env = ScalarEnv(device="cuda:0")
+        learner = _learner(env, use_cuda_graph=use_cuda_graph, actor_ema_halflife=3)
+        metrics = []
+        for _ in range(6):
+            _collect(learner, env, 3)
+            metrics.append(learner.update())
+        return learner, env, metrics
+
+    eager, _, eager_metrics = train(False)
+    graphed, env, graphed_metrics = train(True)
+    assert graphed._graph_updates and graphed_metrics == eager_metrics
+    for key in ("actor_state_dict", "critic_state_dict", "world_model_state_dict", "actor_ema_state_dict"):
+        torch.testing.assert_close(graphed.save()[key], eager.save()[key], rtol=0, atol=0)
+    graphed.load(eager.save(), None, strict=True)
+    assert not graphed._graph_updates
+    for _ in range(5):
+        _collect(graphed, env, 3)
+        metrics = graphed.update()
+    assert graphed._graph_updates and math.isfinite(metrics["world_model_loss"])
