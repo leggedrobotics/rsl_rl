@@ -687,9 +687,6 @@ class SAC:
         next_output = torch.stack(next_outputs).gather(
             0, critic_indices.view(1, -1, 1).expand(1, -1, next_outputs[0].shape[-1])
         )[0]
-        bootstrap = batch.bootstrap_discounts > 0
-        next_output = torch.where(bootstrap.unsqueeze(-1), next_output, torch.zeros_like(next_output))
-        entropy_bonus = torch.where(bootstrap, entropy_bonus, torch.zeros_like(entropy_bonus))
 
         # Bootstrap scalar values or project categorical distributions onto the fixed support
         if self.critic_loss_type == "mse":

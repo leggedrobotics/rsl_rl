@@ -10,7 +10,6 @@ from __future__ import annotations
 import torch
 from pathlib import Path
 from tensordict import TensorDict
-from types import SimpleNamespace
 
 import pytest
 
@@ -270,23 +269,6 @@ def test_terminal_observations_and_missing_final() -> None:
     limited.act(obs)
     with pytest.raises(ValueError, match="capacity"):
         limited.process_env_step(obs, torch.ones(4), torch.zeros(4), {})
-
-
-@pytest.mark.parametrize("critic_loss_type", ["mse", "categorical"])
-def test_terminal_targets_ignore_non_finite_successor_values(critic_loss_type: str) -> None:
-    """Rows without bootstrapping produce finite targets even if the successor values are not finite."""
-    cfg = _make_train_cfg()
-    cfg["multi_gpu"] = None
-    cfg["algorithm"]["critic_loss_type"] = critic_loss_type
-    env = DummyEnv()
-    alg = SAC.construct_algorithm(env.get_observations(), env, cfg, "cpu")
-    output_dim = 1 if critic_loss_type == "mse" else alg.num_bins
-    next_outputs = [torch.full((2, output_dim), torch.nan), torch.full((2, output_dim), torch.nan)]
-    batch = SimpleNamespace(rewards=torch.ones(2), bootstrap_discounts=torch.zeros(2))
-    target = alg._compute_target(next_outputs, batch, torch.full((2,), torch.nan))  # type: ignore[arg-type]
-    assert torch.isfinite(target).all()
-    values = target if critic_loss_type == "mse" else (target * alg._bin_values).sum(-1)
-    torch.testing.assert_close(values, torch.ones(2))
 
 
 @pytest.mark.parametrize(("network", "mixed_precision"), [(None, False), ("ResidualMLP", False), (None, True)])
