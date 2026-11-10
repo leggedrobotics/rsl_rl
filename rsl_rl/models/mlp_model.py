@@ -256,12 +256,12 @@ class QMLPModel(MLPModel):
         return self.mlp(latent)
 
     def as_jit(self) -> torch.nn.Module:
-        """TorchScript export is not implemented for QMLPModel."""
-        raise NotImplementedError("TorchScript export is not implemented for critics.")
+        """Critics are not exported to TorchScript."""
+        raise NotImplementedError("TorchScript export is not necessary because critics are not exported.")
 
     def as_onnx(self) -> torch.nn.Module:
-        """ONNX export is not implemented for QMLPModel."""
-        raise NotImplementedError("ONNX export is not implemented for critics.")
+        """Critics are not exported to ONNX."""
+        raise NotImplementedError("ONNX export is not necessary because critics are not exported.")
 
     def _get_latent_dim(self) -> int:
         """Return the combined observation and action dimension for the MLP head."""
