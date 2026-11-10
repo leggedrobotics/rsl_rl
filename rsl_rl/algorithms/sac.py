@@ -102,6 +102,8 @@ class SAC:
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
         grad_reduce_bucket_mb: float = 25,
+        # Validation parameters
+        validate_final_obs: bool = True,
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
         # Not yet implemented features
@@ -241,6 +243,8 @@ class SAC:
         )
         self._nonfinite_final_obs = torch.zeros(len(self._obs_groups), dtype=torch.bool, device=self.device)
         self._missing_final_obs = torch.zeros((), dtype=torch.bool, device=self.device)
+        self.validate_final_obs = validate_final_obs
+        self._final_obs_absent = False
 
         # Initialize update counters, actor state, and collection graphs
         self.num_env_steps = 0
@@ -280,6 +284,7 @@ class SAC:
         groups = self._obs_groups
         final_obs = extras.get("final_obs")
         if final_obs is None:
+            self._final_obs_absent = True
             self._missing_final_obs.logical_or_(done_mask.any())
             final_obs = obs
 
@@ -313,16 +318,20 @@ class SAC:
 
     def update(self) -> tuple[dict[str, float], dict[str, float]]:
         """Update normalizers and models from replay samples and return mean losses and statistics."""
-        # Reject training on missing or nonfinite final observations, consistently across ranks
-        errors = torch.cat([self._missing_final_obs.view(1), self._nonfinite_final_obs]).long()
-        if self.is_multi_gpu:
-            dist.all_reduce(errors, op=dist.ReduceOp.MAX)
-        missing, *nonfinite = errors.tolist()
-        if missing:
-            raise ValueError("SAC requires extras['final_obs'] on every step containing a done (on every rank).")
-        if any(nonfinite):
-            groups = [group for group, flag in zip(self._obs_groups, nonfinite) if flag]
-            raise ValueError(f"SAC received nonfinite final_obs in observation groups {groups} on at least one rank.")
+        # Reject training on missing or nonfinite final observations, consistently across ranks. A missing final
+        # observation is only possible after a step without one, so the check synchronizes only when needed.
+        if self.validate_final_obs or self._final_obs_absent:
+            errors = torch.cat([self._missing_final_obs.view(1), self._nonfinite_final_obs]).long()
+            if self.is_multi_gpu:
+                dist.all_reduce(errors, op=dist.ReduceOp.MAX)
+            missing, *nonfinite = errors.tolist()
+            if missing:
+                raise ValueError("SAC requires extras['final_obs'] on every step containing a done (on every rank).")
+            if any(nonfinite):
+                groups = [group for group, flag in zip(self._obs_groups, nonfinite) if flag]
+                raise ValueError(
+                    f"SAC received nonfinite final_obs in observation groups {groups} on at least one rank."
+                )
 
         # Update the observation normalizers using the transitions collected since the last update
         if self._num_steps_since_update:
@@ -508,6 +517,10 @@ class SAC:
             device=device,
         )
 
+        # A configuration that enables the runner's NaN check covers final observations on a single GPU; across ranks,
+        # SAC's own check is still needed to raise on every rank
+        alg_cfg.setdefault("validate_final_obs", cfg.get("multi_gpu") is not None or cfg.get("check_for_nan") is not True)
+
         # Initialize the algorithm
         alg = alg_class(actor, critics, storage, device=device, **alg_cfg, multi_gpu_cfg=cfg["multi_gpu"])
 
@@ -657,12 +670,13 @@ class SAC:
         )
 
         # Record final observations of completed episodes that are not finite; update() rejects them
-        nonfinite = []
-        for key in self._obs_groups:
-            value = final_observations[key]
-            mask = dones.reshape(-1, *([1] * (value.ndim - 1)))
-            nonfinite.append(~(torch.isfinite(value) | ~mask).all())
-        self._nonfinite_final_obs.logical_or_(torch.stack(nonfinite))
+        if self.validate_final_obs:
+            nonfinite = []
+            for key in self._obs_groups:
+                value = final_observations[key]
+                mask = dones.reshape(-1, *([1] * (value.ndim - 1)))
+                nonfinite.append(~(torch.isfinite(value) | ~mask).all())
+            self._nonfinite_final_obs.logical_or_(torch.stack(nonfinite))
 
         # Record the transition
         transition = ReplayBuffer.Transition()
