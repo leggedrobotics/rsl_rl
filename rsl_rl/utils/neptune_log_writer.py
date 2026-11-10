@@ -48,12 +48,6 @@ class NeptuneLogWriter(SummaryWriter, LogWriter):
         self.run = neptune.init_run(project=neptune_project, api_token=token)
         self.run["log_dir"].log(run_name)
 
-        # Name mapping for incompatible characters
-        self.name_map = {
-            "Train/mean_reward/time": "Train/mean_reward_time",
-            "Train/mean_episode_length/time": "Train/mean_episode_length_time",
-        }
-
     def add_scalar(
         self,
         tag: str,
@@ -64,7 +58,7 @@ class NeptuneLogWriter(SummaryWriter, LogWriter):
     ) -> None:
         """Log a scalar to both TensorBoard and Neptune."""
         super().add_scalar(tag, scalar_value, global_step=global_step, walltime=walltime, new_style=new_style)
-        self.run[self._map_path(tag)].log(scalar_value, step=global_step)
+        self.run[tag].log(scalar_value, step=global_step)
 
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
         """Upload environment and training configuration to Neptune."""
@@ -89,10 +83,3 @@ class NeptuneLogWriter(SummaryWriter, LogWriter):
     def stop(self) -> None:
         """Finish the active Neptune run."""
         self.run.stop()
-
-    def _map_path(self, path: str) -> str:
-        """Map metric names to Neptune-compatible keys."""
-        if path in self.name_map:
-            return self.name_map[path]
-        else:
-            return path

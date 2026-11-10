@@ -242,8 +242,13 @@ class SAC:
         return actions
 
     @torch.no_grad()
-    def process_env_step(self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict) -> None:
-        """Record one environment step using final observations for environments that reset."""
+    def process_env_step(
+        self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict
+    ) -> dict[str, torch.Tensor]:
+        """Record one environment step and return per-environment values that the logger sums over each episode.
+
+        Final observations are used as next observations for environments that reset.
+        """
         # Resolve termination flags and observation groups
         done_mask = dones.reshape(-1).bool()
         time_outs = extras.get("time_outs", torch.zeros_like(done_mask)).to(self.device).reshape(-1).bool()
@@ -287,12 +292,14 @@ class SAC:
         for critic in self.critics:
             critic.reset(dones)  # type: ignore
 
+        return {"Training/mean_reward": rewards}
+
     def compute_returns(self, obs: TensorDict) -> None:
         """Defer return computation to replay sampling in :meth:`update` (no-op)."""
         pass
 
-    def update(self) -> dict[str, float]:
-        """Update normalizers and models from replay samples and return mean losses."""
+    def update(self) -> tuple[dict[str, float], dict[str, float]]:
+        """Update normalizers and models from replay samples and return mean losses and statistics."""
         # Update the normalizers using newly collected observations and returns
         if self._pending_observations:
             observations = torch.cat(self._pending_observations)  # type: ignore
@@ -306,7 +313,7 @@ class SAC:
 
         # Wait until enough transitions have been collected
         if self.storage.size < self.num_warmup_transitions or not self.storage.size:
-            return {}
+            return {}, self._get_stats()
 
         # Initialize the loss accumulators
         totals: dict[str, torch.Tensor] = {}
@@ -348,12 +355,19 @@ class SAC:
             for key, value in stats.items():
                 totals[key] = totals.get(key, 0.0) + value
 
-        # Divide the losses by the number of updates
+        # Construct the stats dictionary and divide by the number of updates
+        stats_dict = self._get_stats()
+        if actor_updates > 0:
+            stats_dict["Model/mean_policy_entropy"] = (totals.pop("entropy") / actor_updates).item()
+        stats_dict["Model/mean_critic_q_value"] = (totals.pop("q_value") / self.num_updates).item()
+
+        # Construct the loss dictionary and divide by the number of updates
         loss_dict: dict[str, float] = {}
         for key, value in totals.items():
-            num_updates = actor_updates if key in ("actor", "alpha", "entropy", "symmetry") else self.num_updates
+            num_updates = actor_updates if key in ("actor", "alpha", "symmetry") else self.num_updates
             loss_dict[key] = (value / num_updates).item()
-        return loss_dict
+
+        return loss_dict, stats_dict
 
     def train_mode(self) -> None:
         """Set train mode for learnable models."""
@@ -726,6 +740,16 @@ class SAC:
         """Sample actor actions and corrected log probabilities."""
         actions = self.actor(obs, stochastic_output=True)
         return actions, self.actor.get_output_log_prob(actions)
+
+    def _get_stats(self) -> dict[str, float]:
+        """Return the learning rates, entropy temperature, and policy standard deviation for logging."""
+        stats_dict = {
+            f"Optimizer/{name}_learning_rate": float(getattr(self, f"{name}_optimizer").param_groups[0]["lr"])
+            for name in ("actor", "critic", "alpha")
+        }
+        stats_dict["Model/alpha"] = self.log_alpha.exp().item()
+        stats_dict["Model/mean_policy_std"] = self.actor.output_std.mean().item()
+        return stats_dict
 
     def _configure_optimizer_capture(self) -> None:
         """Configure optimizers and static update functions for CUDA graph capture."""

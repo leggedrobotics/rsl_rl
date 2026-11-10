@@ -138,9 +138,25 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
             obs, rewards, dones, extras = env.step(alg.act(obs))
             alg.process_env_step(obs, rewards, dones, extras)
         alg.compute_returns(obs)
-    losses = alg.update()
+    losses, stats = alg.update()
     assert losses and all(torch.isfinite(torch.tensor(v)) for v in losses.values())
+    assert set(losses) == {"actor", "critic", "alpha"}
+    warmup_stats = {
+        "Optimizer/actor_learning_rate",
+        "Optimizer/critic_learning_rate",
+        "Optimizer/alpha_learning_rate",
+        "Model/mean_policy_std",
+        "Model/alpha",
+    }
+    assert warmup_stats | {"Model/mean_policy_entropy", "Model/mean_critic_q_value"} == stats.keys()
+    assert stats["Optimizer/critic_learning_rate"] == alg.learning_rate
+    assert stats["Model/mean_policy_std"] == alg.actor.output_std.mean().item()
+    assert stats["Model/alpha"] == alg.log_alpha.exp().item()
     assert alg.num_critic_updates == 4
+    alg.storage.clear()
+    losses, stats = alg.update()
+    assert losses == {}
+    assert set(stats) == warmup_stats
 
 
 @pytest.mark.parametrize(
@@ -354,7 +370,8 @@ def test_symmetry_replay_endpoints_and_actor_loss(augmentation: bool) -> None:
             batch.next_observations["policy"][batch_size:], -batch.next_observations["policy"][:batch_size]
         )
         torch.testing.assert_close(batch.actions[batch_size:], -batch.actions[:batch_size])
-    assert torch.isfinite(torch.tensor(runner.alg.update()["symmetry"]))
+    losses, _ = runner.alg.update()
+    assert torch.isfinite(torch.tensor(losses["symmetry"]))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
