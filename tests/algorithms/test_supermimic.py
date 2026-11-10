@@ -459,7 +459,7 @@ def test_value_cap_bounds_policy_bootstrap_and_critic_targets() -> None:
     with torch.no_grad():
         learner.critic.mlp.output_layer.bias.fill_(10.0)
     features = torch.zeros(2, 2, learner.critic.obs_dim)
-    metrics = learner._fit_critic(features, torch.tensor([[0.0, 4.0]]), torch.zeros(1, 2))
+    metrics = learner._fit_critic(features, torch.tensor([[0.0, 4.0]]), torch.zeros(1, 2), torch.ones(1, 2))
     assert metrics["critic_loss"].item() == pytest.approx((9.0**2 + 8.0**2) / 2)
     assert 2.0 < learner.critic.mlp.output_layer.bias.item() < 10.0
 
@@ -685,3 +685,19 @@ def test_nonfinite_final_observations_are_rejected_before_training(group: str) -
     with pytest.raises(ValueError, match=f"nonfinite final_obs.*{group}"):
         learner.update()
     assert all(torch.equal(a, b) for a, b in zip(before, learner.world_model.parameters()))
+
+
+def test_critic_ignores_states_after_imagined_termination(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a certain termination, imagined states neither train the critic nor update its normalizer."""
+    env, learner = ScalarEnv(), _learner()
+    _collect(learner, env, 4)
+    monkeypatch.setattr(learner.task, "termination_prob", lambda *args, **kwargs: torch.ones(4))
+    count = int(learner.critic.obs_normalizer.count)
+    learner._fit_policy()
+    assert int(learner.critic.obs_normalizer.count) - count == learner.policy_batch_size
+    features = torch.randn(learner.horizon + 1, 4, learner.critic.obs_normalizer.mean.shape[-1])
+    rewards, terminals = torch.ones(learner.horizon, 4), torch.ones(learner.horizon, 4)
+    reach = torch.zeros(learner.horizon, 4)
+    reach[0] = 1.0
+    features[1:] = 1e6
+    assert torch.isfinite(torch.tensor(learner._fit_critic(features, rewards, terminals, reach)["critic_loss"].item()))
