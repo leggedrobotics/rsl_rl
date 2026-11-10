@@ -116,8 +116,8 @@ class SAC:
                 raise ValueError("Distributed SAC requires an initialized process group.")
             if dist.get_world_size() != self.gpu_world_size or dist.get_rank() != self.gpu_global_rank:
                 raise ValueError("SAC multi_gpu_cfg does not match the initialized process group.")
-            if use_cuda_graph:
-                raise ValueError("Distributed SAC does not support CUDA graph capture; set use_cuda_graph=False.")
+            if use_cuda_graph and dist.get_backend() != "nccl":
+                raise ValueError("Distributed SAC can only capture CUDA graphs with the NCCL backend.")
         if actor.is_recurrent or any(critic.is_recurrent for critic in critics):
             raise ValueError("SAC does not yet support recurrent models.")
 
@@ -576,6 +576,17 @@ class SAC:
             batch.bootstrap_discounts = batch.bootstrap_discounts.repeat(num_aug)
 
         return batch
+
+    def release_cuda_graphs(self) -> None:
+        """Release the captured CUDA graphs; they are captured again when needed.
+
+        With multiple GPUs, the graphs contain NCCL collectives and must be released before the process group is
+        destroyed, which otherwise hangs. :meth:`~rsl_rl.runners.OnPolicyRunner.learn` does this when it returns.
+        """
+        self._graph_updates.clear()
+        self._collection_graphs.clear()
+        if self.use_cuda_graph:
+            torch.cuda.synchronize(self.device)
 
     def _run_collection_step(self, key: tuple, fn: Callable[..., dict[str, torch.Tensor]], *args: Any) -> dict:
         """Run a fixed-shape collection function eagerly or, with CUDA graphs enabled, as a replayed graph."""
