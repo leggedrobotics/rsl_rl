@@ -114,8 +114,8 @@ class SAC:
                 raise ValueError("Distributed SAC requires an initialized process group.")
             if dist.get_world_size() != self.gpu_world_size or dist.get_rank() != self.gpu_global_rank:
                 raise ValueError("SAC multi_gpu_cfg does not match the initialized process group.")
-            if use_cuda_graph:
-                raise ValueError("Distributed SAC does not support CUDA graph capture; set use_cuda_graph=False.")
+            if use_cuda_graph and dist.get_backend() != "nccl":
+                raise ValueError("Distributed SAC can only capture CUDA graphs with the NCCL backend.")
         if actor.is_recurrent or any(critic.is_recurrent for critic in critics):
             raise ValueError("SAC does not yet support recurrent models.")
 
@@ -564,6 +564,18 @@ class SAC:
                 dist.all_reduce(buffer, op=dist.ReduceOp.SUM if floating else dist.ReduceOp.MAX)
                 if floating:
                     buffer.div_(self.gpu_world_size)
+
+    def release_cuda_graphs(self) -> None:
+        """Release the captured CUDA graphs; they are captured again when needed.
+
+        With multiple GPUs, the graphs contain NCCL collectives and must be released before the process group is
+        destroyed, which otherwise hangs. :meth:`~rsl_rl.runners.OnPolicyRunner.learn` does this when it returns.
+        """
+        self._update_graphs.clear()
+        self._act_graphs.clear()
+        self._process_env_step_graph = None
+        if self.use_cuda_graph:
+            torch.cuda.synchronize(self.device)
 
     def _act(self, obs: TensorDict, uniform: bool) -> dict[str, torch.Tensor]:
         """Sample actions using only device operations."""

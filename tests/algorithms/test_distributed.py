@@ -361,7 +361,7 @@ def _sac_worker(rank: int, world_size: int, store_file: str, categorical: bool, 
         with pytest.raises(ValueError, match="nonfinite final_obs"):
             restored.update()
         cfg["algorithm"]["use_cuda_graph"] = True
-        with pytest.raises(ValueError, match="Distributed SAC does not support CUDA graph"):
+        with pytest.raises(ValueError, match="only capture CUDA graphs with the NCCL backend"):
             SAC.construct_algorithm(obs, env, cfg, "cpu")
     finally:
         torch.distributed.destroy_process_group()

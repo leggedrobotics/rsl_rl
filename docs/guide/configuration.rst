@@ -424,7 +424,10 @@ SAC distributed training
 ``OffPolicyRunner`` uses the same ``torchrun``/NCCL setup as ``OnPolicyRunner``. Pass
 ``device=f"cuda:{os.environ['LOCAL_RANK']}"`` to each runner and create its environments on that device.
 The standalone algorithm also accepts an already initialized Gloo process group for CPU execution via ``multi_gpu_cfg``.
-Set ``use_cuda_graph=False`` for distributed SAC; collective capture is explicitly unsupported.
+With NCCL, ``use_cuda_graph=True`` captures the gradient and statistics all-reduces together with the updates and
+the environment-step processing; the Gloo backend does not support capture. The captured graphs must be released
+before the process group is destroyed: ``OnPolicyRunner.learn()`` does this when it returns; code that drives the
+algorithm directly calls :meth:`~rsl_rl.algorithms.sac.SAC.release_cuda_graphs`.
 
 Replay capacity, warm-up transitions, and batch size are per rank. Every rank must use the same model and algorithm
 configuration and call collection and updates in the same order. An update starts only when every rank's replay is
