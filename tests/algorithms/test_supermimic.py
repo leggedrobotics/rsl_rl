@@ -669,3 +669,19 @@ def test_task_without_successor_event_labels(monkeypatch: pytest.MonkeyPatch) ->
     assert learner.world_model.label_head is None and "label_loss" not in metrics
     assert all(torch.isfinite(torch.tensor(value)) for value in metrics.values())
     assert metrics["policy_grad_norm"] > 0
+
+
+@pytest.mark.parametrize("group", ["state", "labels"])
+def test_nonfinite_final_observations_are_rejected_before_training(group: str) -> None:
+    """Every-step final observations of running environments are consumed, so their NaNs must stop training."""
+    env, learner = ScalarEnv(), _learner()
+    _collect(learner, env, 4)
+    obs = env.get_observations()
+    learner.act(obs)
+    final = env.get_observations()
+    final[group][1] = float("nan")
+    learner.process_env_step(obs, torch.zeros(4), torch.zeros(4), {"final_obs": final, "final_obs_every_step": True})
+    before = [p.detach().clone() for p in learner.world_model.parameters()]
+    with pytest.raises(ValueError, match=f"nonfinite final_obs.*{group}"):
+        learner.update()
+    assert all(torch.equal(a, b) for a, b in zip(before, learner.world_model.parameters()))

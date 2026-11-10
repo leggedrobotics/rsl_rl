@@ -83,3 +83,12 @@ def test_nonfinite_flags_name_their_sources() -> None:
     flags = find_nonfinite(obs, torch.tensor([0.0, torch.nan]), torch.tensor([False, True]), {"final_obs": final_obs})
     with pytest.raises(ValueError, match="rewards, final observation group 'policy'"):
         raise_if_nonfinite(flags)
+
+
+def test_nonfinite_flags_check_every_row_for_every_step_final_observations() -> None:
+    """With final_obs_every_step, final observations of running environments are checked too."""
+    obs = TensorDict({"policy": torch.zeros(2, 2)}, batch_size=[2])
+    final_obs = TensorDict({"policy": torch.tensor([[0.0, 0.0], [torch.nan, 0.0]])}, batch_size=[2])
+    extras = {"final_obs": final_obs, "final_obs_every_step": True}
+    with pytest.raises(ValueError, match="final observation group 'policy'"):
+        raise_if_nonfinite(find_nonfinite(obs, torch.zeros(2), torch.tensor([True, False]), extras))

@@ -173,6 +173,7 @@ class SuperMimic:
         self._last_actions: torch.Tensor | None = None
         self._last_previous_actions: torch.Tensor | None = None
         self._window_break_sum = torch.zeros((), device=device)
+        self._nonfinite_final_obs = torch.zeros(2, dtype=torch.bool, device=device)
         self._collected_steps = 0
         self._world_model_forward = self.world_model
         self._actor_forward = self.actor.forward_history
@@ -225,6 +226,11 @@ class SuperMimic:
         )
         if self.task.num_labels:
             transition["labels"] = self._set(final, "labels")
+        # Record nonfinite consumed final observations without synchronizing; update() rejects them before training
+        labels = transition["labels"] if self.task.num_labels else successor[:, :0]
+        self._nonfinite_final_obs.logical_or_(
+            torch.stack((~torch.isfinite(successor).all(), ~torch.isfinite(labels).all()))
+        )
         self.storage.add(transition)
         start = self.task.representation.unflatten(state)
         self.world_model.observe(
@@ -413,6 +419,10 @@ class SuperMimic:
 
     def update(self) -> dict[str, float]:
         """Run accumulated learner updates; the runner's collection cadence remains external."""
+        nonfinite_state, nonfinite_labels = self._nonfinite_final_obs.tolist()
+        if nonfinite_state or nonfinite_labels:
+            sets = [name for name, flag in (("state", nonfinite_state), ("labels", nonfinite_labels)) if flag]
+            raise ValueError(f"SuperMimic received nonfinite final_obs in the observation sets {sets}.")
         metrics = {"learner_updates": float(self.iteration)}
         if self._collected_steps:
             metrics["window_break_fraction"] = (self._window_break_sum / self._collected_steps).item()
