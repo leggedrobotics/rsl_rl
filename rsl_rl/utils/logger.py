@@ -54,6 +54,7 @@ class Logger:
         self.lenbuffer = deque(maxlen=100)
         self.cur_reward_sum = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.cur_episode_length = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self._completed_episodes: list[tuple[torch.Tensor, torch.Tensor]] = []
 
         # Create RND buffers
         if self.cfg["algorithm"].get("rnd_cfg"):
@@ -141,17 +142,27 @@ class Logger:
                 self.cur_reward_sum += rewards
             self.cur_episode_length += 1
 
-            # Clear data for completed episodes
-            new_ids = (dones > 0).nonzero(as_tuple=False)
-            self.rewbuffer.extend(self.cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-            self.lenbuffer.extend(self.cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
-            self.cur_reward_sum[new_ids] = 0
-            self.cur_episode_length[new_ids] = 0
+            # Record completed episodes on the device and clear their data; they are transferred once in log()
+            done_mask = dones.reshape(-1) > 0
+            sums = [self.cur_reward_sum, self.cur_episode_length]
             if intrinsic_rewards is not None:
-                self.erewbuffer.extend(self.cur_ereward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                self.irewbuffer.extend(self.cur_ireward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                self.cur_ereward_sum[new_ids] = 0
-                self.cur_ireward_sum[new_ids] = 0
+                sums += [self.cur_ereward_sum, self.cur_ireward_sum]
+            self._completed_episodes.append((done_mask, torch.stack(sums)))
+            for value in sums:
+                value.masked_fill_(done_mask, 0)
+
+    def _flush_completed_episodes(self) -> None:
+        """Move the statistics of the episodes completed since the last call into the episode buffers."""
+        if not self._completed_episodes:
+            return
+        done_masks = torch.stack([done_mask for done_mask, _ in self._completed_episodes])
+        sums = torch.stack([sums for _, sums in self._completed_episodes], dim=1)
+        self._completed_episodes.clear()
+        buffers = [self.rewbuffer, self.lenbuffer]
+        if len(sums) > 2:
+            buffers += [self.erewbuffer, self.irewbuffer]
+        for buffer, values in zip(buffers, sums[:, done_masks].cpu().tolist()):
+            buffer.extend(values)
 
     def log(
         self,
@@ -173,6 +184,7 @@ class Logger:
         If videos are available, they are uploaded to the logging service (W&B) as well.
         """
         if self.writer is not None:
+            self._flush_completed_episodes()
             collection_size = self.cfg["num_steps_per_env"] * self.num_envs * self.gpu_world_size
             iteration_time = collect_time + learn_time
             self.tot_timesteps += collection_size

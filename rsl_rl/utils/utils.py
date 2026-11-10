@@ -291,8 +291,19 @@ def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extra
     """Raise ``ValueError`` if any environment output contains NaN or Inf.
 
     If ``extras`` contains ``"final_obs"``, the final observations of environments that are done are checked as well.
-    Entries of environments that are not done are ignored.
+    Entries of environments that are not done are ignored. The common case of finite outputs synchronizes with the
+    device once.
     """
+    done_mask = dones.reshape(-1).bool()
+    final_obs = extras.get("final_obs") if extras is not None else None
+    finite = [torch.isfinite(tensor).all() for tensor in obs.values()]
+    finite += [torch.isfinite(rewards).all(), torch.isfinite(dones).all()]
+    if final_obs is not None:
+        for tensor in final_obs.values():
+            mask = done_mask.to(tensor.device).reshape(-1, *([1] * (tensor.ndim - 1)))
+            finite.append((torch.isfinite(tensor) | ~mask).all())
+    if torch.stack([flag.to(rewards.device) for flag in finite]).all():
+        return
     for key, tensor in obs.items():
         if not torch.isfinite(tensor).all():
             has_nan = torch.isnan(tensor).any()
@@ -318,9 +329,8 @@ def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extra
             f"The dones returned by the environment contain {value_name} values. This usually indicates a bug in the"
             " environment's termination logic."
         )
-    if extras is not None and extras.get("final_obs") is not None:
-        done_mask = dones.reshape(-1).bool()
-        for key, tensor in extras["final_obs"].items():
+    if final_obs is not None:
+        for key, tensor in final_obs.items():
             tensor = tensor[done_mask.to(tensor.device)]
             if not torch.isfinite(tensor).all():
                 has_nan = torch.isnan(tensor).any()
