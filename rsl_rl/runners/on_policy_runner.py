@@ -13,7 +13,7 @@ import torch
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
-from rsl_rl.utils import check_nan, resolve_callable
+from rsl_rl.utils import find_nonfinite, raise_if_nonfinite, resolve_callable
 from rsl_rl.utils.logger import Logger
 
 
@@ -87,14 +87,16 @@ class OnPolicyRunner:
                 start = time.time()
                 # Rollout
                 with torch.inference_mode():
+                    nonfinite: dict[str, torch.Tensor] = {}
                     for _ in range(self.cfg["num_steps_per_env"]):
                         # Sample actions
                         actions = self.alg.act(obs)
                         # Step the environment
                         obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
-                        # Check for NaN or Inf values from the environment
+                        # Record NaN or Inf values from the environment without synchronizing with the device
                         if self.cfg.get("check_for_nan", True):
-                            check_nan(obs, rewards, dones, extras)
+                            for source, flag in find_nonfinite(obs, rewards, dones, extras).items():
+                                nonfinite[source] = nonfinite[source] | flag if source in nonfinite else flag
                         # Move to device
                         obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                         # Process the step
@@ -103,6 +105,9 @@ class OnPolicyRunner:
                         intrinsic_rewards = self.alg.intrinsic_rewards if self.cfg["algorithm"].get("rnd_cfg") else None
                         # Book keeping
                         self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
+
+                    # Raise once per iteration, before the update, if the environment returned NaN or Inf values
+                    raise_if_nonfinite(nonfinite)
 
                     stop = time.time()
                     collect_time = stop - start
