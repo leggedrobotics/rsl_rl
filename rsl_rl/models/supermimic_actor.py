@@ -52,8 +52,8 @@ class SuperMimicActor(nn.Module):
         self.encoder = MLP(goal_dim, latent_dim, encoder_hidden_dims) if goal_dim else nn.Identity()
         self.decoder = MLP(obs_dim * history_length + (latent_dim if goal_dim else 0), num_actions, decoder_hidden_dims)
         with torch.no_grad():
-            self.decoder.output.weight.mul_(0.01)
-            self.decoder.output.bias.zero_()
+            self.decoder.output_layer.weight.mul_(0.01)
+            self.decoder.output_layer.bias.zero_()
         self.obs_norm = EmpiricalNormalization(obs_dim)
         self.goal_norm = EmpiricalNormalization(goal_dim) if goal_dim else nn.Identity()
         self.register_buffer("history", torch.zeros(num_envs, history_length, obs_dim), persistent=False)

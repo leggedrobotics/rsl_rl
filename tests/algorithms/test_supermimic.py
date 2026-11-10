@@ -194,7 +194,7 @@ def test_world_model_preserves_state_and_action_gradients_when_weights_are_froze
     representation = EuclideanStateRepresentation(1)
     model = WorldModel(representation, 1, 1, 1, hidden_dims=(8,))
     with torch.no_grad():
-        model.net.output.weight.normal_(0, 0.1)
+        model.net.output_layer.weight.normal_(0, 0.1)
     model.requires_grad_(False)
     state, action = torch.ones(4, 1, requires_grad=True), torch.ones(4, 1, requires_grad=True)
     model((state,), action, torch.zeros(4, 1))[0].square().sum().backward()
@@ -451,17 +451,17 @@ def test_value_cap_bounds_policy_bootstrap_and_critic_targets() -> None:
     with torch.no_grad():
         for parameter in learner.critic.parameters():
             parameter.zero_()
-        learner.critic.mlp.output.bias.fill_(10.0)
+        learner.critic.mlp.output_layer.bias.fill_(10.0)
     metrics = learner._fit_policy()
     assert metrics["policy_loss"].item() == pytest.approx(-metrics["imagined_reward"].item() - 1.0)
     assert metrics["terminal_saturation"].item() == 1.0
 
     with torch.no_grad():
-        learner.critic.mlp.output.bias.fill_(10.0)
+        learner.critic.mlp.output_layer.bias.fill_(10.0)
     features = torch.zeros(2, 2, learner.critic.obs_dim)
     metrics = learner._fit_critic(features, torch.tensor([[0.0, 4.0]]), torch.zeros(1, 2))
     assert metrics["critic_loss"].item() == pytest.approx((9.0**2 + 8.0**2) / 2)
-    assert 2.0 < learner.critic.mlp.output.bias.item() < 10.0
+    assert 2.0 < learner.critic.mlp.output_layer.bias.item() < 10.0
 
 
 @pytest.mark.parametrize(
@@ -478,7 +478,7 @@ def test_checkpoint_normalized_jit_and_onnx(
     checkpoint = str(tmp_path / "learner.pt")
     runner.save(checkpoint)
     restored = OffPolicyRunner(ScalarEnv(goal_dim=goal_dim), _cfg(actor_ema_halflife=halflife))
-    restored.load(checkpoint, load_optimizer=load_optimizer)
+    restored.load(checkpoint, load_cfg={**restored.alg.get_default_load_cfg(), "optimizer": load_optimizer})
     assert restored.alg.iteration == runner.alg.iteration
     assert restored.alg.learning_rate == runner.alg.learning_rate
     assert restored.alg.storage.num_steps == 0 and not restored.alg.actor.history.any()

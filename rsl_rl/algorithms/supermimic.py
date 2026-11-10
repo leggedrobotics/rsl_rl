@@ -477,8 +477,8 @@ class SuperMimic:
             target.copy_(source)
         return policy
 
-    def default_load_cfg(self, loaded_dict: dict) -> dict:
-        """Select an explicit full learner checkpoint, including the world model."""
+    def get_default_load_cfg(self) -> dict:
+        """Return the default selection for resuming this algorithm's own checkpoints, including the world model."""
         return {"actor": True, "critic": True, "world_model": True, "optimizer": True, "iteration": True}
 
     def save(self) -> dict:
@@ -500,7 +500,7 @@ class SuperMimic:
 
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load an actor alone or a complete model selection; partial dynamics/critic restores are rejected."""
-        load_cfg = self.default_load_cfg(loaded_dict) if load_cfg is None else load_cfg
+        load_cfg = self.get_default_load_cfg() if load_cfg is None else load_cfg
         core = {name for name in ("actor", "critic", "world_model") if load_cfg.get(name)}
         if core not in ({"actor"}, {"actor", "critic", "world_model"}):
             raise ValueError("SuperMimic supports actor-only or full actor/critic/world_model loading.")
