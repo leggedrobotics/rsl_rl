@@ -202,7 +202,7 @@ class PPO:
         """Run optimization epochs over stored batches and return mean losses and statistics."""
         mean_value_loss = 0
         mean_surrogate_loss = 0
-        mean_entropy = 0
+        mean_entropy_loss = 0
         # RND loss
         mean_rnd_loss = 0 if self.rnd else None
         # Symmetry loss
@@ -290,7 +290,10 @@ class PPO:
                 else:
                     value_loss = (batch.returns - values).pow(2).mean()
 
-                loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+                # Entropy loss
+                entropy_loss = -entropy.mean()
+
+                loss = surrogate_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
 
                 # RND loss
                 rnd_loss = self.rnd.compute_loss(batch.observations[:original_batch_size]) if self.rnd else None  # type: ignore
@@ -324,7 +327,7 @@ class PPO:
             # Store the losses
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
-            mean_entropy += entropy.mean().item()
+            mean_entropy_loss += entropy_loss.item()
             # RND loss
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
@@ -343,7 +346,7 @@ class PPO:
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
-        mean_entropy /= num_updates
+        mean_entropy_loss /= num_updates
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
         if mean_symmetry_loss is not None:
@@ -353,7 +356,7 @@ class PPO:
         loss_dict = {
             "value": mean_value_loss,
             "surrogate": mean_surrogate_loss,
-            "entropy": mean_entropy,
+            "entropy": mean_entropy_loss,
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss
