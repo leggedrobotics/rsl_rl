@@ -55,28 +55,36 @@ class SuperMimic:
         storage: SequenceReplayBuffer,
         task: DifferentiableTask,
         obs_groups: dict[str, list[str]],
+        # Update cadence parameters
         updates_per_step: float = 0.4,
+        num_warmup_steps: int = 64,
+        num_world_model_warmup_iterations: int = 500,
+        # World model parameters
         num_world_model_updates: int = 10,
-        num_policy_updates: int = 1,
         world_model_window: int = 8,
         world_model_batch_size: int = 2048,
+        # Policy parameters
+        num_policy_updates: int = 1,
         horizon: int = 32,
         policy_batch_size: int = 4096,
-        learning_rate: float = 2e-4,
-        num_schedule_updates: int = 250_000,
-        final_learning_rate_ratio: float = 0.03,
         gamma: float = 0.99,
+        max_step_reward: float | None = None,
+        action_noise: float = 0.1,
+        actor_ema_halflife: int | None = None,
+        # Critic parameters
         lam: float = 0.95,
         num_critic_epochs: int = 5,
         num_critic_mini_batches: int = 4,
-        num_warmup_steps: int = 64,
-        num_world_model_warmup_iterations: int = 500,
-        action_noise: float = 0.1,
-        actor_ema_halflife: int | None = None,
-        max_step_reward: float | None = None,
-        use_mixed_precision: bool = False,
+        # Optimizer parameters
+        learning_rate: float = 2e-4,
         max_grad_norm: float = 1.0,
+        # Learning rate schedule parameters
+        num_schedule_updates: int = 250_000,
+        final_learning_rate_ratio: float = 0.03,
+        # Execution parameters
+        use_mixed_precision: bool = False,
         device: str = "cpu",
+        # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
     ) -> None:
         """Initialize explicit task, models, replay and gradient-update cadence.
@@ -92,30 +100,31 @@ class SuperMimic:
             task: Differentiable task heads and physical state coordinates.
             obs_groups: Explicit physical observation-set mapping.
             updates_per_step: Learner iterations accrued per collected environment step.
-            num_world_model_updates: Dynamics optimizer steps per learner iteration.
-            num_policy_updates: Actor updates and associated critic fits per learner iteration.
-            world_model_window: Maximum autoregressive dynamics fitting horizon.
-            world_model_batch_size: Replay anchors per dynamics optimizer step.
-            horizon: Imagined policy horizon.
-            policy_batch_size: Starts per actor update.
-            learning_rate: Initial learning rate for all optimizers.
-            num_schedule_updates: Learner iterations in the shared cosine learning-rate schedule.
-            final_learning_rate_ratio: Final learning rate relative to its initial value.
-            gamma: Reward discount.
-            lam: TD(lambda) mixing coefficient for value targets.
-            num_critic_epochs: Epochs per critic fit.
-            num_critic_mini_batches: Minibatches per critic epoch.
             num_warmup_steps: Stored steps per environment required before learning.
             num_world_model_warmup_iterations: Learner iterations fitting only dynamics.
+            num_world_model_updates: Dynamics optimizer steps per learner iteration.
+            world_model_window: Maximum autoregressive dynamics fitting horizon.
+            world_model_batch_size: Replay anchors per dynamics optimizer step.
+            num_policy_updates: Actor updates and associated critic fits per learner iteration.
+            horizon: Imagined policy horizon.
+            policy_batch_size: Starts per actor update.
+            gamma: Reward discount.
+            max_step_reward: Optional per-step reward bound used to cap values at the maximum discounted return.
             action_noise: Standard deviation of additive collection noise.
             actor_ema_halflife: Deployment-only actor exponential moving average (EMA) half-life in actor optimizer
                 steps, e.g. 500. None disables it; use the same setting for training and deployment.
-            max_step_reward: Optional per-step reward bound used to cap values at the maximum discounted return.
-            use_mixed_precision: Enable BF16 matrix operations while integrating physical states in FP32.
+            lam: TD(lambda) mixing coefficient for value targets.
+            num_critic_epochs: Epochs per critic fit.
+            num_critic_mini_batches: Minibatches per critic epoch.
+            learning_rate: Initial learning rate for all optimizers.
             max_grad_norm: Global gradient-norm limit for each model.
+            num_schedule_updates: Learner iterations in the shared cosine learning-rate schedule.
+            final_learning_rate_ratio: Final learning rate relative to its initial value.
+            use_mixed_precision: Enable BF16 matrix operations while integrating physical states in FP32.
             device: Device for models and learning tensors.
             multi_gpu_cfg: Unsupported distributed configuration; supplying one raises.
         """
+        # Validate configuration
         if multi_gpu_cfg is not None:
             raise NotImplementedError("Multi-GPU training is not supported for SuperMimic.")
         if critic.is_recurrent:
@@ -142,48 +151,83 @@ class SuperMimic:
             raise ValueError("Action noise must be nonnegative.")
         if actor_ema_halflife is not None and actor_ema_halflife < 1:
             raise ValueError("actor_ema_halflife must be positive or None.")
-        self.actor, self.world_model, self.critic = actor.to(device), world_model.to(device), critic.to(device)
-        self._raw_critic = self.critic
-        self.storage, self.task, self.obs_groups = storage, task, obs_groups
-        self.device = device
-        self.updates_per_step = updates_per_step
-        self.num_world_model_updates, self.num_policy_updates = num_world_model_updates, num_policy_updates
-        self.world_model_window, self.world_model_batch_size = world_model_window, world_model_batch_size
-        self.horizon, self.policy_batch_size = horizon, policy_batch_size
-        self.gamma, self.lam = gamma, lam
-        self.num_critic_epochs, self.num_critic_mini_batches = num_critic_epochs, num_critic_mini_batches
-        self.num_warmup_steps, self.num_world_model_warmup_iterations = (
-            num_warmup_steps,
-            num_world_model_warmup_iterations,
-        )
-        self.value_cap = None if max_step_reward is None else max_step_reward / (1 - gamma)
-        self.use_mixed_precision, self.max_grad_norm = use_mixed_precision, max_grad_norm
-        self.actor.noise_std.fill_(action_noise)
-        self.error_floor = task.representation.error_floor.to(device)
-        if self.error_floor.shape != (task.representation.increment_dim,) or (self.error_floor <= 0).any():
+        error_floor = task.representation.error_floor.to(device)
+        if error_floor.shape != (task.representation.increment_dim,) or (error_floor <= 0).any():
             raise ValueError("State error_floor must contain one positive value per increment coordinate.")
+
+        # Device-related parameters
+        self.device = device
+        self.use_mixed_precision = use_mixed_precision
+
+        # SuperMimic components
+        self.actor = actor.to(device)
+        self.world_model = world_model.to(device)
+        self.critic = critic.to(device)
+        self.task = task
+        self.obs_groups = obs_groups
+        self.actor.noise_std.fill_(action_noise)
+        self.error_floor = error_floor
+
+        # Handles to the uncompiled modules for state_dict operations and export
+        self._raw_critic = self.critic
+        self._world_model_forward = self.world_model
+        self._actor_forward = self.actor.forward_history
+
+        # Create the optimizers
         optimizer_kwargs = {"lr": learning_rate, "fused": torch.device(device).type == "cuda"}
         self.optimizers = {
             "world_model": torch.optim.Adam(self.world_model.parameters(), **optimizer_kwargs),
             "actor": torch.optim.Adam(self.actor.parameters(), betas=(0.9, 0.95), **optimizer_kwargs),
             "critic": torch.optim.Adam(self.critic.parameters(), **optimizer_kwargs),
         }
-        self.initial_learning_rate = learning_rate
-        self.num_schedule_updates, self.final_learning_rate_ratio = num_schedule_updates, final_learning_rate_ratio
-        self.learning_rate = learning_rate
-        self.iteration, self._update_debt = 0, 0.0
-        self._last_obs: TensorDict | None = None
-        self._last_actions: torch.Tensor | None = None
-        self._last_previous_actions: torch.Tensor | None = None
-        self._window_break_sum = torch.zeros((), device=device)
-        self._nonfinite_final_obs = torch.zeros(2, dtype=torch.bool, device=device)
-        self._collected_steps = 0
-        self._world_model_forward = self.world_model
-        self._actor_forward = self.actor.forward_history
+
+        # Add storage
+        self.storage = storage
+
+        # Update cadence parameters
+        self.updates_per_step = updates_per_step
+        self.num_warmup_steps = num_warmup_steps
+        self.num_world_model_warmup_iterations = num_world_model_warmup_iterations
+
+        # World model parameters
+        self.num_world_model_updates = num_world_model_updates
+        self.world_model_window = world_model_window
+        self.world_model_batch_size = world_model_batch_size
+
+        # Policy parameters
+        self.num_policy_updates = num_policy_updates
+        self.horizon = horizon
+        self.policy_batch_size = policy_batch_size
+        self.gamma = gamma
+        self.value_cap = None if max_step_reward is None else max_step_reward / (1 - gamma)
+        self.max_grad_norm = max_grad_norm
+
+        # Actor EMA parameters
         self.actor_ema_halflife = actor_ema_halflife
         self.actor_ema = None if actor_ema_halflife is None else [p.detach().clone() for p in self.actor.parameters()]
         self._actor_ema_updates = torch.zeros((), dtype=torch.long, device=device)
         self._actor_ema_policy: SuperMimicActor | None = None
+
+        # Critic parameters
+        self.lam = lam
+        self.num_critic_epochs = num_critic_epochs
+        self.num_critic_mini_batches = num_critic_mini_batches
+
+        # Learning rate schedule parameters
+        self.initial_learning_rate = learning_rate
+        self.learning_rate = learning_rate
+        self.num_schedule_updates = num_schedule_updates
+        self.final_learning_rate_ratio = final_learning_rate_ratio
+
+        # Initialize update counters and collection state
+        self.iteration = 0
+        self._update_debt = 0.0
+        self._last_obs: TensorDict | None = None
+        self._last_actions: torch.Tensor | None = None
+        self._last_previous_actions: torch.Tensor | None = None
+        self._collected_steps = 0
+        self._window_break_sum = torch.zeros((), device=device)
+        self._nonfinite_final_obs = torch.zeros(2, dtype=torch.bool, device=device)
 
     def _set(self, obs: TensorDict, name: str) -> torch.Tensor:
         """Read an explicit observation set with no policy-group fallback."""
