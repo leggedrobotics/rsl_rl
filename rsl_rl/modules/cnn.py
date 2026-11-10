@@ -147,13 +147,6 @@ class CNN(nn.Sequential):
         """Get the output height and width or total output dimension if output is flattened."""
         return self._output_dim
 
-    def init_weights(self) -> None:
-        """Initialize the weights of the CNN with Kaiming initialization."""
-        for idx, module in enumerate(self):
-            if isinstance(module, nn.Conv2d):
-                torch.nn.init.kaiming_normal_(module.weight)
-                torch.nn.init.zeros_(module.bias)  # type: ignore
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the CNN."""
         for layer in self:
