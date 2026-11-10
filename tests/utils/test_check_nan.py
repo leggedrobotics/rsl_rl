@@ -61,3 +61,14 @@ def test_check_nan_rejects_non_finite_outputs(
     message = str(exc_info.value)
     assert expected_source in message
     assert expected_value_name in message
+
+
+def test_check_nan_rejects_non_finite_final_observations_of_done_environments() -> None:
+    """Final observations are checked only for environments that are done."""
+    obs = TensorDict({"policy": torch.zeros(2, 2)}, batch_size=[2])
+    rewards = torch.zeros(2)
+    final_obs = TensorDict({"policy": torch.tensor([[0.0, 0.0], [torch.nan, 0.0]])}, batch_size=[2])
+
+    check_nan(obs, rewards, torch.tensor([True, False]), {"final_obs": final_obs})
+    with pytest.raises(ValueError, match=r"final observation group 'policy' .* NaN values"):
+        check_nan(obs, rewards, torch.tensor([False, True]), {"final_obs": final_obs})

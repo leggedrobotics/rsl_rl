@@ -34,6 +34,7 @@ class CNNModel(MLPModel):
         hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
+        network_cfg: dict | None = None,
         distribution_cfg: dict | None = None,
         cnn_cfg: dict[str, dict] | dict[str, Any] | None = None,
         cnns: nn.ModuleDict | dict[str, nn.Module] | None = None,
@@ -48,6 +49,7 @@ class CNNModel(MLPModel):
             hidden_dims: Hidden dimensions of the MLP.
             activation: Activation function of the CNN and MLP.
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
+            network_cfg: Configuration dictionary for the network after the CNN encoders. ``None`` uses the default MLP.
             distribution_cfg: Configuration dictionary for the output distribution.
             cnn_cfg: Configuration of the CNN encoder(s).
             cnns: CNN modules to use, e.g., for sharing CNNs between actor and critic. If None, new CNNs are created.
@@ -95,6 +97,7 @@ class CNNModel(MLPModel):
             hidden_dims,
             activation,
             obs_normalization,
+            network_cfg,
             distribution_cfg,
         )
 
