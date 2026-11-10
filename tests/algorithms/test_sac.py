@@ -573,3 +573,22 @@ def test_recurrent_models_are_rejected_before_construction(role: str) -> None:
     env = DummyEnv()
     with pytest.raises(ValueError, match="does not yet support recurrent models"):
         SAC.construct_algorithm(env.get_observations(), env, cfg, "cpu")
+
+
+def test_runner_nan_check_replaces_final_observation_validation() -> None:
+    """With the runner's NaN check enabled, SAC skips its own nonfinite check but still rejects missing final_obs."""
+    cfg = _make_train_cfg()
+    cfg["multi_gpu"] = None
+    cfg["check_for_nan"] = True
+    env = DummyEnv()
+    obs = env.get_observations()
+    alg = SAC.construct_algorithm(obs, env, cfg, "cpu")
+    assert not alg.validate_final_obs
+    dones = torch.tensor([True, False, False, False])
+    alg.act(obs)
+    alg.process_env_step(obs, torch.ones(4), dones, {"final_obs": {"policy": torch.full_like(obs["policy"], 3.0)}})
+    alg.update()
+    alg.act(obs)
+    alg.process_env_step(obs, torch.ones(4), dones, {})
+    with pytest.raises(ValueError, match="final_obs"):
+        alg.update()
