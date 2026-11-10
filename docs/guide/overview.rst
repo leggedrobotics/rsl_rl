@@ -120,6 +120,16 @@ Neptune
 All logging backends are accessed through a common logger interface, and can be used with both single-GPU and
 distributed multi-GPU training workflows.
 
+Exporters
+^^^^^^^^^
+
+:func:`~rsl_rl.utils.executorch_export.export_policy_to_executorch`
+   Exports a policy to an `ExecuTorch <https://docs.pytorch.org/executorch/>`__ program, in addition to the TorchScript
+   and ONNX exports of the runner. ExecuTorch is PyTorch's solution for deploying models on devices. The program runs
+   from C++ or Python with a small runtime, on CPUs through XNNPACK or the portable kernels, or on NVIDIA GPUs through
+   CUDA. It has the same inputs and outputs as the ONNX export and stores their names. The function documentation lists
+   what each backend needs.
+
 .. _core-components:
 
 Core Components
