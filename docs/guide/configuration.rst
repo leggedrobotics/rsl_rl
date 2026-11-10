@@ -584,8 +584,7 @@ SuperMimic
 
 SuperMimic uses ``actor``, ``world_model`` and ``critic`` model configurations. ``task_cfg.class_name`` resolves a
 :class:`~rsl_rl.algorithms.supermimic_task.DifferentiableTask` with ``env``, ``device`` and the remaining task kwargs.
-The task supplies physical coordinates, rewards and feature construction. See
-:class:`~rsl_rl.algorithms.supermimic.SuperMimic` for all optimizer, imagination and cadence parameters.
+The task supplies physical coordinates, rewards and feature construction.
 Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 0.1]`` after global norm clipping.
 
 .. list-table::
@@ -615,19 +614,87 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
    * - ``updates_per_step``
      - float
      - ``0.4``
-     - Learner iterations accrued per environment step.
+     - Learner iterations accrued per collected environment step.
    * - ``num_warmup_steps``
      - int
      - ``64``
-     - Stored steps per environment before learning; must cover world_model_window.
-   * - ``num_schedule_updates``
+     - Stored steps per environment before learning; must cover ``world_model_window``.
+   * - ``num_world_model_warmup_iterations``
      - int
-     - ``250000``
-     - Shared cosine duration in learner iterations.
+     - ``500``
+     - Learner iterations fitting only dynamics.
+   * - ``num_world_model_updates``
+     - int
+     - ``10``
+     - Dynamics optimizer steps per learner iteration.
+   * - ``world_model_window``
+     - int
+     - ``8``
+     - Maximum autoregressive dynamics fitting horizon.
+   * - ``world_model_batch_size``
+     - int
+     - ``2048``
+     - Replay anchors per dynamics optimizer step.
+   * - ``num_policy_updates``
+     - int
+     - ``1``
+     - Actor updates and associated critic fits per learner iteration.
+   * - ``horizon``
+     - int
+     - ``32``
+     - Imagined policy horizon.
+   * - ``policy_batch_size``
+     - int
+     - ``4096``
+     - Starts per actor update.
+   * - ``gamma``
+     - float
+     - ``0.99``
+     - Reward discount.
+   * - ``max_step_reward``
+     - float | None
+     - ``None``
+     - Optional per-step reward bound used to cap values at the maximum discounted return.
+   * - ``action_noise``
+     - float
+     - ``0.1``
+     - Standard deviation of additive collection noise.
    * - ``actor_ema_halflife``
      - int | None
      - ``None``
      - Deployment-only actor exponential moving average (EMA) half-life in actor optimizer steps, e.g. ``500``.
+   * - ``lam``
+     - float
+     - ``0.95``
+     - TD(lambda) mixing coefficient for value targets.
+   * - ``num_critic_epochs``
+     - int
+     - ``5``
+     - Epochs per critic fit.
+   * - ``num_critic_mini_batches``
+     - int
+     - ``4``
+     - Minibatches per critic epoch.
+   * - ``learning_rate``
+     - float
+     - ``2e-4``
+     - Initial learning rate for all optimizers.
+   * - ``max_grad_norm``
+     - float
+     - ``1.0``
+     - Global gradient-norm limit for each model.
+   * - ``num_schedule_updates``
+     - int
+     - ``250000``
+     - Learner iterations in the shared cosine learning-rate schedule.
+   * - ``final_learning_rate_ratio``
+     - float
+     - ``0.03``
+     - Final learning rate relative to its initial value.
+   * - ``use_mixed_precision``
+     - bool
+     - ``False``
+     - Enable BF16 matrix operations while integrating physical states in FP32.
 
 When enabled, inference and JIT/ONNX exports use EMA parameters with live normalization buffers.
 Collection and policy optimization keep using the live actor.
