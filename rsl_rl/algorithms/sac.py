@@ -523,15 +523,29 @@ class SAC:
 
     @torch.no_grad()
     def _synchronize_batch_norm_buffers(self) -> None:
-        """Average local running statistics; forward passes still use local minibatch statistics."""
+        """Average local running statistics; forward passes still use local minibatch statistics.
+
+        The buffers are packed into one floating-point and one integer tensor, so each synchronization uses two
+        all-reduces instead of one per buffer.
+        """
         if not self.is_multi_gpu:
             return
-        for layer in self._actor_batch_norms + self._critic_batch_norms + self._target_batch_norms:
-            for buffer in layer.buffers():
-                floating = buffer.is_floating_point()
-                dist.all_reduce(buffer, op=dist.ReduceOp.SUM if floating else dist.ReduceOp.MAX)
-                if floating:
-                    buffer.div_(self.gpu_world_size)
+        buffers = [
+            buffer
+            for layer in self._actor_batch_norms + self._critic_batch_norms + self._target_batch_norms
+            for buffer in layer.buffers()
+        ]
+        floating = [buffer for buffer in buffers if buffer.is_floating_point()]
+        integer = [buffer for buffer in buffers if not buffer.is_floating_point()]
+        for group, op in ((floating, dist.ReduceOp.SUM), (integer, dist.ReduceOp.MAX)):
+            if not group:
+                continue
+            packed = torch.cat([buffer.reshape(-1) for buffer in group])
+            dist.all_reduce(packed, op=op)
+            if op == dist.ReduceOp.SUM:
+                packed /= self.gpu_world_size
+            for buffer, value in zip(group, packed.split([buffer.numel() for buffer in group])):
+                buffer.copy_(value.view_as(buffer))
 
     def _sample_batch(self) -> _Batch:
         """Build n-step returns, bootstrapping from the next state of the last valid transition."""
