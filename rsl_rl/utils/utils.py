@@ -295,7 +295,7 @@ def find_nonfinite(
 
     .. note::
         If ``extras`` contains ``"final_obs"``, the final observations of environments that are done are checked as
-        well.
+        well, or of all environments if ``extras["final_obs_every_step"]`` is True.
     """
     flags = {f"observation group '{key}'": ~torch.isfinite(tensor).all() for key, tensor in obs.items()}
     flags["rewards"] = ~torch.isfinite(rewards).all()
@@ -303,6 +303,8 @@ def find_nonfinite(
     final_obs = extras.get("final_obs") if extras is not None else None
     if final_obs is not None:
         done_mask = dones.reshape(-1).bool()
+        if extras.get("final_obs_every_step") is True:  # type: ignore
+            done_mask = torch.ones_like(done_mask)
         for key, tensor in final_obs.items():
             mask = done_mask.to(tensor.device).reshape(-1, *([1] * (tensor.ndim - 1)))
             flags[f"final observation group '{key}'"] = ~(torch.isfinite(tensor) | ~mask).all()
