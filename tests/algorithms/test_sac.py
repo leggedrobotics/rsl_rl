@@ -471,6 +471,8 @@ def test_cuda_graph_delayed_actor_and_resume() -> None:
     assert all(graph.graph is not None for graph in runner.alg._graph_updates.values())
     checkpoint = runner.alg.save()
     runner.alg.load(checkpoint, None, True)
+    runner.alg.release_cuda_graphs()
+    assert not runner.alg._graph_updates and not runner.alg._collection_graphs
     runner.learn(1)
     assert runner.alg.num_critic_updates == 60
     assert all(torch.isfinite(p).all() for p in runner.alg.actor.parameters())
