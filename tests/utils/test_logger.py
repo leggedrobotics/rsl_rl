@@ -74,7 +74,7 @@ def test_statistics_are_separate_from_losses(tmp_path: pathlib.Path, capsys: pyt
         "Model/mean_critic_q_value": 3.0,
         "Optimizer/learning_rate": 1e-3,
         "Model/mean_policy_std": 1.0,
-        "Rnd/weight": 0.5,
+        "Rnd/rnd_weight": 0.5,
         "Custom/statistic": 4.0,
         "statistic": 5.0,
         "Custom/nested/statistic": 6.0,
@@ -97,7 +97,7 @@ def test_statistics_are_separate_from_losses(tmp_path: pathlib.Path, capsys: pyt
         "Mean critic q value",
         "Learning rate",
         "Mean policy std",
-        "Weight",
+        "Rnd weight",
         "Statistic",
         "Nested/statistic",
     ):

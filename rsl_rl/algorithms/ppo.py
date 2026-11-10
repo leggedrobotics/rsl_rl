@@ -366,7 +366,7 @@ class PPO:
             "Model/mean_policy_std": self.actor.output_std.mean().item(),
         }
         if self.rnd:
-            stats_dict["Rnd/weight"] = self.rnd.weight
+            stats_dict["Rnd/rnd_weight"] = self.rnd.weight
 
         # Clear the storage
         self.storage.clear()
