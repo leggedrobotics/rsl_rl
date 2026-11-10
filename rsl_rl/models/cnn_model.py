@@ -210,11 +210,11 @@ class QCNNModel(CNNModel):
 
     def as_jit(self) -> nn.Module:
         """Reject the actor-only TorchScript export interface for state-action critics."""
-        raise NotImplementedError("TorchScript export is not implemented for critics.")
+        raise NotImplementedError("TorchScript export is not necessary because critics are not exported.")
 
     def as_onnx(self) -> nn.Module:
         """Reject the actor-only ONNX export interface for state-action critics."""
-        raise NotImplementedError("ONNX export is not implemented for critics.")
+        raise NotImplementedError("ONNX export is not necessary because critics are not exported.")
 
 
 class _TorchCNNModel(nn.Module):
