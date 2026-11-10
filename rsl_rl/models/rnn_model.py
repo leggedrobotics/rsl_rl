@@ -210,7 +210,7 @@ class _OnnxRNNModel(nn.Module):
 
     def forward(
         self, obs: torch.Tensor, h_in: torch.Tensor, c_in: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, ...]:
         """Run deterministic inference for ONNX export."""
         x = self.obs_normalizer(obs)
 
@@ -225,7 +225,7 @@ class _OnnxRNNModel(nn.Module):
             x = x.squeeze(0)
             out = self.mlp(x)
             out = self.deterministic_output(out)
-            return out, h, None
+            return out, h
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:
         """Return representative dummy inputs for ONNX tracing."""
