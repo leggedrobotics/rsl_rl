@@ -212,6 +212,9 @@ class SAC:
         self.reward_normalization_max_return = reward_normalization_max_return
         self._return_normalizer = EmpiricalNormalization(1, eps=0.0).to(self.device)
         self._returns = torch.zeros(storage.num_envs, device=self.device)
+        self._return_history = (
+            torch.zeros(storage.num_slots, storage.num_envs, device=self.device) if reward_normalization else None
+        )
         self._max_abs_return = torch.zeros((), device=self.device)
 
         # Exploration parameters
@@ -325,6 +328,9 @@ class SAC:
             self.actor.update_normalization(observations)  # type: ignore
             for critic in self.critics:
                 critic.update_normalization(observations)  # type: ignore
+            if self.reward_normalization:
+                returns = self._return_history[self.storage.latest_indices(self._num_steps_since_update)]  # type: ignore
+                self._return_normalizer.update(returns.reshape(-1, 1))
             self._num_steps_since_update = 0
         if self.is_multi_gpu:
             dist.all_reduce(self._max_abs_return, op=dist.ReduceOp.MAX)
@@ -653,14 +659,13 @@ class SAC:
         transition.next_observations = next_observations
         transition.dones = dones
         transition.terminated = dones & ~time_outs
-        self.storage.write_transition(transition)
-
-        # Record discounted returns for reward normalization
+        # Record discounted returns for reward normalization in the slot of this transition
         if self.reward_normalization:
             self._returns.mul_(self.gamma).add_(rewards)
             self._max_abs_return.copy_(torch.maximum(self._max_abs_return, self._returns.abs().max()))
-            self._return_normalizer.update(self._returns.unsqueeze(-1))
+            self._return_history.index_copy_(0, self.storage.write_index.view(1), self._returns.unsqueeze(0))  # type: ignore
             self._returns.mul_(~dones)
+        self.storage.write_transition(transition)
 
         # Reset exploration for completed episodes
         self._noise_steps_left.mul_(~dones)
