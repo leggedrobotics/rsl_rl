@@ -5,6 +5,7 @@
 
 """Helper functions."""
 
+from .executorch_export import export_policy_to_executorch
 from .log_writer import LogWriter
 from .neptune_log_writer import NeptuneLogWriter
 from .utils import (
@@ -30,6 +31,7 @@ __all__ = [
     "NeptuneLogWriter",
     "WandbLogWriter",
     "compile_model",
+    "export_policy_to_executorch",
     "find_nonfinite",
     "get_param",
     "raise_if_nonfinite",
