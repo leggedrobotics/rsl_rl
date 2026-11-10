@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import math
 import torch
 import warnings
@@ -22,7 +23,7 @@ from rsl_rl.models import MLPModel
 from rsl_rl.models.supermimic_actor import SuperMimicActor
 from rsl_rl.modules.world_model import WorldModel
 from rsl_rl.storage import SequenceReplayBuffer
-from rsl_rl.utils import compile_model, resolve_class, resolve_obs_groups
+from rsl_rl.utils import CudaGraphCallable, compile_model, resolve_class, resolve_obs_groups
 
 
 def lambda_returns(
@@ -83,6 +84,7 @@ class SuperMimic:
         final_learning_rate_ratio: float = 0.03,
         # Execution parameters
         use_mixed_precision: bool = False,
+        use_cuda_graph: bool = False,
         device: str = "cpu",
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
@@ -121,6 +123,8 @@ class SuperMimic:
             num_schedule_updates: Learner iterations in the shared cosine learning-rate schedule.
             final_learning_rate_ratio: Final learning rate relative to its initial value.
             use_mixed_precision: Enable BF16 matrix operations while integrating physical states in FP32.
+            use_cuda_graph: Capture each learner iteration in a CUDA graph. Requires a CUDA device and task heads
+                without host synchronization.
             device: Device for models and learning tensors.
             multi_gpu_cfg: Unsupported distributed configuration; supplying one raises.
         """
@@ -151,6 +155,8 @@ class SuperMimic:
             raise ValueError("Action noise must be nonnegative.")
         if actor_ema_halflife is not None and actor_ema_halflife < 1:
             raise ValueError("actor_ema_halflife must be positive or None.")
+        if use_cuda_graph and torch.device(device).type != "cuda":
+            raise ValueError("CUDA graphs require a CUDA device.")
         error_floor = task.representation.error_floor.to(device)
         if error_floor.shape != (task.representation.increment_dim,) or (error_floor <= 0).any():
             raise ValueError("State error_floor must contain one positive value per increment coordinate.")
@@ -158,6 +164,7 @@ class SuperMimic:
         # Device-related parameters
         self.device = device
         self.use_mixed_precision = use_mixed_precision
+        self.use_cuda_graph = use_cuda_graph
 
         # SuperMimic components
         self.actor = actor.to(device)
@@ -180,6 +187,7 @@ class SuperMimic:
             "actor": torch.optim.Adam(self.actor.parameters(), betas=(0.9, 0.95), **optimizer_kwargs),
             "critic": torch.optim.Adam(self.critic.parameters(), **optimizer_kwargs),
         }
+        self._configure_optimizer_capture()
 
         # Add storage
         self.storage = storage
@@ -445,7 +453,8 @@ class SuperMimic:
         features, reach = features[:-1].flatten(0, 1), reach.flatten()
         losses = []
         for _ in range(self.num_critic_epochs):
-            for indices in torch.randperm(features.shape[0], device=self.device).chunk(self.num_critic_mini_batches):
+            permutation = torch.rand(features.shape[0], device=self.device).argsort()
+            for indices in permutation.chunk(self.num_critic_mini_batches):
                 with torch.autocast(
                     torch.device(self.device).type, dtype=torch.bfloat16, enabled=self.use_mixed_precision
                 ):
@@ -512,13 +521,17 @@ class SuperMimic:
             count = int(self._update_debt + 1e-9)
             self._update_debt -= count
         for _ in range(count):
-            for _ in range(self.num_world_model_updates):
-                for key, value in self._fit_world_model().items():
-                    totals.setdefault(key, []).append(value)
-            if self.iteration >= self.num_world_model_warmup_iterations:
-                for _ in range(self.num_policy_updates):
-                    for key, value in self._fit_policy().items():
-                        totals.setdefault(key, []).append(value)
+            update_policy = self.iteration >= self.num_world_model_warmup_iterations
+            if self.use_cuda_graph:
+                if update_policy not in self._graph_updates:
+                    self._graph_updates[update_policy] = CudaGraphCallable(
+                        functools.partial(self._run_iteration, update_policy), self.device
+                    )
+                stats = self._graph_updates[update_policy]()
+            else:
+                stats = self._run_iteration(update_policy)
+            for key, value in stats.items():
+                totals.setdefault(key, []).append(value)
             self.iteration += 1
             self._update_learning_rate()
         if totals:
@@ -527,6 +540,18 @@ class SuperMimic:
             self._window_break_sum.zero_()
         metrics["learner_updates"] = float(self.iteration)
         return metrics
+
+    def _run_iteration(self, update_policy: bool) -> dict[str, torch.Tensor]:
+        """Run one learner iteration and return the mean of each metric over its updates."""
+        totals: dict[str, list[torch.Tensor]] = {}
+        for _ in range(self.num_world_model_updates):
+            for key, value in self._fit_world_model().items():
+                totals.setdefault(key, []).append(value)
+        if update_policy:
+            for _ in range(self.num_policy_updates):
+                for key, value in self._fit_policy().items():
+                    totals.setdefault(key, []).append(value)
+        return {key: torch.stack(values).float().mean() for key, values in totals.items()}
 
     def _update_learning_rate(self) -> None:
         """Set all optimizer rates for the next learner iteration, clamping at the cosine floor."""
@@ -537,7 +562,19 @@ class SuperMimic:
         )
         for optimizer in self.optimizers.values():
             for group in optimizer.param_groups:
-                group["lr"] = self.learning_rate
+                if isinstance(group["lr"], torch.Tensor):
+                    group["lr"].fill_(self.learning_rate)
+                else:
+                    group["lr"] = self.learning_rate
+
+    def _configure_optimizer_capture(self) -> None:
+        """Configure capturable optimizers with device learning rates for CUDA graphs and discard stale graphs."""
+        for optimizer in self.optimizers.values():
+            for group in optimizer.param_groups:
+                lr = float(group["lr"])
+                group["lr"] = torch.tensor(lr, device=self.device) if self.use_cuda_graph else lr
+                group["capturable"] = self.use_cuda_graph
+        self._graph_updates: dict[bool, CudaGraphCallable] = {}
 
     def train_mode(self) -> None:
         """Enable training models; real collection moments update in actor/process calls."""
@@ -618,6 +655,7 @@ class SuperMimic:
             if load_cfg.get("optimizer"):
                 for key in self.optimizers:
                     self.optimizers[key].load_state_dict(loaded_dict[f"{key}_optimizer_state_dict"])
+                self._configure_optimizer_capture()
             if load_cfg.get("iteration"):
                 self.iteration = loaded_dict["iteration"]
         self.storage.clear()
