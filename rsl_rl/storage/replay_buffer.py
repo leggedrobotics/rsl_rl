@@ -104,6 +104,8 @@ class ReplayBuffer:
         # Initialize the write cursor and storage fields
         self.num_steps = 0
         self.step = 0
+        self._num_steps_tensor = torch.zeros((), dtype=torch.long, device=device)
+        self._step_tensor = torch.zeros((), dtype=torch.long, device=device)
         self.observations: TensorDict | None = None
         self.actions: torch.Tensor | None = None
         self.rewards: torch.Tensor | None = None
@@ -190,12 +192,15 @@ class ReplayBuffer:
         self.terminated[self.step].copy_(transition.terminated)  # type: ignore
         self.step = (self.step + 1) % self.num_slots
         self.num_steps = min(self.num_steps + 1, self.num_slots)
+        self._step_tensor.fill_(self.step)
+        self._num_steps_tensor.fill_(self.num_steps)
 
     def sample(self, batch_size: int, length: int = 1) -> ReplayBuffer.Batch:
         """Sample windows of consecutive transitions for independently selected environments.
 
         Windows stop at the first episode boundary or the newest stored transition. Invalid positions repeat the
-        last valid transition and are excluded by :attr:`ReplayBuffer.Batch.valid`.
+        last valid transition and are excluded by :attr:`ReplayBuffer.Batch.valid`. Sampling reads the fill level from
+        device tensors, so it can be captured in a CUDA graph.
 
         Args:
             batch_size: Number of windows to sample.
@@ -205,9 +210,10 @@ class ReplayBuffer:
             raise RuntimeError("Cannot sample empty replay.")
 
         # Sample anchor steps and environments independently
-        anchor = torch.randint(self.num_steps, (batch_size,), device=self.device)
+        num_steps = self._num_steps_tensor
+        anchor = (torch.rand(batch_size, device=self.device) * num_steps).long()
         env_ids = torch.randint(self.num_envs, (batch_size,), device=self.device)
-        oldest = (self.step - self.num_steps) % self.num_slots
+        oldest = (self._step_tensor - num_steps) % self.num_slots
 
         # Compute the indices of sampled windows and their validity masks
         if length == 1:
@@ -216,8 +222,8 @@ class ReplayBuffer:
         else:
             anchor_offsets = torch.arange(length, device=self.device)
             offsets = anchor[:, None] + anchor_offsets
-            valid = offsets < self.num_steps
-            indices = (oldest + offsets.clamp(max=self.num_steps - 1)) % self.num_slots
+            valid = offsets < num_steps
+            indices = (oldest + torch.minimum(offsets, num_steps - 1)) % self.num_slots
 
             # Stop at episode boundaries and repeat the last valid transition at invalid positions
             dones = self.dones[indices, env_ids[:, None]]  # type: ignore
@@ -242,3 +248,5 @@ class ReplayBuffer:
         """Discard stored transitions while retaining allocated memory."""
         self.num_steps = 0
         self.step = 0
+        self._num_steps_tensor.zero_()
+        self._step_tensor.zero_()
