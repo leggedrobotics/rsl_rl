@@ -284,8 +284,12 @@ class SuperMimic:
             raw_next = self._world_model_forward(
                 state, actions, self.task.dynamics_context(state, context, previous_actions)
             )
+            # Successor events depend on the action just applied, so their history includes it
+            next_previous_actions = torch.cat((previous_actions[..., 1:, :], actions.unsqueeze(-2)), dim=-2)
             logits = (
-                self.world_model.label_logits(raw_next, self.task.dynamics_context(raw_next, context, previous_actions))
+                self.world_model.label_logits(
+                    raw_next, self.task.dynamics_context(raw_next, context, next_previous_actions)
+                )
                 if self.task.num_labels
                 else None
             )
