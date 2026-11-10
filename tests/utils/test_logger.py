@@ -62,7 +62,7 @@ def _log(
         collect_time=0.1,
         learn_time=0.1,
         loss_dict=loss_dict or {},
-        stats_dict=stats_dict,
+        stats_dict=stats_dict or {},
     )
 
 
@@ -70,10 +70,10 @@ def test_statistics_are_separate_from_losses(tmp_path: pathlib.Path, capsys: pyt
     """Statistics retain their tags and console labels without being treated as optimization losses."""
     logger = _make_logger(tmp_path)
     stats_dict = {
-        "Model/policy_entropy": 0.2,
-        "Model/critic_q_value": 3.0,
+        "Model/mean_policy_entropy": 0.2,
+        "Model/mean_critic_q_value": 3.0,
         "Optimizer/learning_rate": 1e-3,
-        "Model/policy_std": 1.0,
+        "Model/mean_policy_std": 1.0,
         "Rnd/weight": 0.5,
         "Custom/statistic": 4.0,
         "statistic": 5.0,
@@ -93,15 +93,15 @@ def test_statistics_are_separate_from_losses(tmp_path: pathlib.Path, capsys: pyt
     output = capsys.readouterr().out
     assert "Mean actor loss:" in output
     for name in (
-        "policy_entropy",
-        "critic_q_value",
-        "learning_rate",
-        "policy_std",
-        "weight",
-        "statistic",
-        "nested/statistic",
+        "Mean policy entropy",
+        "Mean critic q value",
+        "Learning rate",
+        "Mean policy std",
+        "Weight",
+        "Statistic",
+        "Nested/statistic",
     ):
-        assert f"Mean {name}:" in output
+        assert f"{name}:" in output
     for category in ("Model/", "Loss/", "Optimizer/", "Rnd/", "Custom/"):
         assert category not in output
     assert "entropy loss:" not in output

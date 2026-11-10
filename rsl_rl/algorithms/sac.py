@@ -245,7 +245,10 @@ class SAC:
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict
     ) -> dict[str, torch.Tensor]:
-        """Record one environment step using final observations for environments that reset."""
+        """Record one environment step and return per-environment values that the logger sums over each episode.
+
+        Final observations are used as next observations for environments that reset.
+        """
         # Resolve termination flags and observation groups
         done_mask = dones.reshape(-1).bool()
         time_outs = extras.get("time_outs", torch.zeros_like(done_mask)).to(self.device).reshape(-1).bool()
@@ -310,7 +313,10 @@ class SAC:
 
         # Wait until enough transitions have been collected
         if self.storage.size < self.num_warmup_transitions or not self.storage.size:
-            return {}, {}
+            return {}, {
+                "Optimizer/learning_rate": self.learning_rate,
+                "Model/mean_policy_std": self.actor.output_std.mean().item(),
+            }
 
         # Initialize the loss accumulators
         totals: dict[str, torch.Tensor] = {}
@@ -353,11 +359,13 @@ class SAC:
                 totals[key] = totals.get(key, 0.0) + value
 
         # Construct the stats dictionary and divide by the number of updates
-        stats_dict = {"Optimizer/learning_rate": self.learning_rate}
-        stats_dict["Model/policy_std"] = self.actor.output_std.mean().item()
+        stats_dict = {
+            "Optimizer/learning_rate": self.learning_rate,
+            "Model/mean_policy_std": self.actor.output_std.mean().item(),
+        }
         if actor_updates > 0:
-            stats_dict["Model/policy_entropy"] = (totals.pop("entropy") / actor_updates).item()
-        stats_dict["Model/critic_q_value"] = (totals.pop("q_value") / self.num_updates).item()
+            stats_dict["Model/mean_policy_entropy"] = (totals.pop("entropy") / actor_updates).item()
+        stats_dict["Model/mean_critic_q_value"] = (totals.pop("q_value") / self.num_updates).item()
 
         # Construct the loss dictionary and divide by the number of updates
         loss_dict: dict[str, float] = {}

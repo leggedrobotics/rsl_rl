@@ -401,9 +401,9 @@ class TestPPOLosses:
         losses, stats = ppo.update()
         torch.testing.assert_close(losses["surrogate"], expected_loss.item(), atol=1e-6, rtol=1e-5)
         assert "entropy" in losses
-        assert "Model/policy_entropy" not in stats
+        assert "Model/mean_policy_entropy" not in stats
         assert stats["Optimizer/learning_rate"] == ppo.learning_rate
-        assert stats["Model/policy_std"] == ppo.actor.output_std.mean().item()
+        assert stats["Model/mean_policy_std"] == ppo.actor.output_std.mean().item()
         for actual, expected in zip(actor.parameters(), reference.parameters()):
             torch.testing.assert_close(actual.grad, expected.grad)
 

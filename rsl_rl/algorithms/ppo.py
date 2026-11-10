@@ -143,13 +143,12 @@ class PPO:
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
     ) -> dict[str, torch.Tensor]:
-        """Record one environment step and return per-environment logging contributions."""
+        """Record one environment step and return per-environment values that the logger sums over each episode."""
         step_dict = {"Training/mean_reward": rewards}
         # Record the rewards and dones
         # Note: We clone here because later on we bootstrap the rewards based on timeouts
         self.transition.rewards = rewards.clone()
         self.transition.dones = dones
-
         # Compute the intrinsic rewards and add to extrinsic rewards
         if self.rnd:
             # Compute the intrinsic rewards
@@ -159,20 +158,17 @@ class PPO:
             step_dict["Training/mean_reward"] = rewards + self.intrinsic_rewards
             step_dict["Rnd/mean_extrinsic_reward"] = rewards
             step_dict["Rnd/mean_intrinsic_reward"] = self.intrinsic_rewards
-
         # Bootstrapping on time outs
         if "time_outs" in extras:
             self.transition.rewards += self.gamma * torch.squeeze(
                 self.transition.values * extras["time_outs"].unsqueeze(1).to(self.device),  # type: ignore
                 1,
             )
-
         # Record the transition
         self.storage.add_transition(self.transition)
         self.transition.clear()
         self.actor.reset(dones)
         self.critic.reset(dones)
-
         return step_dict
 
     def compute_returns(self, obs: TensorDict) -> None:
@@ -367,7 +363,7 @@ class PPO:
         # Construct the stats dictionary
         stats_dict = {
             "Optimizer/learning_rate": self.learning_rate,
-            "Model/policy_std": self.actor.output_std.mean().item(),
+            "Model/mean_policy_std": self.actor.output_std.mean().item(),
         }
         if self.rnd:
             stats_dict["Rnd/weight"] = self.rnd.weight

@@ -130,7 +130,7 @@ class Distillation:
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
     ) -> dict[str, torch.Tensor]:
-        """Record one environment step and return per-environment logging contributions."""
+        """Record one environment step and return per-environment values that the logger sums over each episode."""
         # Record the rewards and dones
         self.transition.rewards = rewards
         self.transition.dones = dones
@@ -203,7 +203,7 @@ class Distillation:
         # Construct the stats dictionary
         stats_dict = {"Optimizer/learning_rate": self.learning_rate}
         if self.student.distribution is not None:
-            stats_dict["Model/policy_std"] = self.student.output_std.mean().item()
+            stats_dict["Model/mean_policy_std"] = self.student.output_std.mean().item()
 
         # Clear the storage
         self.storage.clear()

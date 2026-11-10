@@ -191,7 +191,7 @@ class Logger:
             # Log losses and stats
             for key, value in loss_dict.items():
                 self.writer.add_scalar(f"Loss/{key}", value, it)
-            for key, value in (stats_dict or {}).items():
+            for key, value in stats_dict.items():
                 self.writer.add_scalar(key, value, it)
 
             # Log performance
@@ -200,7 +200,7 @@ class Logger:
             self.writer.add_scalar("Performance/collection_time", collect_time, it)
             self.writer.add_scalar("Performance/learning_time", learn_time, it)
 
-            # Log step stats and episode length
+            # Log episode stats and length
             episode_stats = {key: statistics.mean(buffer) for key, buffer in self.step_buffers.items() if buffer}
             for key, value in episode_stats.items():
                 self.writer.add_scalar(key, value, it)
@@ -231,20 +231,21 @@ class Logger:
                 f"""{"Learning time:":>{pad}} {learn_time:.3f}s \n"""
             )
 
-            # Print losses and stats
+            # Print losses
             for key, value in loss_dict.items():
                 log_string += f"""{f"Mean {key} loss:":>{pad}} {value:.4f}\n"""
-            for key, value in (stats_dict or {}).items():
-                name = key.split("/", 1)[1] if "/" in key else key
-                log_string += f"""{f"Mean {name}:":>{pad}} {value:.4f}\n"""
 
-            # Print step stats and episode length
+            # Print episode stats and length
             for key, value in episode_stats.items():
-                name = key.split("/", 1)[1] if "/" in key else key
-                name = name.removeprefix("mean_").replace("_", " ")
-                log_string += f"""{f"Mean {name}:":>{pad}} {value:.2f}\n"""
+                name = key.split("/", 1)[-1].replace("_", " ").capitalize()
+                log_string += f"""{f"{name}:":>{pad}} {value:.2f}\n"""
             if len(self.length_buffer) > 0:
                 log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(self.length_buffer):.2f}\n"""
+
+            # Print stats
+            for key, value in stats_dict.items():
+                name = key.split("/", 1)[-1].replace("_", " ").capitalize()
+                log_string += f"""{f"{name}:":>{pad}} {value:.4g}\n"""
 
             # Print episode extras
             if not print_minimal:
