@@ -102,7 +102,7 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
         assert any(not torch.equal(old, current) for old, current in zip(parameters, model.parameters()))
         assert all(torch.isfinite(p).all() for p in model.parameters())
     if device != "cpu":
-        assert restored.alg._graph_steps[True].graph is not None
+        assert 0 in restored.alg._graph_updates
     sample = restored.env.get_observations()[:1]
     with torch.inference_mode():
         expected = restored.alg.get_policy()(sample).cpu()
@@ -327,7 +327,7 @@ def test_opt_in_flash_components_and_export(network: str | None, mixed_precision
     checkpoint = runner.alg.save()
     restored = OffPolicyRunner(DummyEnv(), cfg)
     restored.alg.load(checkpoint, None, True)
-    assert restored.alg._schedulers[0].last_epoch == runner.alg._schedulers[0].last_epoch
+    assert restored.alg.learning_rate == runner.alg.learning_rate < cfg["algorithm"].get("critic_learning_rate", 1e-4)
 
 
 def _mirror(
@@ -367,7 +367,7 @@ def test_symmetry_replay_endpoints_and_actor_loss(augmentation: bool) -> None:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
 def test_cuda_graph_delayed_actor_and_resume() -> None:
-    """Both graph variants can train, reload eager state and resume under the inherited runner."""
+    """The captured update graph can train, reload eager state and resume under the inherited runner."""
     cfg = _make_train_cfg()
     cfg["algorithm"].update(
         use_cuda_graph=True,
@@ -381,10 +381,10 @@ def test_cuda_graph_delayed_actor_and_resume() -> None:
     for role in ("actor", "critic"):
         cfg[role]["network_cfg"] = {"class_name": "ResidualMLP", "hidden_dim": 16, "num_blocks": 1, "expansion": 2}
     runner = OffPolicyRunner(DummyEnv(device="cuda:0"), cfg, device="cuda:0")
-    runner.learn(2)
-    assert all(step.graph is not None for step in runner.alg._graph_steps.values())
+    runner.learn(4)
+    assert all(graph.graph is not None for graph in runner.alg._graph_updates.values())
     checkpoint = runner.alg.save()
     runner.alg.load(checkpoint, None, True)
     runner.learn(1)
-    assert runner.alg.num_critic_updates == 36
+    assert runner.alg.num_critic_updates == 60
     assert all(torch.isfinite(p).all() for p in runner.alg.actor.parameters())

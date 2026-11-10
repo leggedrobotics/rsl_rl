@@ -200,21 +200,16 @@ class SAC:
         self._critic_batch_norms = _batch_norm_layers(self.critics)
         self._target_batch_norms = _batch_norm_layers(self.target_critics)
 
-        # Create the learning rate schedulers
-        self._schedulers: list[torch.optim.lr_scheduler.CosineAnnealingLR] = []
-        if learning_rate_schedule == "cosine":
-            for model_optimizer in (self.actor_optimizer, self.critic_optimizer, self.alpha_optimizer):
-                self._schedulers.append(
-                    torch.optim.lr_scheduler.CosineAnnealingLR(
-                        model_optimizer,
-                        T_max=num_schedule_updates,  # type: ignore
-                        eta_min=model_optimizer.param_groups[0]["lr"] * final_learning_rate_ratio,
-                    )
-                )
+        # Learning rate schedule parameters
+        self.learning_rate_schedule = learning_rate_schedule
+        self.final_learning_rate_ratio = final_learning_rate_ratio
+        self.num_schedule_updates = num_schedule_updates
+        self._base_learning_rates = (actor_learning_rate, critic_learning_rate, alpha_learning_rate)
 
         # Initialize update counters, actor state, and pending observations
         self.num_env_steps = 0
         self.num_critic_updates = 0
+        self._num_critic_updates_tensor = torch.zeros((), device=self.device)
         self._actor_loaded = False
         self._pending_observations: list[TensorDict] = []
 
@@ -257,10 +252,11 @@ class SAC:
 
         # Replace reset observations with final observations for completed episodes
         next_obs = obs.select(*groups).clone()
-        if done_mask.any():
-            if extras.get("final_obs") is None:
+        final_obs = extras.get("final_obs")
+        if final_obs is None:
+            if done_mask.any():
                 raise ValueError("SAC requires extras['final_obs'] on every step containing a done.")
-            final_obs = extras["final_obs"]
+        else:
             for key in groups:
                 mask = done_mask.reshape(-1, *([1] * (next_obs[key].ndim - 1)))
                 next_obs[key] = torch.where(mask, final_obs[key].to(self.device), next_obs[key])
@@ -313,52 +309,26 @@ class SAC:
         if self.storage.size < self.num_warmup_transitions or not self.storage.size:
             return {}
 
-        # Initialize the loss accumulators
-        totals: dict[str, torch.Tensor] = {}
-        actor_updates = 0
-
-        # Iterate over replay mini-batches
-        for _ in range(self.num_updates):
-            # Sample and augment transitions and normalize rewards if enabled
-            batch = self._sample_batch()
-            if self.reward_normalization:
-                batch.rewards = batch.rewards / torch.maximum(
-                    self._return_normalizer._std.squeeze() + 1e-8,  # type: ignore
-                    self._max_abs_return / self.reward_normalization_max_return,
+        # Run all gradient updates of this iteration, captured as a single CUDA graph if enabled
+        phase = self.num_critic_updates % self.actor_update_interval
+        if self.use_cuda_graph:
+            if phase not in self._graph_updates:
+                self._graph_updates[phase] = CudaGraphCallable(
+                    functools.partial(self._run_updates, phase=phase), self.device
                 )
+            totals = self._graph_updates[phase]()
+        else:
+            totals = self._run_updates(phase=phase)
+        self.num_critic_updates += self.num_updates
+        self.learning_rate = self._base_learning_rates[1] * self._learning_rate_factor(self.num_critic_updates)
 
-            # Run the gradient update with the configured actor update interval
-            update_actor = self.num_critic_updates % self.actor_update_interval == 0
-            inputs = (
-                batch.observations,
-                batch.actions,
-                batch.rewards,
-                batch.next_observations,
-                batch.bootstrap_discounts,
-            )
-            if self.use_cuda_graph:
-                stats = self._graph_steps[update_actor](*inputs)
-            else:
-                stats = self._gradient_step(*inputs, update_actor=update_actor)
-            self.num_critic_updates += 1
-
-            # Update the learning rate schedules
-            for scheduler in self._schedulers:
-                if scheduler.last_epoch < scheduler.T_max:
-                    scheduler.step()
-            self.learning_rate = float(self.critic_optimizer.param_groups[0]["lr"])
-
-            # Store the losses
-            actor_updates += int(update_actor)
-            for key, value in stats.items():
-                totals[key] = totals.get(key, 0.0) + value
-
-        # Divide the losses by the number of updates
-        loss_dict: dict[str, float] = {}
-        for key, value in totals.items():
-            num_updates = actor_updates if key in ("actor", "alpha", "entropy", "symmetry") else self.num_updates
-            loss_dict[key] = (value / num_updates).item()
-        return loss_dict
+        # Divide the losses by the number of updates, synchronizing with the device once
+        actor_updates = sum((phase + i) % self.actor_update_interval == 0 for i in range(self.num_updates))
+        values = torch.stack([value.float() for value in totals.values()]).tolist()
+        return {
+            key: value / (actor_updates if key in ("actor", "alpha", "entropy", "symmetry") else self.num_updates)
+            for key, value in zip(totals, values)
+        }
 
     def train_mode(self) -> None:
         """Set train mode for learnable models."""
@@ -384,7 +354,6 @@ class SAC:
             "alpha_optimizer_state_dict": self.alpha_optimizer.state_dict(),
             "num_env_steps": self.num_env_steps,
             "num_critic_updates": self.num_critic_updates,
-            "scheduler_state_dicts": [scheduler.state_dict() for scheduler in self._schedulers],
         }
         if self.reward_normalization:
             saved_dict["return_normalizer_state_dict"] = self._return_normalizer.state_dict()
@@ -422,14 +391,13 @@ class SAC:
         if load_cfg.get("optimizer"):
             for name in ("actor", "critic", "alpha"):
                 getattr(self, f"{name}_optimizer").load_state_dict(loaded_dict[f"{name}_optimizer_state_dict"])
-            self.learning_rate = float(self.critic_optimizer.param_groups[0]["lr"])
-            for scheduler, state in zip(self._schedulers, loaded_dict.get("scheduler_state_dicts", [])):
-                scheduler.load_state_dict(state)
 
         # Restore the update counters
         if load_cfg.get("iteration"):
             self.num_env_steps = loaded_dict["num_env_steps"]
             self.num_critic_updates = loaded_dict["num_critic_updates"]
+            self._num_critic_updates_tensor.fill_(self.num_critic_updates)
+        self.learning_rate = self._base_learning_rates[1] * self._learning_rate_factor(self.num_critic_updates)
 
         # Reconfigure optimizer for CUDA graph capture
         self._configure_optimizer_capture()
@@ -529,24 +497,64 @@ class SAC:
 
         return batch
 
-    def _gradient_step(
-        self,
-        observations: TensorDict,
-        actions: torch.Tensor,
-        rewards: torch.Tensor,
-        next_observations: TensorDict,
-        bootstrap_discounts: torch.Tensor,
-        update_actor: bool,
-    ) -> dict[str, torch.Tensor]:
-        """Perform one fixed-shape optimizer step, suitable for lazy CUDA capture."""
-        batch = _Batch(
-            observations=observations,
-            actions=actions,
-            rewards=rewards,
-            next_observations=next_observations,
-            bootstrap_discounts=bootstrap_discounts,
-        )
+    def _run_updates(self, phase: int) -> dict[str, torch.Tensor]:
+        """Run the gradient updates of one iteration and return the summed losses.
 
+        All operations, including replay sampling and the learning rate schedule, run on the device, so the whole
+        method can be captured in a CUDA graph. ``phase`` is the position in the actor update interval of the first
+        update.
+        """
+        totals: dict[str, torch.Tensor] = {}
+        for i in range(self.num_updates):
+            # Set the scheduled learning rates
+            self._set_learning_rates(i)
+
+            # Sample and augment transitions and normalize rewards if enabled
+            batch = self._sample_batch()
+            if self.reward_normalization:
+                batch.rewards = batch.rewards / torch.maximum(
+                    self._return_normalizer._std.squeeze() + 1e-8,  # type: ignore
+                    self._max_abs_return / self.reward_normalization_max_return,
+                )
+
+            # Run the gradient update with the configured actor update interval and sum the losses
+            stats = self._gradient_step(batch, update_actor=(phase + i) % self.actor_update_interval == 0)
+            for key, value in stats.items():
+                totals[key] = totals[key] + value if key in totals else value
+        if self.use_cuda_graph:
+            self._num_critic_updates_tensor.add_(self.num_updates)
+        return totals
+
+    def _learning_rate_factor(self, num_updates: int | torch.Tensor) -> float | torch.Tensor:
+        """Return the scheduled learning rate as a fraction of the initial learning rate."""
+        if self.learning_rate_schedule == "constant":
+            return 1.0
+        if isinstance(num_updates, torch.Tensor):
+            progress = (num_updates / self.num_schedule_updates).clamp(max=1.0)  # type: ignore
+            cosine = torch.cos(math.pi * progress)
+        else:
+            cosine = math.cos(math.pi * min(num_updates / self.num_schedule_updates, 1.0))  # type: ignore
+        return self.final_learning_rate_ratio + (1.0 - self.final_learning_rate_ratio) * 0.5 * (1.0 + cosine)
+
+    def _set_learning_rates(self, offset: int) -> None:
+        """Set the learning rates of the update ``offset`` steps after the start of the current iteration."""
+        if self.learning_rate_schedule == "constant":
+            return
+        if self.use_cuda_graph:
+            factor = self._learning_rate_factor(self._num_critic_updates_tensor + offset)
+        else:
+            factor = self._learning_rate_factor(self.num_critic_updates + offset)
+        for optimizer, base_learning_rate in zip(
+            (self.actor_optimizer, self.critic_optimizer, self.alpha_optimizer), self._base_learning_rates
+        ):
+            for param_group in optimizer.param_groups:
+                if isinstance(param_group["lr"], torch.Tensor):
+                    param_group["lr"].copy_(base_learning_rate * factor)
+                else:
+                    param_group["lr"] = base_learning_rate * factor
+
+    def _gradient_step(self, batch: _Batch, update_actor: bool) -> dict[str, torch.Tensor]:
+        """Perform one fixed-shape optimizer step."""
         # Update the actor and temperature before the critics
         stats = self._update_actor_and_alpha(batch) if update_actor else {}
         stats.update(self._update_critics(batch))
@@ -750,14 +758,8 @@ class SAC:
                 if "step" in state:
                     state["step"] = state["step"].to(self.device if self.use_cuda_graph else "cpu")
 
-        # Create separate graphs for updates with and without an actor step
-        if self.use_cuda_graph:
-            self._graph_steps: dict[bool, CudaGraphCallable] = {
-                update_actor: CudaGraphCallable(
-                    functools.partial(self._gradient_step, update_actor=update_actor), self.device
-                )
-                for update_actor in (True, False)
-            }
+        # Discard graphs that reference the previous optimizer state; one graph is captured per actor update phase
+        self._graph_updates: dict[int, CudaGraphCallable] = {}
 
 
 @dataclass
