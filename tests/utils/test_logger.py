@@ -83,7 +83,7 @@ def test_statistics_are_separate_from_losses(tmp_path: pathlib.Path, capsys: pyt
 
     assert {
         "Loss/actor",
-        "Performance/total_fps",
+        "Performance/steps_per_second",
         "Performance/collection_time",
         "Performance/learning_time",
         *stats_dict,

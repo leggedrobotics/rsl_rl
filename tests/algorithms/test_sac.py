@@ -141,19 +141,22 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
     losses, stats = alg.update()
     assert losses and all(torch.isfinite(torch.tensor(v)) for v in losses.values())
     assert set(losses) == {"actor", "critic", "alpha"}
-    assert {
-        "Model/mean_policy_entropy",
-        "Model/mean_critic_q_value",
-        "Optimizer/learning_rate",
+    warmup_stats = {
+        "Optimizer/actor_learning_rate",
+        "Optimizer/critic_learning_rate",
+        "Optimizer/alpha_learning_rate",
         "Model/mean_policy_std",
-    } == stats.keys()
-    assert stats["Optimizer/learning_rate"] == alg.learning_rate
+        "Model/alpha",
+    }
+    assert warmup_stats | {"Model/mean_policy_entropy", "Model/mean_critic_q_value"} == stats.keys()
+    assert stats["Optimizer/critic_learning_rate"] == alg.learning_rate
     assert stats["Model/mean_policy_std"] == alg.actor.output_std.mean().item()
+    assert stats["Model/alpha"] == alg.log_alpha.exp().item()
     assert alg.num_critic_updates == 4
     alg.storage.clear()
     losses, stats = alg.update()
     assert losses == {}
-    assert set(stats) == {"Optimizer/learning_rate", "Model/mean_policy_std"}
+    assert set(stats) == warmup_stats
 
 
 @pytest.mark.parametrize(

@@ -313,10 +313,7 @@ class SAC:
 
         # Wait until enough transitions have been collected
         if self.storage.size < self.num_warmup_transitions or not self.storage.size:
-            return {}, {
-                "Optimizer/learning_rate": self.learning_rate,
-                "Model/mean_policy_std": self.actor.output_std.mean().item(),
-            }
+            return {}, self._get_stats()
 
         # Initialize the loss accumulators
         totals: dict[str, torch.Tensor] = {}
@@ -359,10 +356,7 @@ class SAC:
                 totals[key] = totals.get(key, 0.0) + value
 
         # Construct the stats dictionary and divide by the number of updates
-        stats_dict = {
-            "Optimizer/learning_rate": self.learning_rate,
-            "Model/mean_policy_std": self.actor.output_std.mean().item(),
-        }
+        stats_dict = self._get_stats()
         if actor_updates > 0:
             stats_dict["Model/mean_policy_entropy"] = (totals.pop("entropy") / actor_updates).item()
         stats_dict["Model/mean_critic_q_value"] = (totals.pop("q_value") / self.num_updates).item()
@@ -746,6 +740,16 @@ class SAC:
         """Sample actor actions and corrected log probabilities."""
         actions = self.actor(obs, stochastic_output=True)
         return actions, self.actor.get_output_log_prob(actions)
+
+    def _get_stats(self) -> dict[str, float]:
+        """Return the learning rates, entropy temperature, and policy standard deviation for logging."""
+        stats_dict = {
+            f"Optimizer/{name}_learning_rate": float(getattr(self, f"{name}_optimizer").param_groups[0]["lr"])
+            for name in ("actor", "critic", "alpha")
+        }
+        stats_dict["Model/alpha"] = self.log_alpha.exp().item()
+        stats_dict["Model/mean_policy_std"] = self.actor.output_std.mean().item()
+        return stats_dict
 
     def _configure_optimizer_capture(self) -> None:
         """Configure optimizers and static update functions for CUDA graph capture."""

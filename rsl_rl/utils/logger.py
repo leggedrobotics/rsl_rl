@@ -196,7 +196,7 @@ class Logger:
 
             # Log performance
             fps = int(collection_size / (collect_time + learn_time))
-            self.writer.add_scalar("Performance/total_fps", fps, it)
+            self.writer.add_scalar("Performance/steps_per_second", fps, it)
             self.writer.add_scalar("Performance/collection_time", collect_time, it)
             self.writer.add_scalar("Performance/learning_time", learn_time, it)
 
