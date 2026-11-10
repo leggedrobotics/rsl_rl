@@ -106,7 +106,6 @@ class SAC:
         validate_final_obs: bool | None = None,
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
-        # Not yet implemented features
         self.is_multi_gpu = multi_gpu_cfg is not None
         self.gpu_global_rank = multi_gpu_cfg["global_rank"] if multi_gpu_cfg is not None else 0
         self.gpu_world_size = multi_gpu_cfg["world_size"] if multi_gpu_cfg is not None else 1
