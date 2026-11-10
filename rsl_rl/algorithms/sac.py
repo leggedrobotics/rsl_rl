@@ -25,14 +25,9 @@ from rsl_rl.utils import CudaGraphCallable, compile_model, resolve_class, resolv
 class SAC:
     """Soft Actor-Critic algorithm.
 
-    Inspired by FlashSAC, this algorithm supports categorical critics, reward normalization, temporally correlated
-    exploration noise, n-step returns, CUDA graph updates, and batch-normalized residual actor and critic networks
-    (:class:`~rsl_rl.modules.mlp.ResidualMLP`, selected through the model's ``network_cfg``).
-
-    The defaults are the single configuration that worked best across Isaac Lab locomotion benchmark tasks: categorical
-    critics, reward normalization, held exploration noise, 3-step returns, a discount of 0.98, and learning rates of
-    1e-4. Those runs also used residual networks and an action range of ``(-2.0, 2.0)``, which are configured in the
-    actor and critic model configurations.
+    Inspired by FlashSAC, this implementation supports categorical critics, reward normalization, temporally correlated
+    exploration noise, and batch-normalized residual actor and critic networks. It also supports the library's symmetry
+    extension and CUDA graph updates.
 
     References:
         - Haarnoja et al. "Soft Actor-Critic Algorithms and Applications." arXiv preprint arXiv:1812.05905 (2018).
@@ -458,6 +453,8 @@ class SAC:
         alg_class, alg_cfg = resolve_class(cfg["algorithm"])
         actor_class, actor_cfg = resolve_class(cfg["actor"])
         critic_class, critic_cfg = resolve_class(cfg["critic"])
+        if not issubclass(critic_class, QMLPModel):  # type: ignore
+            raise ValueError("SAC requires QMLPModel critics.")
 
         # Resolve observation groups
         cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], ["actor", "critic"])

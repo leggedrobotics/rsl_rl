@@ -254,6 +254,11 @@ PPO
 
 SAC
 ^^^
+.. note::
+   SAC requires :class:`~rsl_rl.models.mlp_model.QMLPModel` critics and an actor with a
+   :class:`~rsl_rl.modules.distribution.SquashedGaussianDistribution`. We recommend using 
+   :class:`~rsl_rl.modules.mlp.ResidualMLP` networks for the actor and critics, selected through the model's
+   ``network_cfg`` as described in :ref:`Model Configuration <model-configuration>`.
 
 .. list-table::
    :header-rows: 1
@@ -409,28 +414,6 @@ SAC
      - ``None``
      - Optional symmetry extension configuration.
 
-The SAC defaults are the configuration that worked best across Isaac Lab locomotion benchmark tasks. These runs used
-residual networks for the actor and critics, and an actor action range of ``(-2.0, 2.0)``:
-
-.. code-block:: yaml
-
-   actor:
-     class_name: MLPModel
-     network_cfg:
-       class_name: ResidualMLP
-       hidden_dim: 128
-     distribution_cfg:
-       class_name: SquashedGaussianDistribution
-       action_range: [-2.0, 2.0]
-   critic:
-     class_name: QMLPModel
-     network_cfg:
-       class_name: ResidualMLP
-       hidden_dim: 256
-
-The action range is the setting most likely to need task-specific tuning. For example, joint-position tasks whose
-targets lie far from the default pose may need a larger range.
-
 Distillation
 ^^^^^^^^^^^^
 
@@ -482,6 +465,8 @@ Distillation
        across GPUs during multi-GPU training. Matches
        :class:`torch.nn.parallel.DistributedDataParallel`'s default ``bucket_cap_mb``.
 
+
+.. _model-configuration:
 
 Model Configuration
 -------------------

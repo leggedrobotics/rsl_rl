@@ -56,6 +56,16 @@ def test_cnn_actor_is_rejected_at_construction() -> None:
         SAC.construct_algorithm(obs, env, cfg, "cpu")
 
 
+def test_non_q_critic_is_rejected_at_construction() -> None:
+    """Critics without action inputs fail before replay collection starts."""
+    env = DummyEnv()
+    cfg = _make_train_cfg()
+    cfg["multi_gpu"] = None
+    cfg["critic"]["class_name"] = "MLPModel"
+    with pytest.raises(ValueError, match="requires QMLPModel critics"):
+        SAC.construct_algorithm(env.get_observations(), env, cfg, "cpu")
+
+
 @pytest.mark.parametrize(
     "device",
     [
