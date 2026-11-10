@@ -589,6 +589,7 @@ def test_runner_nan_check_replaces_final_observation_validation() -> None:
     cfg = _make_train_cfg()
     cfg["multi_gpu"] = None
     cfg["check_for_nan"] = True
+    cfg["algorithm"]["validate_final_obs"] = None
     env = DummyEnv()
     obs = env.get_observations()
     alg = SAC.construct_algorithm(obs, env, cfg, "cpu")
