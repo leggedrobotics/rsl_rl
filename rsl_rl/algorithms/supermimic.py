@@ -179,7 +179,7 @@ class SuperMimic:
         self._actor_forward = self.actor.forward_history
         self.actor_ema_halflife = actor_ema_halflife
         self.actor_ema = None if actor_ema_halflife is None else [p.detach().clone() for p in self.actor.parameters()]
-        self.actor_ema_updates = 0
+        self._actor_ema_updates = torch.zeros((), dtype=torch.long, device=device)
         self._actor_ema_policy: SuperMimicActor | None = None
 
     def _set(self, obs: TensorDict, name: str) -> torch.Tensor:
@@ -357,7 +357,10 @@ class SuperMimic:
                 state = successor
             features.append(self.task.critic_obs(state, goal, context, previous))
             reward, terminal = torch.stack(rewards), torch.stack(terminals)
-            alive = torch.cumprod(1 - terminal, dim=0)
+            survival = [1 - terminal[0]]
+            for step_terminal in terminal[1:]:
+                survival.append(survival[-1] * (1 - step_terminal))
+            alive = torch.stack(survival)
             weights = (
                 torch.cat((torch.ones_like(alive[:1]), alive[:-1]))
                 * self.gamma ** torch.arange(self.horizon, device=self.device)[:, None]
@@ -406,25 +409,43 @@ class SuperMimic:
         return {"critic_loss": torch.stack(losses).mean()}
 
     def _apply(self, loss: torch.Tensor, name: str, module: nn.Module, clip_value: float | None = None) -> torch.Tensor:
-        """Apply finite gradients with optional value clipping."""
+        """Apply finite gradients with optional value clipping.
+
+        Fused optimizers skip nonfinite steps on the device; other optimizers check the gradient norm on the host.
+        """
         optimizer = self.optimizers[name]
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         norm = nn.utils.clip_grad_norm_(module.parameters(), self.max_grad_norm)
         if clip_value is not None:
             nn.utils.clip_grad_value_(module.parameters(), clip_value)
-        if torch.isfinite(norm):
+        finite = torch.isfinite(norm)
+        if optimizer.defaults.get("fused"):
+            optimizer.found_inf = (~finite).float()
             optimizer.step()
-            if name == "actor" and self.actor_ema is not None:
-                self._update_actor_ema()
+        elif finite:
+            optimizer.step()
+        if name == "actor" and self.actor_ema is not None:
+            self._update_actor_ema(finite)
         return norm.detach()
 
     @torch.no_grad()
-    def _update_actor_ema(self) -> None:
+    def _update_actor_ema(self, finite: torch.Tensor) -> None:
         """Average the live actor only after a successful optimizer step."""
-        self.actor_ema_updates += 1
-        decay = min(0.5 ** (1 / self.actor_ema_halflife), (1 + self.actor_ema_updates) / (10 + self.actor_ema_updates))
-        torch._foreach_lerp_(self.actor_ema, list(self.actor.parameters()), 1 - decay)
+        self._actor_ema_updates += finite.long()
+        updates = self._actor_ema_updates.float()
+        decay = torch.clamp((1 + updates) / (10 + updates), max=0.5 ** (1 / self.actor_ema_halflife))
+        weight = (1 - decay) * finite.float()
+        torch._foreach_lerp_(self.actor_ema, list(self.actor.parameters()), [weight] * len(self.actor_ema))
+
+    @property
+    def actor_ema_updates(self) -> int:
+        """Number of successful actor steps folded into the EMA."""
+        return int(self._actor_ema_updates)
+
+    @actor_ema_updates.setter
+    def actor_ema_updates(self, value: int) -> None:
+        self._actor_ema_updates.fill_(value)
 
     def update(self) -> dict[str, float]:
         """Run accumulated learner updates; the runner's collection cadence remains external."""
@@ -433,16 +454,16 @@ class SuperMimic:
             sets = [name for name, flag in (("state", nonfinite_state), ("labels", nonfinite_labels)) if flag]
             raise ValueError(f"SuperMimic received nonfinite final_obs in the observation sets {sets}.")
         metrics = {"learner_updates": float(self.iteration)}
+        totals: dict[str, list[torch.Tensor]] = {}
         if self._collected_steps:
-            metrics["window_break_fraction"] = (self._window_break_sum / self._collected_steps).item()
-            self._window_break_sum.zero_()
+            totals["window_break_fraction"] = [self._window_break_sum / self._collected_steps]
             self._collected_steps = 0
+        count = 0
         if self.storage.num_steps < self.warmup_steps:
             self._update_debt = 0.0
-            return metrics
-        count = int(self._update_debt + 1e-9)
-        self._update_debt -= count
-        totals: dict[str, list[torch.Tensor]] = {}
+        else:
+            count = int(self._update_debt + 1e-9)
+            self._update_debt -= count
         for _ in range(count):
             for _ in range(self.num_world_model_updates):
                 for key, value in self._fit_world_model().items():
@@ -453,7 +474,10 @@ class SuperMimic:
                         totals.setdefault(key, []).append(value)
             self.iteration += 1
             self._update_learning_rate()
-        metrics.update({key: torch.stack(values).mean().item() for key, values in totals.items()})
+        if totals:
+            means = torch.stack([torch.stack(values).float().mean() for values in totals.values()]).tolist()
+            metrics.update(zip(totals, means))
+            self._window_break_sum.zero_()
         metrics["learner_updates"] = float(self.iteration)
         return metrics
 
