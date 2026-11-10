@@ -63,14 +63,14 @@ class SuperMimic:
         horizon: int = 32,
         policy_batch_size: int = 4096,
         learning_rate: float = 2e-4,
-        lr_decay_iterations: int = 250_000,
-        lr_final_ratio: float = 0.03,
+        num_schedule_updates: int = 250_000,
+        final_learning_rate_ratio: float = 0.03,
         gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        critic_epochs: int = 5,
-        critic_minibatches: int = 4,
-        warmup_steps: int = 64,
-        world_model_warmup_iterations: int = 500,
+        lam: float = 0.95,
+        num_critic_epochs: int = 5,
+        num_critic_mini_batches: int = 4,
+        num_warmup_steps: int = 64,
+        num_world_model_warmup_iterations: int = 500,
         action_noise: float = 0.1,
         actor_ema_halflife: int | None = None,
         max_step_reward: float | None = None,
@@ -99,14 +99,14 @@ class SuperMimic:
             horizon: Imagined policy horizon.
             policy_batch_size: Starts per actor update.
             learning_rate: Initial learning rate for all optimizers.
-            lr_decay_iterations: Learner iterations in the shared cosine learning-rate schedule.
-            lr_final_ratio: Final learning rate relative to its initial value.
+            num_schedule_updates: Learner iterations in the shared cosine learning-rate schedule.
+            final_learning_rate_ratio: Final learning rate relative to its initial value.
             gamma: Reward discount.
-            gae_lambda: TD(lambda) mixing coefficient for value targets.
-            critic_epochs: Epochs per critic fit.
-            critic_minibatches: Minibatches per critic epoch.
-            warmup_steps: Stored steps per environment required before learning.
-            world_model_warmup_iterations: Learner iterations fitting only dynamics.
+            lam: TD(lambda) mixing coefficient for value targets.
+            num_critic_epochs: Epochs per critic fit.
+            num_critic_mini_batches: Minibatches per critic epoch.
+            num_warmup_steps: Stored steps per environment required before learning.
+            num_world_model_warmup_iterations: Learner iterations fitting only dynamics.
             action_noise: Standard deviation of additive collection noise.
             actor_ema_halflife: Deployment-only actor exponential moving average (EMA) half-life in actor optimizer
                 steps, e.g. 500. None disables it; use the same setting for training and deployment.
@@ -127,16 +127,16 @@ class SuperMimic:
             world_model_batch_size,
             horizon,
             policy_batch_size,
-            lr_decay_iterations,
-            critic_epochs,
-            critic_minibatches,
-            warmup_steps,
+            num_schedule_updates,
+            num_critic_epochs,
+            num_critic_mini_batches,
+            num_warmup_steps,
         )
         if min(positive) < 1 or updates_per_step <= 0 or learning_rate <= 0 or max_grad_norm <= 0:
             raise ValueError("Learning counts, cadence, learning rate and gradient limit must be positive.")
-        if warmup_steps < world_model_window or world_model_warmup_iterations < 0:
-            raise ValueError("warmup_steps must cover the model window; world-model warmup must be nonnegative.")
-        if not 0 <= gamma < 1 or not 0 <= gae_lambda <= 1 or not 0 <= lr_final_ratio <= 1:
+        if num_warmup_steps < world_model_window or num_world_model_warmup_iterations < 0:
+            raise ValueError("num_warmup_steps must cover the model window; world-model warmup must be nonnegative.")
+        if not 0 <= gamma < 1 or not 0 <= lam <= 1 or not 0 <= final_learning_rate_ratio <= 1:
             raise ValueError("Invalid discount, lambda or final learning-rate ratio.")
         if action_noise < 0:
             raise ValueError("Action noise must be nonnegative.")
@@ -150,9 +150,12 @@ class SuperMimic:
         self.num_world_model_updates, self.num_policy_updates = num_world_model_updates, num_policy_updates
         self.world_model_window, self.world_model_batch_size = world_model_window, world_model_batch_size
         self.horizon, self.policy_batch_size = horizon, policy_batch_size
-        self.gamma, self.gae_lambda = gamma, gae_lambda
-        self.critic_epochs, self.critic_minibatches = critic_epochs, critic_minibatches
-        self.warmup_steps, self.world_model_warmup_iterations = warmup_steps, world_model_warmup_iterations
+        self.gamma, self.lam = gamma, lam
+        self.num_critic_epochs, self.num_critic_mini_batches = num_critic_epochs, num_critic_mini_batches
+        self.num_warmup_steps, self.num_world_model_warmup_iterations = (
+            num_warmup_steps,
+            num_world_model_warmup_iterations,
+        )
         self.value_cap = None if max_step_reward is None else max_step_reward / (1 - gamma)
         self.use_mixed_precision, self.max_grad_norm = use_mixed_precision, max_grad_norm
         self.actor.noise_std.fill_(action_noise)
@@ -166,7 +169,7 @@ class SuperMimic:
             "critic": torch.optim.Adam(self.critic.parameters(), **optimizer_kwargs),
         }
         self.initial_learning_rate = learning_rate
-        self.lr_decay_iterations, self.lr_final_ratio = lr_decay_iterations, lr_final_ratio
+        self.num_schedule_updates, self.final_learning_rate_ratio = num_schedule_updates, final_learning_rate_ratio
         self.learning_rate = learning_rate
         self.iteration, self._update_debt = 0, 0.0
         self._last_obs: TensorDict | None = None
@@ -393,12 +396,12 @@ class SuperMimic:
         """
         with torch.no_grad():
             self.critic.update_normalization(TensorDict({"critic": features[0]}, batch_size=features.shape[1:2]))
-            targets = lambda_returns(rewards, terminals, self._cap(self._value(features)), self.gamma, self.gae_lambda)
+            targets = lambda_returns(rewards, terminals, self._cap(self._value(features)), self.gamma, self.lam)
             targets = self._cap(targets).flatten()
         features, reach = features[:-1].flatten(0, 1), reach.flatten()
         losses = []
-        for _ in range(self.critic_epochs):
-            for indices in torch.randperm(features.shape[0], device=self.device).chunk(self.critic_minibatches):
+        for _ in range(self.num_critic_epochs):
+            for indices in torch.randperm(features.shape[0], device=self.device).chunk(self.num_critic_mini_batches):
                 with torch.autocast(
                     torch.device(self.device).type, dtype=torch.bfloat16, enabled=self.use_mixed_precision
                 ):
@@ -459,7 +462,7 @@ class SuperMimic:
             totals["window_break_fraction"] = [self._window_break_sum / self._collected_steps]
             self._collected_steps = 0
         count = 0
-        if self.storage.num_steps < self.warmup_steps:
+        if self.storage.num_steps < self.num_warmup_steps:
             self._update_debt = 0.0
         else:
             count = int(self._update_debt + 1e-9)
@@ -468,7 +471,7 @@ class SuperMimic:
             for _ in range(self.num_world_model_updates):
                 for key, value in self._fit_world_model().items():
                     totals.setdefault(key, []).append(value)
-            if self.iteration >= self.world_model_warmup_iterations:
+            if self.iteration >= self.num_world_model_warmup_iterations:
                 for _ in range(self.num_policy_updates):
                     for key, value in self._fit_policy().items():
                         totals.setdefault(key, []).append(value)
@@ -483,9 +486,10 @@ class SuperMimic:
 
     def _update_learning_rate(self) -> None:
         """Set all optimizer rates for the next learner iteration, clamping at the cosine floor."""
-        progress = min(self.iteration / self.lr_decay_iterations, 1.0)
+        progress = min(self.iteration / self.num_schedule_updates, 1.0)
         self.learning_rate = self.initial_learning_rate * (
-            self.lr_final_ratio + (1 - self.lr_final_ratio) * 0.5 * (1 + math.cos(math.pi * progress))
+            self.final_learning_rate_ratio
+            + (1 - self.final_learning_rate_ratio) * 0.5 * (1 + math.cos(math.pi * progress))
         )
         for optimizer in self.optimizers.values():
             for group in optimizer.param_groups:
@@ -646,10 +650,10 @@ class SuperMimic:
         ).to(device)
         critic_obs = TensorDict({"critic": critic_features}, batch_size=[env.num_envs])
         critic = critic_class(critic_obs, {"critic": ["critic"]}, "critic", 1, **critic_cfg).to(device)
-        warmup = alg_cfg.get("warmup_steps", 64)
+        warmup = alg_cfg.get("num_warmup_steps", 64)
         storage = SequenceReplayBuffer(
             env.num_envs,
-            alg_cfg.pop("replay_buffer_size", 1_000_000),
+            alg_cfg.pop("replay_buffer_capacity", 1_000_000),
             device,
             min_steps=max(warmup, actor.history_length),
             max_memory_fraction=alg_cfg.pop("max_replay_memory_fraction", None),

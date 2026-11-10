@@ -146,16 +146,16 @@ def _cfg(**options: object) -> dict:
         "class_name": "SuperMimic",
         "task_cfg": {"class_name": ScalarTask},
         "updates_per_step": 1.0,
-        "replay_buffer_size": 64,
-        "warmup_steps": 4,
+        "replay_buffer_capacity": 64,
+        "num_warmup_steps": 4,
         "world_model_window": 3,
         "num_world_model_updates": 1,
         "world_model_batch_size": 8,
-        "world_model_warmup_iterations": 0,
+        "num_world_model_warmup_iterations": 0,
         "horizon": 3,
         "policy_batch_size": 4,
-        "critic_epochs": 1,
-        "critic_minibatches": 2,
+        "num_critic_epochs": 1,
+        "num_critic_mini_batches": 2,
     }
     algorithm.update(options)
     return {
@@ -379,13 +379,13 @@ def test_actor_ema_rejects_nonpositive_halflife(halflife: int) -> None:
 
 def test_learning_rate_tracks_learner_iterations_and_resume() -> None:
     """All optimizers share one clamped schedule despite unequal update counts."""
-    learner, env = _learner(lr_decay_iterations=8, num_world_model_updates=2), ScalarEnv()
+    learner, env = _learner(num_schedule_updates=8, num_world_model_updates=2), ScalarEnv()
     _collect(learner, env, 4)
     learner.update()
     assert learner.iteration == 4
     expected = 2e-4 * (0.03 + 0.97 * 0.5)
     assert all(optimizer.param_groups[0]["lr"] == pytest.approx(expected) for optimizer in learner.optimizers.values())
-    restored = _learner(lr_decay_iterations=8, num_world_model_updates=2)
+    restored = _learner(num_schedule_updates=8, num_world_model_updates=2)
     restored.load(copy.deepcopy(learner.save()), None, True)
     _collect(restored, ScalarEnv(), 8)
     restored.update()
@@ -446,7 +446,7 @@ def test_lambda_returns_terminal_reward_and_bootstrap() -> None:
 
 def test_value_cap_bounds_policy_bootstrap_and_critic_targets() -> None:
     """Limit optimistic bootstraps and targets while fitting the uncapped critic."""
-    learner, env = _learner(max_step_reward=1.0, gamma=0.5, horizon=1, critic_minibatches=1), ScalarEnv()
+    learner, env = _learner(max_step_reward=1.0, gamma=0.5, horizon=1, num_critic_mini_batches=1), ScalarEnv()
     _collect(learner, env, 4)
     with torch.no_grad():
         for parameter in learner.critic.parameters():
@@ -561,7 +561,7 @@ def test_failed_policy_update_restores_frozen_parameters() -> None:
 
 def test_fractional_cadence_and_algorithm_level_multi_gpu_rejection() -> None:
     """Direct per-step updates retain the 2/3-step learner cadence without a custom runner hook."""
-    learner, env = _learner(updates_per_step=0.4, warmup_steps=1, world_model_window=1), ScalarEnv()
+    learner, env = _learner(updates_per_step=0.4, num_warmup_steps=1, world_model_window=1), ScalarEnv()
     counts = []
     for _ in range(5):
         _collect(learner, env, 1)

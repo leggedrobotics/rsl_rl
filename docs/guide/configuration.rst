@@ -604,7 +604,7 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
      - dict
      - required
      - Differentiable task class and kwargs.
-   * - ``replay_buffer_size``
+   * - ``replay_buffer_capacity``
      - int
      - ``1000000``
      - Total physical transitions across environments; allocated lazily.
@@ -616,11 +616,11 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
      - float
      - ``0.4``
      - Learner iterations accrued per environment step.
-   * - ``warmup_steps``
+   * - ``num_warmup_steps``
      - int
      - ``64``
      - Stored steps per environment before learning; must cover world_model_window.
-   * - ``lr_decay_iterations``
+   * - ``num_schedule_updates``
      - int
      - ``250000``
      - Shared cosine duration in learner iterations.

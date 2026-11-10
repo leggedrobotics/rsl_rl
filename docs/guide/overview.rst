@@ -327,7 +327,7 @@ sets. Every step must supply physical successors before resets and interval even
 replay retains the original physical successor. Task features and ``post_dynamics`` preserve state and action gradients.
 Actor moments update during ``act`` and world-model moments during ``process_env_step``, using in-place writes compatible
 with inference-mode collection. ``updates_per_step`` accrues learner debt; runner iteration is the logging step axis.
-All optimizers share one cosine schedule over ``lr_decay_iterations`` learner iterations.
+All optimizers share one cosine schedule over ``num_schedule_updates`` learner iterations.
 
 Full checkpoints contain ``actor_state_dict``, ``critic_state_dict``, ``world_model_state_dict``, each model's
 ``*_optimizer_state_dict`` and the learner iteration. Replay, collection history and simulator state are excluded.
