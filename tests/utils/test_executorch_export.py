@@ -75,6 +75,24 @@ def test_export_matches_policy(model_type: str, distribution: str, backend: str,
         torch.testing.assert_close(output, target, atol=1e-5, rtol=1e-5)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA GPU")
+def test_export_policy_on_gpu(tmp_path: pathlib.Path) -> None:
+    """A policy that is still on the GPU after training should export to a program that matches it."""
+    runtime = pytest.importorskip("executorch.runtime")
+    policy = _make_policy("gru").to("cuda")
+    reference = policy.as_onnx().eval()
+    inputs = [torch.randn_like(x, device="cuda") for x in reference.get_dummy_inputs()]
+    expected = [x.cpu() for x in reference(*inputs)]
+    export_policy_to_executorch(policy, str(tmp_path))
+
+    program = runtime.Runtime.get().load_program(str(tmp_path / "policy.pte"))
+    outputs = program.load_method("forward").execute([x.cpu() for x in inputs])
+
+    assert len(outputs) == len(expected)
+    for output, target in zip(outputs, expected):
+        torch.testing.assert_close(output, target, atol=1e-5, rtol=1e-5)
+
+
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [({"backend": "vulkan"}, "Unknown ExecuTorch backend"), ({"filename": "policy.onnx"}, "must end with '.pte'")],
