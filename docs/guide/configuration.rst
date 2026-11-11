@@ -255,8 +255,8 @@ PPO
 SAC
 ^^^
 .. note::
-   SAC requires :class:`~rsl_rl.models.mlp_model.QMLPModel` critics and an actor with a
-   :class:`~rsl_rl.modules.distribution.SquashedGaussianDistribution`. We recommend using 
+   SAC requires :class:`~rsl_rl.models.mlp_model.QMLPModel` or :class:`~rsl_rl.models.cnn_model.QCNNModel` critics
+   and an actor with a :class:`~rsl_rl.modules.distribution.SquashedGaussianDistribution`. We recommend using
    :class:`~rsl_rl.modules.mlp.ResidualMLP` networks for the actor and critics, selected through the model's
    ``network_cfg`` as described in :ref:`Model Configuration <model-configuration>`.
 
@@ -413,6 +413,103 @@ SAC
      - dict | None
      - ``None``
      - Optional symmetry extension configuration.
+   * - ``grad_reduce_bucket_mb``
+     - float
+     - ``25``
+     - Maximum gradient-reduction buffer size in megabytes for distributed training.
+   * - ``validate_final_obs``
+     - bool | None
+     - ``None``
+     - Whether SAC rejects nonfinite final observations in :meth:`~rsl_rl.algorithms.sac.SAC.update`, which costs one
+       synchronization per iteration. ``None`` resolves to ``False`` on a single GPU if the runner configuration sets
+       ``check_for_nan=True``, whose check already covers final observations, and to ``True`` otherwise.
+
+SAC distributed training
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+``OffPolicyRunner`` uses the same ``torchrun``/NCCL setup as ``OnPolicyRunner``. Pass
+``device=f"cuda:{os.environ['LOCAL_RANK']}"`` to each runner and create its environments on that device.
+The standalone algorithm also accepts an already initialized Gloo process group for CPU execution via ``multi_gpu_cfg``.
+With NCCL, ``use_cuda_graph=True`` captures the gradient and statistics all-reduces together with the updates and
+the environment-step processing; the Gloo backend does not support capture. The captured graphs must be released
+before the process group is destroyed: ``OnPolicyRunner.learn()`` does this when it returns; code that drives the
+algorithm directly calls :meth:`~rsl_rl.algorithms.sac.SAC.release_cuda_graphs`.
+
+Replay capacity, warm-up transitions, and batch size are per rank. Every rank must use the same model and algorithm
+configuration and call collection and updates in the same order. An update starts only when every rank's replay is
+ready. Actor, critic, target, temperature, and normalizer state are initially broadcast from rank zero. Actor, critic,
+and temperature gradients are averaged before clipping or stepping. Observation and return normalizers compute global
+sample-weighted moments; the return-magnitude bound uses a global maximum. BatchNorm forward passes use local minibatch
+statistics, with running floating-point buffers averaged and integer counters synchronized after each learner step.
+This is not SyncBatchNorm.
+
+On resume, all ranks must load the same checkpoint and load configuration, including optimizer and scheduler state
+when continuing training. Replay and environment trajectories remain local and are not checkpointed; each rank refills
+replay before updates resume. Actor/critic update counters and schedules are restored from the checkpoint.
+
+SAC final observations
+~~~~~~~~~~~~~~~~~~~~~~
+
+The consumed ``final_obs`` rows must be finite for both hard terminals and timeouts. Invalid final rows are rejected
+before replay insertion; the standalone distributed SAC algorithm propagates this error to all ranks. The runner's
+own finite check may raise earlier on the affected rank. Unused rows for environments that did not
+reset are ignored. Timeouts bootstrap from their final pre-reset observation. Hard terminals have zero bootstrap
+discount. Before learner forward passes, nonfinite terminal successor inputs are replaced by the corresponding current
+observations, so invalid terminal successors from externally populated replay cannot enter actor/critic forwards or
+BatchNorm statistics. Finite terminal successor inputs retain the original BatchNorm behavior. This replacement
+preserves fixed batch shapes for single-device CUDA graphs.
+
+SAC image observations
+~~~~~~~~~~~~~~~~~~~~~~
+
+Use ``CNNModel`` for an image actor and ``QCNNModel`` for an image critic. Both use the existing ``cnn_cfg`` interface.
+Each selected image group has shape ``(batch, channels, height, width)``; vector groups have shape ``(batch, features)``.
+Replay retains these shapes. Either model can use images alone or images plus vector groups, and actor/critic groups
+may differ. The critic concatenates runtime candidate actions after the image and vector features, before its MLP or
+configured ``network_cfg``. ``action_dim`` is inferred from ``env.num_actions``; do not add candidate actions to the
+observation groups. Q outputs are scalar values or categorical logits according to the SAC configuration.
+
+For example, set the following model and observation entries in an otherwise configured SAC runner:
+
+.. code-block:: python
+
+   cfg["obs_groups"] = {"actor": ["policy", "image"], "critic": ["critic", "image"]}
+   cfg["actor"] = {
+       "class_name": "CNNModel",
+       "hidden_dims": [256, 256],
+       "cnn_cfg": {"output_channels": [16, 32], "kernel_size": 3, "stride": 2, "flatten": True},
+       "distribution_cfg": {"class_name": "SquashedGaussianDistribution"},
+   }
+   cfg["critic"] = {
+       "class_name": "QCNNModel",
+       "hidden_dims": [256, 256],
+       "cnn_cfg": {"output_channels": [16, 32], "kernel_size": 3, "stride": 2, "flatten": True},
+   }
+
+SAC requires separate parameters for the actor and each critic, including image encoders. CNN actors support the
+standard runner's TorchScript and ONNX exports; state-action critic export is not supported.
+
+SAC recurrent-model limitation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Recurrent actors and critics are explicitly rejected. The current replay ``length`` is an n-step return window,
+not a recurrent training sequence: ``ReplayBuffer.Batch`` provides only the initial observations/actions and the final
+successor observations. Its time-indexed ``rewards`` tensor does not include observation/action sequences.
+The ``valid`` mask controls return accumulation, not recurrent loss padding. No hidden states are stored.
+
+``RNNModel`` expects a time-major observation sequence, padding masks and an initial hidden state during updates.
+Without these inputs its forward pass instead advances the rollout hidden state. Using it on independent random
+replay samples would mix unrelated episode histories and could overwrite the state used for environment interaction.
+Calling ``reset(dones)`` during collection alone cannot make that update correct.
+
+Correct recurrent SAC would require observation/action sequences with episode boundaries, burn-in or stored initial
+states, padding-aware losses, and separate history reconstruction for the actor, online critics and target critics.
+Target hidden states must be computed using target weights, not copied from an online critic. Timeout successors need
+the pre-reset history while the following episode starts from reset state; hard terminals must never bootstrap across
+that boundary. The actor's candidate-action Q evaluation must preserve replay history without mutating rollout or
+target hidden state. These changes span replay, model interfaces and learner updates and are intentionally deferred.
+No recurrent SAC support is claimed by this implementation.
+
 
 Distillation
 ^^^^^^^^^^^^
@@ -475,7 +572,8 @@ Different algorithms use models for different purposes. For example, :class:`~rs
 and a critic, while :class:`~rsl_rl.algorithms.distillation.Distillation` uses a student and a teacher. Even though
 their function may differ, algorithms can generally use the same underlying model classes. Available models include
 :class:`~rsl_rl.models.mlp_model.MLPModel`, :class:`~rsl_rl.models.rnn_model.RNNModel`, and
-:class:`~rsl_rl.models.cnn_model.CNNModel`, and :class:`~rsl_rl.models.mlp_model.QMLPModel`.
+:class:`~rsl_rl.models.cnn_model.CNNModel`, :class:`~rsl_rl.models.mlp_model.QMLPModel`, and
+:class:`~rsl_rl.models.cnn_model.QCNNModel`.
 
 MLPModel
 ^^^^^^^^

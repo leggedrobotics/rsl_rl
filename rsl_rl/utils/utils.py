@@ -291,8 +291,19 @@ def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extra
     """Raise ``ValueError`` if any environment output contains NaN or Inf.
 
     If ``extras`` contains ``"final_obs"``, the final observations of environments that are done are checked as well.
-    Entries of environments that are not done are ignored.
+    Entries of environments that are not done are ignored. The common case of finite outputs synchronizes with the
+    device once.
     """
+    done_mask = dones.reshape(-1).bool()
+    final_obs = extras.get("final_obs") if extras is not None else None
+    finite = [torch.isfinite(tensor).all() for tensor in obs.values()]
+    finite += [torch.isfinite(rewards).all(), torch.isfinite(dones).all()]
+    if final_obs is not None:
+        for tensor in final_obs.values():
+            mask = done_mask.to(tensor.device).reshape(-1, *([1] * (tensor.ndim - 1)))
+            finite.append((torch.isfinite(tensor) | ~mask).all())
+    if torch.stack([flag.to(rewards.device) for flag in finite]).all():
+        return
     for key, tensor in obs.items():
         if not torch.isfinite(tensor).all():
             has_nan = torch.isnan(tensor).any()
@@ -318,9 +329,8 @@ def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extra
             f"The dones returned by the environment contain {value_name} values. This usually indicates a bug in the"
             " environment's termination logic."
         )
-    if extras is not None and extras.get("final_obs") is not None:
-        done_mask = dones.reshape(-1).bool()
-        for key, tensor in extras["final_obs"].items():
+    if final_obs is not None:
+        for key, tensor in final_obs.items():
             tensor = tensor[done_mask.to(tensor.device)]
             if not torch.isfinite(tensor).all():
                 has_nan = torch.isnan(tensor).any()
@@ -330,6 +340,43 @@ def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extra
                     f"The final observation group '{key}' returned by the environment contains {value_name} values."
                     " This usually indicates a bug in the environment's step() function."
                 )
+
+
+def find_nonfinite(
+    obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict | None = None
+) -> dict[str, torch.Tensor]:
+    """Return a device flag per environment output that is ``True`` if the output contains NaN or Inf values.
+
+    The flags are computed without synchronizing with the device. If ``extras`` contains ``"final_obs"``, the final
+    observations of environments that are done are checked as well.
+    """
+    flags = {f"observation group '{key}'": ~torch.isfinite(tensor).all() for key, tensor in obs.items()}
+    flags["rewards"] = ~torch.isfinite(rewards).all()
+    flags["dones"] = ~torch.isfinite(dones).all()
+    final_obs = extras.get("final_obs") if extras is not None else None
+    if final_obs is not None:
+        done_mask = dones.reshape(-1).bool()
+        for key, tensor in final_obs.items():
+            mask = done_mask.to(tensor.device).reshape(-1, *([1] * (tensor.ndim - 1)))
+            flags[f"final observation group '{key}'"] = ~(torch.isfinite(tensor) | ~mask).all()
+    return flags
+
+
+def raise_if_nonfinite(flags: dict[str, torch.Tensor]) -> None:
+    """Raise ``ValueError`` naming the environment outputs whose flag from :func:`find_nonfinite` is set.
+
+    Synchronizes with the device once.
+    """
+    if not flags:
+        return
+    device = next(iter(flags.values())).device
+    values = torch.stack([flag.to(device) for flag in flags.values()]).tolist()
+    sources = [source for source, value in zip(flags, values) if value]
+    if sources:
+        raise ValueError(
+            f"The {', '.join(sources)} returned by the environment contained NaN or Inf values. This usually indicates"
+            " a bug in the environment's step() or reset() function."
+        )
 
 
 def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.Module:

@@ -233,10 +233,10 @@ class TestMLPModelExport:
 
 @pytest.mark.parametrize("export_method", ["as_jit", "as_onnx"])
 def test_q_model_export_is_not_supported(export_method: str) -> None:
-    """Q models reject exporters that cannot accept their separate action input."""
+    """Q models reject export because critics are not exported."""
     obs = make_obs(NUM_ENVS, OBS_DIM)
     model = QMLPModel(obs, OBS_GROUPS, "critic", 1, NUM_ACTIONS, hidden_dims=[16])
-    with pytest.raises(NotImplementedError, match="QMLPModel does not support"):
+    with pytest.raises(NotImplementedError, match="critics are not exported"):
         getattr(model, export_method)()
 
 

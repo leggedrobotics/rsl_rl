@@ -243,3 +243,41 @@ class TestCNNModelONNXExport:
 
             assert [i.name for i in loaded.graph.input] == ["obs", "image"]
             assert [o.name for o in loaded.graph.output] == ["actions"]
+
+
+@pytest.mark.parametrize("output_dim", [1, 11])
+def test_action_conditioned_cnn(output_dim: int) -> None:
+    """Q heads consume actions after image encoding and differentiate through both inputs."""
+    from rsl_rl.models import QCNNModel
+
+    _, obs = _make_cnn_model()
+    model = QCNNModel(
+        obs,
+        {"critic": ["policy", "image"]},
+        "critic",
+        output_dim,
+        NUM_ACTIONS,
+        hidden_dims=[16],
+        cnn_cfg={"output_channels": [4], "kernel_size": 3},
+        obs_normalization=True,
+    )
+    model.update_normalization(obs)
+    actions = torch.randn(NUM_ENVS, NUM_ACTIONS, requires_grad=True)
+    outputs = model(obs, actions)
+    assert outputs.shape == (NUM_ENVS, output_dim)
+    outputs.square().mean().backward()
+    assert actions.grad is not None and actions.grad.abs().sum() > 0
+    assert any(parameter.grad.abs().sum() > 0 for parameter in model.cnns.parameters())
+    with pytest.raises(ValueError, match="output distribution"):
+        QCNNModel(
+            obs,
+            {"critic": ["policy", "image"]},
+            "critic",
+            output_dim,
+            NUM_ACTIONS,
+            distribution_cfg={"class_name": "GaussianDistribution"},
+        )
+    with pytest.raises(NotImplementedError, match="TorchScript"):
+        model.as_jit()
+    with pytest.raises(NotImplementedError, match="ONNX"):
+        model.as_onnx()
