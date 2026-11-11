@@ -115,13 +115,13 @@ class SAC:
         if learning_rate_schedule == "cosine" and num_schedule_updates is None:
             raise ValueError("A cosine schedule requires num_schedule_updates to be specified.")
 
+        # Device-related parameters
+        if use_cuda_graph and torch.device(device).type not in ("cuda", "xpu"):
+            raise ValueError("Graph capture requires a CUDA or XPU device.")
+
         # Symmetry extension
         self.symmetry = Symmetry(**symmetry_cfg) if symmetry_cfg is not None else None
-
-        # Device-related parameters
-        if use_cuda_graph and torch.device(device).type != "cuda":
-            raise ValueError("CUDA graph capture requires a CUDA device.")
-        self.use_cuda_graph = use_cuda_graph
+        self.use_cuda_graph = use_cuda_graph and (torch.device(device).type != "xpu" or hasattr(torch.xpu, "XPUGraph"))
         self.device = device
 
         # SAC components
