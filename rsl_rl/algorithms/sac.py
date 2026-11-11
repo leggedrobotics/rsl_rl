@@ -11,8 +11,10 @@ import functools
 import math
 import torch
 import torch.nn as nn
+from collections.abc import Callable
 from dataclasses import dataclass
 from tensordict import TensorDict
+from typing import Any
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import Symmetry, resolve_symmetry_config
@@ -180,7 +182,6 @@ class SAC:
         self._return_normalizer = EmpiricalNormalization(1, eps=0.0).to(self.device)
         self._returns = torch.zeros(storage.num_envs, device=self.device)
         self._max_abs_return = torch.zeros((), device=self.device)
-        self._pending_returns: list[torch.Tensor] = []
 
         # Exploration parameters
         self.exploration_type = exploration_type
@@ -195,23 +196,19 @@ class SAC:
         self._critic_batch_norms = _batch_norm_layers(self.critics)
         self._target_batch_norms = _batch_norm_layers(self.target_critics)
 
-        # Create the learning rate schedulers
-        self._schedulers: list[torch.optim.lr_scheduler.CosineAnnealingLR] = []
-        if learning_rate_schedule == "cosine":
-            for model_optimizer in (self.actor_optimizer, self.critic_optimizer, self.alpha_optimizer):
-                self._schedulers.append(
-                    torch.optim.lr_scheduler.CosineAnnealingLR(
-                        model_optimizer,
-                        T_max=num_schedule_updates,  # type: ignore
-                        eta_min=model_optimizer.param_groups[0]["lr"] * final_learning_rate_ratio,
-                    )
-                )
+        # Learning rate schedule parameters
+        self.learning_rate_schedule = learning_rate_schedule
+        self.final_learning_rate_ratio = final_learning_rate_ratio
+        self.num_schedule_updates = num_schedule_updates
+        self._base_learning_rates = (actor_learning_rate, critic_learning_rate, alpha_learning_rate)
 
-        # Initialize update counters, actor state, and pending observations
+        # Initialize update counters, actor state, and collection graphs
         self.num_env_steps = 0
         self.num_critic_updates = 0
+        self._num_critic_updates_tensor = torch.zeros((), device=self.device)
+        self._num_steps_since_update = 0
         self._actor_loaded = False
-        self._pending_observations: list[TensorDict] = []
+        self._collection_graphs: dict[tuple, CudaGraphCallable] = {}
 
         # Configure optimizer state for CUDA graph capture
         self._configure_optimizer_capture()
@@ -219,27 +216,14 @@ class SAC:
     @torch.no_grad()
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Sample actions and store transition data."""
-        # Keep policy statistics available to the runner during uniform-action warm-up
-        with _BatchNormMode(self._actor_batch_norms, training=False):
-            actions = self.actor(obs, stochastic_output=True)
-
-        # Sample uniform actions during warm-up
-        distribution = self.actor.distribution
-        if not self._actor_loaded and self.num_env_steps * self.storage.num_envs < self.num_warmup_transitions:
-            uniform_actions = torch.rand(obs.batch_size[0], distribution.output_dim, device=self.device) * 2.0 - 1.0
-            actions = distribution.range_offset + distribution.range_scale * uniform_actions  # type: ignore
-        elif self.exploration_type == "held":
-            # Resample noise and repetition counts for environments whose held noise has expired
-            resample = self._noise_steps_left <= 0
-            self._noise.copy_(torch.where(resample[:, None], torch.randn_like(self._noise), self._noise))
-            repeats = torch.searchsorted(self._noise_repeat_cdf, torch.rand_like(self._noise_steps_left.float()))
-            self._noise_steps_left.copy_(torch.where(resample, repeats + 1, self._noise_steps_left) - 1)
-            actions = distribution.sample(noise=self._noise)  # type: ignore
+        # Sample uniform actions during warm-up unless an actor was loaded
+        uniform = not self._actor_loaded and self.num_env_steps * self.storage.num_envs < self.num_warmup_transitions
+        actions = self._run_collection_step(("act", uniform), functools.partial(self._act, uniform=uniform), obs)
 
         # Record observations and actions before env.step()
         self.transition.observations = obs
-        self.transition.actions = actions
-        return actions
+        self.transition.actions = actions["actions"]
+        return actions["actions"]
 
     @torch.no_grad()
     def process_env_step(
@@ -254,40 +238,30 @@ class SAC:
         time_outs = extras.get("time_outs", torch.zeros_like(done_mask)).to(self.device).reshape(-1).bool()
         critic_obs_groups = [obs_group for critic in self.critics for obs_group in critic.obs_groups]  # type: ignore
         groups = list(dict.fromkeys(self.actor.obs_groups + critic_obs_groups))
-
-        # Replace reset observations with final observations for completed episodes
-        next_obs = obs.select(*groups).clone()
-        if done_mask.any():
-            if extras.get("final_obs") is None:
+        final_obs = extras.get("final_obs")
+        if final_obs is None:
+            if done_mask.any():
                 raise ValueError("SAC requires extras['final_obs'] on every step containing a done.")
-            final_obs = extras["final_obs"]
-            for key in groups:
-                mask = done_mask.reshape(-1, *([1] * (next_obs[key].ndim - 1)))
-                next_obs[key] = torch.where(mask, final_obs[key].to(self.device), next_obs[key])
+            final_obs = obs
 
-        # Construct the transition using observations and actions recorded by act()
-        observations = self.transition.observations
-        self.transition.observations = observations.select(*groups)
-        self.transition.rewards = rewards.reshape(-1)
-        self.transition.next_observations = next_obs
-        self.transition.dones = done_mask
-        self.transition.terminated = done_mask & ~time_outs
-
-        # Record the transition and retain observations for normalization
-        self.storage.add_transition(self.transition)
+        # Record the transition and update the episode state
+        self._run_collection_step(
+            ("process_env_step",),
+            self._process_env_step,
+            self.transition.observations.select(*groups),  # type: ignore
+            self.transition.actions,
+            obs.select(*groups),
+            rewards.reshape(-1),
+            done_mask,
+            time_outs,
+            TensorDict({key: final_obs[key] for key in groups}, batch_size=obs.batch_size).to(self.device),
+        )
+        self.storage.advance()
         self.transition.clear()
-        self._pending_observations.append(observations.detach().clone())
-
-        # Record discounted returns for reward normalization
-        if self.reward_normalization:
-            self._returns.mul_(self.gamma).add_(rewards.reshape(-1))
-            self._max_abs_return.copy_(torch.maximum(self._max_abs_return, self._returns.abs().max()))
-            self._pending_returns.append(self._returns.clone())
-            self._returns.mul_(~dones.reshape(-1).bool())
-
-        # Reset exploration and model state for completed episodes
-        self._noise_steps_left.mul_(~dones.reshape(-1).bool())
         self.num_env_steps += 1
+        self._num_steps_since_update += 1
+
+        # Reset model state for completed episodes
         self.actor.reset(dones)
         for critic in self.critics:
             critic.reset(dones)  # type: ignore
@@ -300,74 +274,47 @@ class SAC:
 
     def update(self) -> tuple[dict[str, float], dict[str, float]]:
         """Update normalizers and models from replay samples and return mean losses and statistics."""
-        # Update the normalizers using newly collected observations and returns
-        if self._pending_observations:
-            observations = torch.cat(self._pending_observations)  # type: ignore
+        # Update the observation normalizers using the transitions collected since the last update
+        if self._num_steps_since_update:
+            observations = self.storage.latest_observations(self._num_steps_since_update)
             self.actor.update_normalization(observations)  # type: ignore
             for critic in self.critics:
                 critic.update_normalization(observations)  # type: ignore
-            self._pending_observations.clear()
-        if self._pending_returns:
-            self._return_normalizer.update(torch.cat(self._pending_returns).unsqueeze(-1))
-            self._pending_returns.clear()
+            self._num_steps_since_update = 0
 
         # Wait until enough transitions have been collected
         if self.storage.size < self.num_warmup_transitions or not self.storage.size:
-            return {}, self._get_stats()
+            return {}, self._get_learning_rate_stats() | _to_floats(self._get_model_stats())
 
-        # Initialize the loss accumulators
-        totals: dict[str, torch.Tensor] = {}
-        actor_updates = 0
-
-        # Iterate over replay mini-batches
-        for _ in range(self.num_updates):
-            # Sample and augment transitions and normalize rewards if enabled
-            batch = self._sample_batch()
-            if self.reward_normalization:
-                batch.rewards = batch.rewards / torch.maximum(
-                    self._return_normalizer._std.squeeze() + 1e-8,  # type: ignore
-                    self._max_abs_return / self.reward_normalization_max_return,
+        # Run all gradient updates of this iteration, captured as a single CUDA graph if enabled
+        phase = self.num_critic_updates % self.actor_update_interval
+        if self.use_cuda_graph:
+            if phase not in self._graph_updates:
+                self._graph_updates[phase] = CudaGraphCallable(
+                    functools.partial(self._run_updates, phase=phase), self.device
                 )
+            totals = self._graph_updates[phase]()
+        else:
+            totals = self._run_updates(phase=phase)
+        self.num_critic_updates += self.num_updates
+        self.learning_rate = self._base_learning_rates[1] * self._learning_rate_factor(self.num_critic_updates)
 
-            # Run the gradient update with the configured actor update interval
-            update_actor = self.num_critic_updates % self.actor_update_interval == 0
-            inputs = (
-                batch.observations,
-                batch.actions,
-                batch.rewards,
-                batch.next_observations,
-                batch.bootstrap_discounts,
-            )
-            if self.use_cuda_graph:
-                stats = self._graph_steps[update_actor](*inputs)
-            else:
-                stats = self._gradient_step(*inputs, update_actor=update_actor)
-            self.num_critic_updates += 1
+        # Divide the losses by the number of updates and move entropy and Q-values to the statistics
+        actor_updates = sum((phase + i) % self.actor_update_interval == 0 for i in range(self.num_updates))
+        actor_keys = ("actor", "alpha", "entropy", "symmetry")
+        losses = {
+            key: value.double() / (actor_updates if key in actor_keys else self.num_updates)
+            for key, value in totals.items()
+        }
+        stats = self._get_model_stats()
+        if "entropy" in losses:
+            stats["Model/mean_policy_entropy"] = losses.pop("entropy")
+        stats["Model/mean_critic_q_value"] = losses.pop("q_value")
 
-            # Update the learning rate schedules
-            for scheduler in self._schedulers:
-                if scheduler.last_epoch < scheduler.T_max:
-                    scheduler.step()
-            self.learning_rate = float(self.critic_optimizer.param_groups[0]["lr"])
-
-            # Store the losses
-            actor_updates += int(update_actor)
-            for key, value in stats.items():
-                totals[key] = totals.get(key, 0.0) + value
-
-        # Construct the stats dictionary and divide by the number of updates
-        stats_dict = self._get_stats()
-        if actor_updates > 0:
-            stats_dict["Model/mean_policy_entropy"] = (totals.pop("entropy") / actor_updates).item()
-        stats_dict["Model/mean_critic_q_value"] = (totals.pop("q_value") / self.num_updates).item()
-
-        # Construct the loss dictionary and divide by the number of updates
-        loss_dict: dict[str, float] = {}
-        for key, value in totals.items():
-            num_updates = actor_updates if key in ("actor", "alpha", "symmetry") else self.num_updates
-            loss_dict[key] = (value / num_updates).item()
-
-        return loss_dict, stats_dict
+        # Synchronize with the device once for all losses and statistics
+        values = _to_floats({**losses, **stats})
+        stats_dict = self._get_learning_rate_stats() | {key: values[key] for key in stats}
+        return {key: values[key] for key in losses}, stats_dict
 
     def train_mode(self) -> None:
         """Set train mode for learnable models."""
@@ -393,7 +340,6 @@ class SAC:
             "alpha_optimizer_state_dict": self.alpha_optimizer.state_dict(),
             "num_env_steps": self.num_env_steps,
             "num_critic_updates": self.num_critic_updates,
-            "scheduler_state_dicts": [scheduler.state_dict() for scheduler in self._schedulers],
         }
         if self.reward_normalization:
             saved_dict["return_normalizer_state_dict"] = self._return_normalizer.state_dict()
@@ -431,14 +377,13 @@ class SAC:
         if load_cfg.get("optimizer"):
             for name in ("actor", "critic", "alpha"):
                 getattr(self, f"{name}_optimizer").load_state_dict(loaded_dict[f"{name}_optimizer_state_dict"])
-            self.learning_rate = float(self.critic_optimizer.param_groups[0]["lr"])
-            for scheduler, state in zip(self._schedulers, loaded_dict.get("scheduler_state_dicts", [])):
-                scheduler.load_state_dict(state)
 
         # Restore the update counters
         if load_cfg.get("iteration"):
             self.num_env_steps = loaded_dict["num_env_steps"]
             self.num_critic_updates = loaded_dict["num_critic_updates"]
+            self._num_critic_updates_tensor.fill_(self.num_critic_updates)
+        self.learning_rate = self._base_learning_rates[1] * self._learning_rate_factor(self.num_critic_updates)
 
         # Reconfigure optimizer for CUDA graph capture
         self._configure_optimizer_capture()
@@ -540,24 +485,133 @@ class SAC:
 
         return batch
 
-    def _gradient_step(
+    def _run_collection_step(self, key: tuple, fn: Callable[..., dict[str, torch.Tensor]], *args: Any) -> dict:
+        """Run a fixed-shape collection function eagerly or, with CUDA graphs enabled, as a replayed graph."""
+        if not self.use_cuda_graph:
+            return fn(*args)
+        if key not in self._collection_graphs:
+            self._collection_graphs[key] = CudaGraphCallable(fn, self.device)
+        return self._collection_graphs[key](*args)
+
+    def _act(self, obs: TensorDict, uniform: bool) -> dict[str, torch.Tensor]:
+        """Sample uniform or exploration actions using only device operations."""
+        # Keep policy statistics available to the runner during uniform-action warm-up
+        with _BatchNormMode(self._actor_batch_norms, training=False):
+            actions = self.actor(obs, stochastic_output=True)
+
+        # Sample uniform actions during warm-up
+        distribution = self.actor.distribution
+        if uniform:
+            uniform_actions = torch.rand(obs.batch_size[0], distribution.output_dim, device=self.device) * 2.0 - 1.0
+            actions = distribution.range_offset + distribution.range_scale * uniform_actions  # type: ignore
+        elif self.exploration_type == "held":
+            # Resample noise and repetition counts for environments whose held noise has expired
+            resample = self._noise_steps_left <= 0
+            self._noise.copy_(torch.where(resample[:, None], torch.randn_like(self._noise), self._noise))
+            repeats = torch.searchsorted(self._noise_repeat_cdf, torch.rand_like(self._noise_steps_left.float()))
+            self._noise_steps_left.copy_(torch.where(resample, repeats + 1, self._noise_steps_left) - 1)
+            actions = distribution.sample(noise=self._noise)  # type: ignore
+        return {"actions": actions}
+
+    def _process_env_step(
         self,
         observations: TensorDict,
         actions: torch.Tensor,
-        rewards: torch.Tensor,
         next_observations: TensorDict,
-        bootstrap_discounts: torch.Tensor,
-        update_actor: bool,
+        rewards: torch.Tensor,
+        dones: torch.Tensor,
+        time_outs: torch.Tensor,
+        final_observations: TensorDict,
     ) -> dict[str, torch.Tensor]:
-        """Perform one fixed-shape optimizer step, suitable for lazy CUDA capture."""
-        batch = _Batch(
-            observations=observations,
-            actions=actions,
-            rewards=rewards,
-            next_observations=next_observations,
-            bootstrap_discounts=bootstrap_discounts,
+        """Store a transition and update the return statistics and exploration state using only device operations."""
+        # Replace reset observations with final observations for completed episodes
+        next_observations = TensorDict(
+            {
+                key: torch.where(dones.reshape(-1, *([1] * (value.ndim - 1))), final_observations[key], value)
+                for key, value in next_observations.items()
+            },
+            batch_size=next_observations.batch_size,
         )
 
+        # Record the transition
+        transition = ReplayBuffer.Transition()
+        transition.observations = observations
+        transition.actions = actions
+        transition.rewards = rewards
+        transition.next_observations = next_observations
+        transition.dones = dones
+        transition.terminated = dones & ~time_outs
+        self.storage.write_transition(transition)
+
+        # Record discounted returns for reward normalization
+        if self.reward_normalization:
+            self._returns.mul_(self.gamma).add_(rewards)
+            self._max_abs_return.copy_(torch.maximum(self._max_abs_return, self._returns.abs().max()))
+            self._return_normalizer.update(self._returns.unsqueeze(-1))
+            self._returns.mul_(~dones)
+
+        # Reset exploration for completed episodes
+        self._noise_steps_left.mul_(~dones)
+        return {}
+
+    def _run_updates(self, phase: int) -> dict[str, torch.Tensor]:
+        """Run the gradient updates of one iteration and return the summed losses.
+
+        All operations, including replay sampling and the learning rate schedule, run on the device, so the whole
+        method can be captured in a CUDA graph. ``phase`` is the position in the actor update interval of the first
+        update.
+        """
+        totals: dict[str, torch.Tensor] = {}
+        for i in range(self.num_updates):
+            # Set the scheduled learning rates
+            self._set_learning_rates(i)
+
+            # Sample and augment transitions and normalize rewards if enabled
+            batch = self._sample_batch()
+            if self.reward_normalization:
+                batch.rewards = batch.rewards / torch.maximum(
+                    self._return_normalizer._std.squeeze() + 1e-8,  # type: ignore
+                    self._max_abs_return / self.reward_normalization_max_return,
+                )
+
+            # Run the gradient update with the configured actor update interval and sum the losses
+            stats = self._gradient_step(batch, update_actor=(phase + i) % self.actor_update_interval == 0)
+            for key, value in stats.items():
+                totals[key] = totals[key] + value if key in totals else value
+        if self.use_cuda_graph:
+            self._num_critic_updates_tensor.add_(self.num_updates)
+        return totals
+
+    def _learning_rate_factor(self, num_updates: int | torch.Tensor) -> float | torch.Tensor:
+        """Return the scheduled learning rate as a fraction of the initial learning rate."""
+        if self.learning_rate_schedule == "constant":
+            return 1.0
+        if isinstance(num_updates, torch.Tensor):
+            progress = (num_updates / self.num_schedule_updates).clamp(max=1.0)  # type: ignore
+            cosine = torch.cos(math.pi * progress)
+        else:
+            cosine = math.cos(math.pi * min(num_updates / self.num_schedule_updates, 1.0))  # type: ignore
+        return self.final_learning_rate_ratio + (1.0 - self.final_learning_rate_ratio) * 0.5 * (1.0 + cosine)
+
+    def _set_learning_rates(self, offset: int) -> None:
+        """Set the learning rates of the update ``offset`` steps after the start of the current iteration."""
+        if self.learning_rate_schedule == "constant":
+            return
+        if self.use_cuda_graph:
+            factor = self._learning_rate_factor(self._num_critic_updates_tensor + offset)
+        else:
+            factor = self._learning_rate_factor(self.num_critic_updates + offset)
+        for optimizer, base_learning_rate in zip(
+            (self.actor_optimizer, self.critic_optimizer, self.alpha_optimizer), self._base_learning_rates
+        ):
+            for param_group in optimizer.param_groups:
+                if isinstance(param_group["lr"], torch.Tensor):
+                    param_group["lr"].copy_(base_learning_rate * factor)
+                else:
+                    param_group["lr"] = base_learning_rate * factor
+
+    def _gradient_step(self, batch: _Batch, update_actor: bool) -> dict[str, torch.Tensor]:
+        """Perform one fixed-shape optimizer step."""
         # Update the actor and temperature before the critics
         stats = self._update_actor_and_alpha(batch) if update_actor else {}
         stats.update(self._update_critics(batch))
@@ -741,15 +795,20 @@ class SAC:
         actions = self.actor(obs, stochastic_output=True)
         return actions, self.actor.get_output_log_prob(actions)
 
-    def _get_stats(self) -> dict[str, float]:
-        """Return the learning rates, entropy temperature, and policy standard deviation for logging."""
-        stats_dict = {
-            f"Optimizer/{name}_learning_rate": float(getattr(self, f"{name}_optimizer").param_groups[0]["lr"])
-            for name in ("actor", "critic", "alpha")
+    def _get_learning_rate_stats(self) -> dict[str, float]:
+        """Return the scheduled learning rates of the next update for logging."""
+        factor = self._learning_rate_factor(self.num_critic_updates)
+        return {
+            f"Optimizer/{name}_learning_rate": base_learning_rate * factor
+            for name, base_learning_rate in zip(("actor", "critic", "alpha"), self._base_learning_rates)
         }
-        stats_dict["Model/alpha"] = self.log_alpha.exp().item()
-        stats_dict["Model/mean_policy_std"] = self.actor.output_std.mean().item()
-        return stats_dict
+
+    def _get_model_stats(self) -> dict[str, torch.Tensor]:
+        """Return the entropy temperature and policy standard deviation as device scalars for logging."""
+        return {
+            "Model/alpha": self.log_alpha.detach().exp().double().reshape(()),
+            "Model/mean_policy_std": self.actor.output_std.detach().mean().double(),
+        }
 
     def _configure_optimizer_capture(self) -> None:
         """Configure optimizers and static update functions for CUDA graph capture."""
@@ -768,14 +827,8 @@ class SAC:
                 if "step" in state:
                     state["step"] = state["step"].to(self.device if self.use_cuda_graph else "cpu")
 
-        # Create separate graphs for updates with and without an actor step
-        if self.use_cuda_graph:
-            self._graph_steps: dict[bool, CudaGraphCallable] = {
-                update_actor: CudaGraphCallable(
-                    functools.partial(self._gradient_step, update_actor=update_actor), self.device
-                )
-                for update_actor in (True, False)
-            }
+        # Discard graphs that reference the previous optimizer state; one graph is captured per actor update phase
+        self._graph_updates: dict[int, CudaGraphCallable] = {}
 
 
 @dataclass
@@ -828,3 +881,8 @@ def _normalize_parameters(module: nn.Module) -> None:
     for submodule in module.modules():
         if submodule is not module and hasattr(submodule, "normalize_parameters"):
             submodule.normalize_parameters()  # type: ignore
+
+
+def _to_floats(values: dict[str, torch.Tensor]) -> dict[str, float]:
+    """Convert device scalars to floats with a single device synchronization."""
+    return dict(zip(values, torch.stack(list(values.values())).tolist()))

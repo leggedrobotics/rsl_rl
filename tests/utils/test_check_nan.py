@@ -10,7 +10,7 @@ from tensordict import TensorDict
 
 import pytest
 
-from rsl_rl.utils import check_nan
+from rsl_rl.utils import check_nan, find_nonfinite, raise_if_nonfinite
 
 
 def test_check_nan_accepts_finite_outputs() -> None:
@@ -72,3 +72,14 @@ def test_check_nan_rejects_non_finite_final_observations_of_done_environments() 
     check_nan(obs, rewards, torch.tensor([True, False]), {"final_obs": final_obs})
     with pytest.raises(ValueError, match=r"final observation group 'policy' .* NaN values"):
         check_nan(obs, rewards, torch.tensor([False, True]), {"final_obs": final_obs})
+
+
+def test_nonfinite_flags_name_their_sources() -> None:
+    """Deferred flags ignore final observations of running environments and name every non-finite source."""
+    obs = TensorDict({"policy": torch.zeros(2, 2)}, batch_size=[2])
+    final_obs = TensorDict({"policy": torch.tensor([[0.0, 0.0], [torch.inf, 0.0]])}, batch_size=[2])
+
+    raise_if_nonfinite(find_nonfinite(obs, torch.zeros(2), torch.tensor([True, False]), {"final_obs": final_obs}))
+    flags = find_nonfinite(obs, torch.tensor([0.0, torch.nan]), torch.tensor([False, True]), {"final_obs": final_obs})
+    with pytest.raises(ValueError, match="rewards, final observation group 'policy'"):
+        raise_if_nonfinite(flags)
