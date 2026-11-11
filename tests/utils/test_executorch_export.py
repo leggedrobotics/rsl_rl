@@ -37,8 +37,12 @@ def _make_policy(model_type: str, distribution: str = "GaussianDistribution") ->
         policy = RNNModel(obs, obs_groups, "actor", NUM_ACTIONS, rnn_type=model_type, rnn_hidden_dim=8, **kwargs)
     else:
         obs["image"] = torch.randn(NUM_ENVS, 3, 8, 8)
-        obs_groups = {"actor": ["policy", "image"]}
-        cnn_cfg = {"image": {"output_channels": [4], "kernel_size": 3, "activation": "elu", "norm": "batch"}}
+        obs["depth"] = torch.randn(NUM_ENVS, 1, 8, 8)
+        obs_groups = {"actor": ["policy", "image", "depth"]}
+        cnn_cfg = {
+            "image": {"output_channels": [4], "kernel_size": 3, "activation": "elu", "norm": "batch"},
+            "depth": {"output_channels": [4], "kernel_size": 3, "max_pool": True, "global_pool": "avg"},
+        }
         policy = CNNModel(obs, obs_groups, "actor", NUM_ACTIONS, cnn_cfg=cnn_cfg, **kwargs)
         for module in policy.modules():
             if isinstance(module, torch.nn.BatchNorm2d):
@@ -91,6 +95,31 @@ def test_export_policy_on_gpu(tmp_path: pathlib.Path) -> None:
     assert len(outputs) == len(expected)
     for output, target in zip(outputs, expected):
         torch.testing.assert_close(output, target, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA GPU")
+def test_cuda_programs_share_a_folder(tmp_path: pathlib.Path) -> None:
+    """Each CUDA program should get its own data file, so programs exported into one folder keep their weights."""
+    runtime = pytest.importorskip("executorch.runtime")
+    pytest.importorskip("executorch.backends.cuda.cuda_backend")
+    if not runtime.Runtime.get().backend_registry.is_available("CudaBackend"):
+        pytest.skip("requires the ExecuTorch CUDA backend")
+    from torch.utils.cpp_extension import CUDA_HOME
+
+    if CUDA_HOME is None:
+        pytest.skip("requires a CUDA toolkit")
+    policies = {"walk": _make_policy("mlp"), "run": _make_policy("mlp", "BetaDistribution")}
+    for name, policy in policies.items():
+        export_policy_to_executorch(policy, str(tmp_path), filename=f"{name}.pte", backend="cuda")
+
+    for name, policy in policies.items():
+        reference = policy.as_onnx().eval()
+        inputs = [torch.randn_like(x) for x in reference.get_dummy_inputs()]
+        program = runtime.Runtime.get().load_program(
+            str(tmp_path / f"{name}.pte"), data_path=str(tmp_path / f"{name}.ptd")
+        )
+        (output,) = program.load_method("forward").execute(inputs)
+        torch.testing.assert_close(output.cpu(), reference(*inputs), atol=1e-5, rtol=1e-5)
 
 
 @pytest.mark.parametrize(
