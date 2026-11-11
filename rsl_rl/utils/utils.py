@@ -359,7 +359,7 @@ def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.M
 
 
 class CudaGraphCallable:
-    """Run a function in a CUDA graph after a few eager warm-up calls.
+    """Run a function in a CUDA or XPU graph after a few eager warm-up calls.
 
     The inputs of each call are copied into static buffers before the graph is replayed. The function must only use
     tensor operations that are valid during graph capture and return a dictionary of tensors.
@@ -370,31 +370,34 @@ class CudaGraphCallable:
 
         Args:
             fn: Function to capture. Must return a dictionary of tensors.
-            device: CUDA device on which to run warm-up calls and capture the graph.
+            device: CUDA or XPU device on which to run warm-up calls and capture the graph.
             num_warmup: Number of eager calls before graph capture.
         """
         self.fn = fn
         self.num_warmup = num_warmup
         self.num_calls = 0
-        self.graph: torch.cuda.CUDAGraph | None = None
-        self._stream = torch.cuda.Stream(device=device)
+        is_xpu = torch.device(device).type == "xpu"
+        self._module = torch.xpu if is_xpu else torch.cuda
+        self._graph_class = torch.xpu.XPUGraph if is_xpu else torch.cuda.CUDAGraph
+        self.graph: torch.cuda.CUDAGraph | torch.xpu.XPUGraph | None = None
+        self._stream = self._module.Stream(device=device)
 
     def __call__(self, *args: torch.Tensor | TensorDict) -> dict[str, torch.Tensor]:
         """Run an eager warm-up call or replay the captured graph with new inputs."""
-        with torch.cuda.device(self._stream.device):
+        with self._module.device(self._stream.device):
             if self.graph is None and self.num_calls < self.num_warmup:
                 # Run eager warm-up calls on the capture stream before recording the graph
                 self.num_calls += 1
-                self._stream.wait_stream(torch.cuda.current_stream())
-                with torch.cuda.stream(self._stream):
+                self._stream.wait_stream(self._module.current_stream())
+                with self._module.stream(self._stream):
                     outputs = self.fn(*args)
-                torch.cuda.current_stream().wait_stream(self._stream)
+                self._module.current_stream().wait_stream(self._stream)
                 return outputs
             if self.graph is None:
                 # Capture the function using inputs with fixed memory addresses
                 self._static_args = tuple(arg.clone() for arg in args)
-                self.graph = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(self.graph, stream=self._stream):
+                self.graph = self._graph_class()
+                with self._module.graph(self.graph, stream=self._stream):
                     self._static_outputs = self.fn(*self._static_args)
             else:
                 # Copy new inputs into the buffers referenced by the captured graph

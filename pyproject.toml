@@ -38,6 +38,7 @@ dependencies = [
 test = ["pytest"]
 wandb = ["wandb"]
 neptune = ["neptune"]
+xpu = ["torch>=2.8.0"]
 
 [project.urls]
 Homepage = "https://github.com/leggedrobotics/rsl_rl"
@@ -58,3 +59,29 @@ include = ["rsl_rl"]
 typeCheckingMode = "basic"
 pythonVersion = "3.9"
 reportOptionalMemberAccess = "none"
+
+[dependency-groups]
+pytorch = ["torch>=2.6.0"]
+
+[tool.uv]
+conflicts = [[{ group = "pytorch" }, { extra = "xpu" }]]
+find-links = [
+    "https://download.pytorch.org/whl/xpu/triton-xpu/",
+    "https://download.pytorch.org/whl/xpu/pytorch-triton-xpu/",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pypi", group = "pytorch" },
+    { index = "pytorch-xpu", extra = "xpu" },
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch-xpu"
+url = "https://download.pytorch.org/whl/xpu"
+explicit = true

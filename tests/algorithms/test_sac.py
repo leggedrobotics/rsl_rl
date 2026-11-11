@@ -74,6 +74,10 @@ def test_non_q_critic_is_rejected_at_construction() -> None:
             "cuda:0",
             marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture"),
         ),
+        pytest.param(
+            "xpu:0",
+            marks=pytest.mark.skipif(not torch.xpu.is_available(), reason="XPU is required for training"),
+        ),
     ],
 )
 def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
@@ -83,7 +87,10 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
     assert OffPolicyRunner.learn is OnPolicyRunner.learn
     cfg = _make_train_cfg()
     cfg["algorithm"].update(
-        num_warmup_transitions=16, num_updates=4, actor_update_interval=1, use_cuda_graph=device != "cpu"
+        num_warmup_transitions=16,
+        num_updates=4,
+        actor_update_interval=1,
+        use_cuda_graph=device.startswith("cuda") or (device.startswith("xpu") and hasattr(torch.xpu, "XPUGraph")),
     )
     log_dir = tmp_path / "warmup"
     runner = OffPolicyRunner(DummyEnv(device=device), cfg, log_dir=str(log_dir), device=device)
@@ -110,7 +117,7 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
     for model, parameters in zip(models, before_updates):
         assert any(not torch.equal(old, current) for old, current in zip(parameters, model.parameters()))
         assert all(torch.isfinite(p).all() for p in model.parameters())
-    if device != "cpu":
+    if restored.alg.use_cuda_graph:
         assert restored.alg._graph_steps[True].graph is not None
     sample = restored.env.get_observations()[:1]
     with torch.inference_mode():
@@ -166,6 +173,10 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
         pytest.param(
             "cuda:0",
             marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for replay parity"),
+        ),
+        pytest.param(
+            "xpu:0",
+            marks=pytest.mark.skipif(not torch.xpu.is_available(), reason="XPU is required for replay parity"),
         ),
     ],
 )
@@ -374,8 +385,23 @@ def test_symmetry_replay_endpoints_and_actor_loss(augmentation: bool) -> None:
     assert torch.isfinite(torch.tensor(losses["symmetry"]))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
-def test_cuda_graph_delayed_actor_and_resume() -> None:
+@pytest.mark.parametrize(
+    "device",
+    [
+        pytest.param(
+            "cuda:0",
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture"),
+        ),
+        pytest.param(
+            "xpu:0",
+            marks=pytest.mark.skipif(
+                not torch.xpu.is_available() or not hasattr(torch.xpu, "XPUGraph"),
+                reason="XPU and torch.xpu.XPUGraph are required for graph capture",
+            ),
+        ),
+    ],
+)
+def test_cuda_graph_delayed_actor_and_resume(device: str) -> None:
     """Both graph variants can train, reload eager state and resume under the inherited runner."""
     cfg = _make_train_cfg()
     cfg["algorithm"].update(
@@ -389,7 +415,7 @@ def test_cuda_graph_delayed_actor_and_resume() -> None:
     )
     for role in ("actor", "critic"):
         cfg[role]["network_cfg"] = {"class_name": "ResidualMLP", "hidden_dim": 16, "num_blocks": 1, "expansion": 2}
-    runner = OffPolicyRunner(DummyEnv(device="cuda:0"), cfg, device="cuda:0")
+    runner = OffPolicyRunner(DummyEnv(device=device), cfg, device=device)
     runner.learn(2)
     assert all(step.graph is not None for step in runner.alg._graph_steps.values())
     checkpoint = runner.alg.save()
