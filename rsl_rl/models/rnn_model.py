@@ -130,7 +130,9 @@ class _TorchGRUModel(nn.Module):
         else:
             self.deterministic_output = nn.Identity()
         self.rnn.cpu()
-        self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
+        self.register_buffer(
+            "hidden_state", self.rnn.weight_ih_l0.new_zeros((self.rnn.num_layers, 1, self.rnn.hidden_size))
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run one GRU inference step and update hidden states."""
@@ -160,8 +162,12 @@ class _TorchLSTMModel(nn.Module):
             self.deterministic_output = model.distribution.as_deterministic_output_module()
         else:
             self.deterministic_output = nn.Identity()
-        self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
-        self.register_buffer("cell_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
+        self.register_buffer(
+            "hidden_state", self.rnn.weight_ih_l0.new_zeros((self.rnn.num_layers, 1, self.rnn.hidden_size))
+        )
+        self.register_buffer(
+            "cell_state", self.rnn.weight_ih_l0.new_zeros((self.rnn.num_layers, 1, self.rnn.hidden_size))
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run one LSTM inference step and update hidden and cell states."""
