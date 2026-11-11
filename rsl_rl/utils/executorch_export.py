@@ -17,19 +17,25 @@ def export_policy_to_executorch(
     """Export a policy into an ExecuTorch program file.
 
     The program takes the same inputs and returns the same outputs, in the same order, as the ONNX export. Their names
-    are stored in the program as the constant methods ``input_names`` and ``output_names``. It requires the
-    ``executorch`` package, version 1.6 or newer, which needs Python 3.11 or newer.
+    are stored in the program as the constant methods ``input_names`` and ``output_names``.
+
+    It requires the ``executorch`` package. Version 1.6.0 requires exactly torch 2.15.0 and Python 3.11 or newer, so
+    installing it can replace the ``torch`` of a training environment. If that is a problem, export in a separate
+    environment. The runtime parses a program in native code, so load only programs from sources you trust.
 
     Args:
         policy: The policy model to export, for example ``runner.alg.get_policy()``. It must provide ``as_onnx()``.
         path: Directory to save the program to.
         filename: Name of the program file. It must end with ``.pte``.
         backend: ``"xnnpack"`` for optimized CPU kernels, ``"portable"`` for the reference CPU kernels, or ``"cuda"``
-            for NVIDIA GPUs. The CUDA backend also writes the weights to a data file in ``path`` with the same base
-            name as ``filename``, and the program has to be loaded together with that file. A CUDA program
-            contains native code built for the GPU, CPU architecture, and system libraries of the exporting machine,
-            so export on a Linux machine like the one that runs the policy, with a CUDA toolkit and a C++ compiler
-            installed. Loading a CUDA program runs that code, so load only programs from sources you trust.
+            for NVIDIA GPUs. The CUDA backend needs ``executorch`` 1.6 or newer, a CUDA build of ``torch``, and a
+            GPU. It also writes the weights to ``<name>.ptd`` in ``path``, where ``<name>`` is ``filename`` without
+            ``.pte``, and the program has to be loaded together with that file. ExecuTorch rejects a name it cannot
+            use for that file. A CUDA program contains native code built for the GPU, CPU architecture, and
+            system libraries of the exporting machine, so export on a Linux machine like the one that runs the
+            policy, with a CUDA toolkit and a C++ compiler installed. Loading a CUDA program runs that code. It
+            runs on GPU 0, so choose the GPU with ``CUDA_VISIBLE_DEVICES``, and keep GPU 0 as the current device of
+            the process that loads and runs it.
 
     Raises:
         ValueError: If the backend is unknown or the filename does not end with ``.pte``.
