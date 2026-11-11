@@ -240,7 +240,8 @@ class OnPolicyRunner:
         }
 
         # Check if user has device specified for local rank
-        if self.device != f"cuda:{self.gpu_local_rank}":
+        device = torch.device(self.device)
+        if device.type not in ("cuda", "xpu") or device.index != self.gpu_local_rank:
             raise ValueError(
                 f"Device '{self.device}' does not match expected device for local rank '{self.gpu_local_rank}'."
             )
@@ -254,7 +255,12 @@ class OnPolicyRunner:
                 f"Global rank '{self.gpu_global_rank}' is greater than or equal to world size '{self.gpu_world_size}'."
             )
 
-        # Initialize torch distributed
-        torch.distributed.init_process_group(backend="nccl", rank=self.gpu_global_rank, world_size=self.gpu_world_size)
         # Set device to the local rank
-        torch.cuda.set_device(self.gpu_local_rank)
+        if device.type == "xpu":
+            torch.xpu.set_device(self.gpu_local_rank)
+        else:
+            torch.cuda.set_device(self.gpu_local_rank)
+
+        # Initialize torch distributed
+        backend = "nccl" if device.type == "cuda" else "xccl"
+        torch.distributed.init_process_group(backend=backend, rank=self.gpu_global_rank, world_size=self.gpu_world_size)
