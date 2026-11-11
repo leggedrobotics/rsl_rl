@@ -38,7 +38,7 @@ dependencies = [
 test = ["pytest"]
 wandb = ["wandb"]
 neptune = ["neptune"]
-xpu = ["torch>=2.6.0"]
+xpu = ["torch>=2.8.0"]
 
 [project.urls]
 Homepage = "https://github.com/leggedrobotics/rsl_rl"

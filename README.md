@@ -38,7 +38,7 @@ Isaac Lab). If so, make sure to activate it before installing RSL-RL.
 pip install rsl-rl-lib
 ```
 
-For Intel XPU support, run `pip install "torch>=2.6.0" --index-url https://download.pytorch.org/whl/xpu && pip install "rsl-rl-lib[xpu]"`.
+For Intel XPU support, run `pip install "torch>=2.8.0" --index-url https://download.pytorch.org/whl/xpu && pip install "rsl-rl-lib[xpu]"`.
 
 ### Installing RSL-RL for development
 
