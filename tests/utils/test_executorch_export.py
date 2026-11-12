@@ -56,10 +56,20 @@ def _make_policy(model_type: str, distribution: str = "GaussianDistribution") ->
 @pytest.mark.parametrize(
     "distribution", ["GaussianDistribution", "HeteroscedasticGaussianDistribution", "BetaDistribution"]
 )
-@pytest.mark.parametrize("backend", ["xnnpack", "portable"])
+@pytest.mark.parametrize(
+    "backend",
+    [
+        "xnnpack",
+        "portable",
+        pytest.param("tensorrt", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA GPU")),
+    ],
+)
 def test_export_matches_policy(model_type: str, distribution: str, backend: str, tmp_path: pathlib.Path) -> None:
-    """The program should match the ONNX model, keep its input and output names, and use the requested backend."""
+    """The program should match the ONNX model, return CPU tensors, keep its names, and use the requested backend."""
     runtime = pytest.importorskip("executorch.runtime")
+    if backend == "tensorrt":
+        pytest.importorskip("torch_tensorrt")
+        pytest.importorskip("torch_tensorrt_executorch_runtime")
     policy = _make_policy(model_type, distribution)
     reference = policy.as_onnx().eval()
     inputs = [torch.randn_like(x) for x in reference.get_dummy_inputs()]
@@ -69,6 +79,7 @@ def test_export_matches_policy(model_type: str, distribution: str, backend: str,
 
     program_bytes = (tmp_path / "actor.pte").read_bytes()
     assert (b"XnnpackBackend" in program_bytes) == (backend == "xnnpack")
+    assert (b"TensorRTBackend" in program_bytes) == (backend == "tensorrt")
     program = runtime.Runtime.get().load_program(program_bytes)
     outputs = program.load_method("forward").execute(inputs)
 
@@ -122,6 +133,35 @@ def test_cuda_programs_share_a_folder(tmp_path: pathlib.Path) -> None:
         torch.testing.assert_close(output.cpu(), reference(*inputs), atol=1e-5, rtol=1e-5)
 
 
+def _make_max_pool_policy() -> CNNModel:
+    """Create a CNN policy with max global pooling."""
+    obs = TensorDict({"image": torch.randn(NUM_ENVS, 1, 8, 8)}, batch_size=[NUM_ENVS])
+    cnn_cfg = {"image": {"output_channels": [4], "kernel_size": 3, "global_pool": "max"}}
+    return CNNModel(obs, {"actor": ["image"]}, "actor", NUM_ACTIONS, cnn_cfg=cnn_cfg, hidden_dims=[16])
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA GPU")
+@pytest.mark.parametrize("policy_type", ["small", "max_pool"])
+def test_tensorrt_runs_small_and_max_pool_policies(policy_type: str, tmp_path: pathlib.Path) -> None:
+    """TensorRT should run a policy with fewer operators than its default minimum block size and max global pooling."""
+    runtime = pytest.importorskip("executorch.runtime")
+    pytest.importorskip("torch_tensorrt")
+    pytest.importorskip("torch_tensorrt_executorch_runtime")
+    if policy_type == "small":
+        obs = TensorDict({"policy": torch.randn(NUM_ENVS, OBS_DIM)}, batch_size=[NUM_ENVS])
+        policy = MLPModel(obs, {"actor": ["policy"]}, "actor", NUM_ACTIONS, hidden_dims=[8])
+    else:
+        policy = _make_max_pool_policy()
+    reference = policy.as_onnx().eval()
+    inputs = [torch.randn_like(x) for x in reference.get_dummy_inputs()]
+    export_policy_to_executorch(policy, str(tmp_path), backend="tensorrt")
+
+    program_bytes = (tmp_path / "policy.pte").read_bytes()
+    assert b"TensorRTBackend" in program_bytes
+    (output,) = runtime.Runtime.get().load_program(program_bytes).load_method("forward").execute(inputs)
+    torch.testing.assert_close(output, reference(*inputs), atol=1e-5, rtol=1e-5)
+
+
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [({"backend": "vulkan"}, "Unknown ExecuTorch backend"), ({"filename": "policy.onnx"}, "must end with '.pte'")],
@@ -136,9 +176,7 @@ def test_invalid_arguments_raise(kwargs: dict[str, str], match: str, tmp_path: p
 def test_default_export_of_max_global_pool(tmp_path: pathlib.Path) -> None:
     """With default arguments, a CNN policy with max global pooling should export to policy.pte with XNNPACK."""
     runtime = pytest.importorskip("executorch.runtime")
-    obs = TensorDict({"image": torch.randn(NUM_ENVS, 1, 8, 8)}, batch_size=[NUM_ENVS])
-    cnn_cfg = {"image": {"output_channels": [4], "kernel_size": 3, "global_pool": "max"}}
-    policy = CNNModel(obs, {"actor": ["image"]}, "actor", NUM_ACTIONS, cnn_cfg=cnn_cfg, hidden_dims=[16])
+    policy = _make_max_pool_policy()
     reference = policy.as_onnx().eval()
     inputs = [torch.randn_like(x) for x in reference.get_dummy_inputs()]
     export_policy_to_executorch(policy, str(tmp_path / "new" / "folder"))
@@ -147,6 +185,17 @@ def test_default_export_of_max_global_pool(tmp_path: pathlib.Path) -> None:
     assert b"XnnpackBackend" in program_bytes
     (output,) = runtime.Runtime.get().load_program(program_bytes).load_method("forward").execute(inputs)
     torch.testing.assert_close(output, reference(*inputs), atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("package", ["torch_tensorrt", "executorch"])
+def test_tensorrt_without_its_packages_raises(
+    package: str, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The TensorRT backend without either package should name the one command that installs both, writing nothing."""
+    monkeypatch.setitem(sys.modules, package, None)
+    with pytest.raises(ModuleNotFoundError, match=r'pip install "torch_tensorrt\[executorch\]>=2.15"'):
+        export_policy_to_executorch(_make_policy("mlp"), str(tmp_path / "out"), backend="tensorrt")
+    assert not (tmp_path / "out").exists()
 
 
 def test_missing_executorch_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
