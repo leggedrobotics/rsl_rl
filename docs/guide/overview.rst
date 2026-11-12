@@ -127,8 +127,8 @@ Exporters
    Exports a policy to an `ExecuTorch <https://docs.pytorch.org/executorch/>`__ program, in addition to the TorchScript
    and ONNX exports of the runner. ExecuTorch is PyTorch's solution for deploying models on devices. The program runs
    from C++ or Python with a small runtime, on CPUs through XNNPACK or the portable kernels, or on NVIDIA GPUs through
-   CUDA. It has the same inputs and outputs as the ONNX export and stores their names. The function documentation lists
-   what each backend needs.
+   CUDA or TensorRT. It has the same inputs and outputs as the ONNX export and stores their names. The function
+   documentation lists what each backend needs.
 
 .. _core-components:
 
