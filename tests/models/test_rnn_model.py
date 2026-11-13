@@ -255,6 +255,7 @@ class TestRNNModelONNXExport:
 
         onnx_model = model.as_onnx()
         onnx_model.eval()
+        assert len(onnx_model(*onnx_model.get_dummy_inputs())) == len(onnx_model.output_names)
 
         with tempfile.NamedTemporaryFile(suffix=".onnx") as f:
             torch.onnx.export(
