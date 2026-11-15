@@ -47,6 +47,7 @@ the core library. These features, mostly contributed by the community, are liste
 :ref:`overview <library-features>`.
 
 - **Equivariant MLP model** that enforces robot symmetries (e.g. left-right mirroring) by construction.
+- **ExecuTorch export** that runs policies on edge devices from C++ or Python.
 
 Learning Environments
 ---------------------

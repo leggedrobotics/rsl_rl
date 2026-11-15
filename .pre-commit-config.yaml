@@ -20,6 +20,7 @@ repos:
     rev: v2.2.6
     hooks:
       - id: codespell
+        args: ["--ignore-words-list=ptd"]
   - repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.1
     hooks:
