@@ -16,3 +16,11 @@ Distillation
    :members:
    :undoc-members:
 
+
+Distributional PPO
+------------------
+
+.. automodule:: rsl_rl.algorithms.distributional_ppo
+   :members:
+   :undoc-members:
+

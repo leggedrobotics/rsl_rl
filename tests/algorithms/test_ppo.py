@@ -503,3 +503,45 @@ class TestSharedCNNEncoders:
         assert ppo.optimizer.state[shared]["step"] == 1
         # The first Adam step moves each parameter by the learning rate
         torch.testing.assert_close((before - shared.detach()).abs().max().item(), 1e-3, atol=1e-6, rtol=0)
+
+
+class TestPPOLifecycleHooks:
+    """Tests verifying that subclasses can override critic lifecycle methods."""
+
+    def test_custom_critic_hooks(self) -> None:
+        """Overridden compute_value_estimate and compute_critic_loss are called."""
+        value_est_hook_called = False
+        critic_hook_called = False
+
+        class CustomPPO(PPO):
+            def compute_value_estimate(self, obs: TensorDict) -> torch.Tensor:
+                nonlocal value_est_hook_called
+                value_est_hook_called = True
+                return super().compute_value_estimate(obs)
+
+            def compute_critic_loss(
+                self,
+                value_preds: torch.Tensor,
+                returns: torch.Tensor,
+                old_value_preds: torch.Tensor,
+            ) -> torch.Tensor:
+                nonlocal critic_hook_called
+                critic_hook_called = True
+                return super().compute_critic_loss(value_preds, returns, old_value_preds)
+
+        obs = make_obs(NUM_ENVS, OBS_DIM)
+        obs_groups = {"actor": ["policy"], "critic": ["policy"]}
+        actor = _make_actor(obs, obs_groups, NUM_ACTIONS)
+        critic = _make_critic(obs, obs_groups)
+        storage = RolloutStorage("rl", NUM_ENVS, NUM_STEPS, obs, [NUM_ACTIONS])
+
+        ppo = CustomPPO(actor, critic, storage, schedule="fixed")
+        ppo.train_mode()
+        for _ in range(NUM_STEPS):
+            ppo.act(obs)
+            ppo.process_env_step(obs, torch.randn(NUM_ENVS), torch.zeros(NUM_ENVS), {})
+        ppo.compute_returns(obs)
+
+        ppo.update()
+        assert value_est_hook_called, "compute_value_estimate hook was not called"
+        assert critic_hook_called, "compute_critic_loss hook was not called"
