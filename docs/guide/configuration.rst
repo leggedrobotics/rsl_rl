@@ -328,10 +328,6 @@ The :class:`~rsl_rl.algorithms.distributional_ppo.DistributionalPPO` inherits fr
      - ...
      - ...
      - ...
-   * - ``gamma``
-     - float
-     - ``0.998``
-     - Discount factor. Note that the default differs from the one of :class:`~rsl_rl.algorithms.ppo.PPO`.
    * - ``use_clipped_value_loss``
      - bool
      - ``True``
