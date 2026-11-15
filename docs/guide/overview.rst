@@ -35,6 +35,13 @@ Algorithms
    algorithm useful for transferring policies from training-time privileged observation sets to observations available
    during real-world deployment.
 
+:class:`~rsl_rl.algorithms.distributional_ppo.DistributionalPPO`
+   A :class:`~rsl_rl.algorithms.ppo.PPO` variant with a distributional critic. Instead of a single value, the critic
+   predicts a fixed number of quantiles of the return distribution and is trained with a quantile Huber loss on the
+   GAE-based return targets. The mean over the quantiles is used as the value estimate for advantage estimation, so
+   that the actor update is identical to :class:`~rsl_rl.algorithms.ppo.PPO`. For more details, please check
+   `this paper <https://arxiv.org/abs/1710.10044>`__.
+
 Models
 ^^^^^^
 

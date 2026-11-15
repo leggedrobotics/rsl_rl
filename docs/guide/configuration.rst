@@ -154,8 +154,9 @@ backends are configured by passing a dictionary with the following keys:
 Algorithm Configuration
 -----------------------
 
-RSL-RL implements two algorithms, :class:`~rsl_rl.algorithms.ppo.PPO` and
-:class:`~rsl_rl.algorithms.distillation.Distillation`, which are configured as follows.
+RSL-RL implements three algorithms, :class:`~rsl_rl.algorithms.ppo.PPO`,
+:class:`~rsl_rl.algorithms.distillation.Distillation`, and
+:class:`~rsl_rl.algorithms.distributional_ppo.DistributionalPPO`, which are configured as follows.
 
 PPO
 ^^^
@@ -303,6 +304,57 @@ Distillation
      - Maximum size, in megabytes, of a single packed gradient buffer used when reducing gradients
        across GPUs during multi-GPU training. Matches
        :class:`torch.nn.parallel.DistributedDataParallel`'s default ``bucket_cap_mb``.
+
+DistributionalPPO
+^^^^^^^^^^^^^^^^^
+
+The :class:`~rsl_rl.algorithms.distributional_ppo.DistributionalPPO` inherits from
+:class:`~rsl_rl.algorithms.ppo.PPO` and thus shares the same configuration keys as
+:class:`~rsl_rl.algorithms.ppo.PPO`, with the addition of the following keys:
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - Algorithm class name. Valid values: ``"DistributionalPPO"``.
+   * - ...
+     - ...
+     - ...
+     - ...
+   * - ``gamma``
+     - float
+     - ``0.998``
+     - Discount factor. Note that the default differs from the one of :class:`~rsl_rl.algorithms.ppo.PPO`.
+   * - ``use_clipped_value_loss``
+     - bool
+     - ``True``
+     - Not used, since the quantile Huber loss is not clipped.
+   * - ``num_quantiles``
+     - int
+     - ``8``
+     - Number of quantiles of the return distribution predicted by the critic.
+   * - ``quantile_huber_kappa``
+     - float
+     - ``1.0``
+     - Threshold of the quantile Huber loss. Errors below the threshold are penalized quadratically, larger errors
+       linearly.
+
+The output dimension of the critic is set to ``num_quantiles`` automatically, so that the critic is configured in the
+same way as for :class:`~rsl_rl.algorithms.ppo.PPO`. For example, the following is sufficient to use the algorithm with
+16 quantiles:
+
+.. code-block:: yaml
+
+   algorithm:
+     class_name: DistributionalPPO
+     num_quantiles: 16
 
 Model Configuration
 -------------------
