@@ -420,8 +420,8 @@ def reduce_gradients_in_buckets(params: Iterable[torch.nn.Parameter], world_size
             chunk_numel = max(1, bucket_bytes // flat_grad.element_size())
             for offset in range(0, flat_grad.numel(), chunk_numel):
                 chunk = flat_grad.narrow(0, offset, min(chunk_numel, flat_grad.numel() - offset))
-                torch.distributed.all_reduce(chunk, op=torch.distributed.ReduceOp.SUM)
                 chunk /= world_size
+                torch.distributed.all_reduce(chunk, op=torch.distributed.ReduceOp.SUM)
             start += 1
             continue
 
@@ -436,8 +436,8 @@ def reduce_gradients_in_buckets(params: Iterable[torch.nn.Parameter], world_size
             end += 1
 
         packed = torch.cat(grads[start:end])
-        torch.distributed.all_reduce(packed, op=torch.distributed.ReduceOp.SUM)
         packed /= world_size
+        torch.distributed.all_reduce(packed, op=torch.distributed.ReduceOp.SUM)
         offset = 0
         for flat_grad in grads[start:end]:
             numel = flat_grad.numel()
