@@ -438,6 +438,46 @@ class TestAdaptiveLearningRate:
     """Tests for adaptive KL-based learning rate scheduling."""
 
     @pytest.mark.parametrize(
+        "initial_lr, mean_shift, expected_lr",
+        [(1e-6, 0.2, 1e-6), (2e-2, 0.01, 2e-2), (1e-3, 0.2, 1e-3 / 1.5), (1e-3, 0.01, 1.5e-3)],
+    )
+    def test_adaptation_preserves_the_kl_direction(
+        self, initial_lr: float, mean_shift: float, expected_lr: float
+    ) -> None:
+        """Real policy KL and optimizer updates preserve direction even outside the scheduler's usual bounds."""
+        torch.manual_seed(41)
+        ppo, obs = _build_ppo(num_learning_epochs=1, num_mini_batches=1, schedule="adaptive", learning_rate=initial_lr)
+        _fill_rollout(ppo, obs)
+        with torch.no_grad():
+            ppo.compute_returns(obs)
+            ppo.actor.mlp.output_layer.bias.add_(mean_shift)
+            ppo.actor(obs, stochastic_output=True)
+            old_params = tuple(value[0] for value in ppo.storage.distribution_params)
+            kl = ppo.actor.get_kl_divergence(old_params, ppo.actor.output_distribution_params).mean().item()
+        if mean_shift == 0.2:
+            assert kl > 2.0 * ppo.desired_kl
+        else:
+            assert 0.0 < kl < ppo.desired_kl / 2.0
+
+        reference = copy.deepcopy(ppo)
+        reference.schedule = "fixed"
+        reference.learning_rate = expected_lr
+        for group in reference.optimizer.param_groups:
+            group["lr"] = expected_lr
+        before = [parameter.detach().clone() for parameter in ppo.actor.parameters()]
+        torch.manual_seed(42)
+        ppo.update()
+        torch.manual_seed(42)
+        reference.update()
+
+        assert ppo.learning_rate == pytest.approx(expected_lr)
+        assert all(group["lr"] == pytest.approx(expected_lr) for group in ppo.optimizer.param_groups)
+        assert any(not torch.equal(old, new) for old, new in zip(before, ppo.actor.parameters()))
+        for model, expected in [(ppo.actor, reference.actor), (ppo.critic, reference.critic)]:
+            for actual, wanted in zip(model.parameters(), expected.parameters()):
+                torch.testing.assert_close(actual, wanted, rtol=0.0, atol=0.0)
+
+    @pytest.mark.parametrize(
         "kl, initial_lr, expected_lr",
         [
             (0.03, 1e-3, 1e-3 / 1.5),
