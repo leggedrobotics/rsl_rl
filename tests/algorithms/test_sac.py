@@ -103,7 +103,7 @@ def test_cnn_sac_training_and_export(
     assert batch.observations["image"].shape == (8, 1, 16, 16)
     assert batch.next_observations["image"].shape == (8, 1, 16, 16)
     if device != "cpu":
-        assert alg._graph_updates
+        assert alg._update_graphs
     assert all(torch.isfinite(torch.tensor(value)) for value in alg.update()[0].values())
     alg.eval_mode()
     actions = alg.actor(obs)
@@ -481,7 +481,8 @@ def test_cuda_graph_delayed_actor_and_resume() -> None:
     checkpoint = runner.alg.save()
     runner.alg.load(checkpoint, None, True)
     runner.alg.release_cuda_graphs()
-    assert not runner.alg._graph_updates and not runner.alg._collection_graphs
+    assert not runner.alg._update_graphs and not runner.alg._act_graphs
+    assert runner.alg._process_env_step_graph is None
     runner.learn(1)
     assert runner.alg.num_critic_updates == 60
     assert all(torch.isfinite(p).all() for p in runner.alg.actor.parameters())

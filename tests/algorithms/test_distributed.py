@@ -405,8 +405,9 @@ def _sac_cuda_graph_worker(rank: int, world_size: int, store_file: str) -> None:
                 obs, rewards, dones, extras = env.step(alg.act(obs))
                 alg.process_env_step(obs, rewards + rank, dones, {**extras, "final_obs": obs})
         alg.update()
-    assert alg._graph_updates and all(graph.graph is not None for graph in alg._graph_updates.values())
-    assert alg._collection_graphs and all(graph.graph is not None for graph in alg._collection_graphs.values())
+    assert alg._update_graphs and all(graph.graph is not None for graph in alg._update_graphs.values())
+    assert alg._act_graphs and all(graph.graph is not None for graph in alg._act_graphs.values())
+    assert alg._process_env_step_graph is not None and alg._process_env_step_graph.graph is not None
     for model in (alg._raw_actor, alg._raw_critics, alg.target_critics, alg._return_normalizer):
         for tensor in model.state_dict().values():
             _assert_close_across_ranks(tensor.float())
