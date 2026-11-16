@@ -473,37 +473,6 @@ class SAC:
 
         return alg
 
-    def _sample_batch(self) -> _Batch:
-        """Build n-step returns, bootstrapping from the next state of the last valid transition."""
-        # Accumulate discounted rewards over valid replay transitions
-        replay_batch = self.storage.sample(self.batch_size, length=self.num_return_steps)
-        rewards = (replay_batch.rewards * self._discounts[: self.num_return_steps] * replay_batch.valid).sum(1)
-        discounts = self._discounts[replay_batch.valid.sum(1)] * ~replay_batch.terminated
-
-        # Construct the batch
-        batch = _Batch(
-            observations=replay_batch.observations,
-            actions=replay_batch.actions,
-            rewards=rewards,
-            next_observations=replay_batch.next_observations,
-            bootstrap_discounts=discounts,
-        )
-
-        # Apply symmetry data augmentation if enabled
-        if self.symmetry is not None and self.symmetry.use_data_augmentation:
-            # Apply the same augmentation to current and next observations
-            augment = self.symmetry.data_augmentation_func
-            batch.observations, batch.actions = augment(
-                env=self.symmetry.env, obs=batch.observations, actions=batch.actions
-            )
-            batch.next_observations, _ = augment(env=self.symmetry.env, obs=batch.next_observations, actions=None)
-            # Repeat scalar targets to match the augmented observations and actions
-            num_aug = batch.actions.shape[0] // self.batch_size
-            batch.rewards = batch.rewards.repeat(num_aug)
-            batch.bootstrap_discounts = batch.bootstrap_discounts.repeat(num_aug)
-
-        return batch
-
     def _act(self, obs: TensorDict, uniform: bool) -> dict[str, torch.Tensor]:
         """Sample actions using only device operations."""
         # Keep policy statistics available to the runner during uniform-action warm-up
@@ -565,6 +534,37 @@ class SAC:
         self._noise_steps_left.mul_(~dones)
         return {}
 
+    def _sample_batch(self) -> _Batch:
+        """Build n-step returns, bootstrapping from the next state of the last valid transition."""
+        # Accumulate discounted rewards over valid replay transitions
+        replay_batch = self.storage.sample(self.batch_size, length=self.num_return_steps)
+        rewards = (replay_batch.rewards * self._discounts[: self.num_return_steps] * replay_batch.valid).sum(1)
+        discounts = self._discounts[replay_batch.valid.sum(1)] * ~replay_batch.terminated
+
+        # Construct the batch
+        batch = _Batch(
+            observations=replay_batch.observations,
+            actions=replay_batch.actions,
+            rewards=rewards,
+            next_observations=replay_batch.next_observations,
+            bootstrap_discounts=discounts,
+        )
+
+        # Apply symmetry data augmentation if enabled
+        if self.symmetry is not None and self.symmetry.use_data_augmentation:
+            # Apply the same augmentation to current and next observations
+            augment = self.symmetry.data_augmentation_func
+            batch.observations, batch.actions = augment(
+                env=self.symmetry.env, obs=batch.observations, actions=batch.actions
+            )
+            batch.next_observations, _ = augment(env=self.symmetry.env, obs=batch.next_observations, actions=None)
+            # Repeat scalar targets to match the augmented observations and actions
+            num_aug = batch.actions.shape[0] // self.batch_size
+            batch.rewards = batch.rewards.repeat(num_aug)
+            batch.bootstrap_discounts = batch.bootstrap_discounts.repeat(num_aug)
+
+        return batch
+
     def _run_updates(self, phase: int) -> dict[str, torch.Tensor]:
         """Run the gradient updates of one iteration and return summed metrics.
 
@@ -592,34 +592,6 @@ class SAC:
         if self.use_cuda_graph:
             self._num_critic_updates_tensor.add_(self.num_updates)
         return totals
-
-    def _learning_rate_factor(self, num_updates: int | torch.Tensor) -> float | torch.Tensor:
-        """Return the scheduled learning rate as a fraction of the initial learning rate."""
-        if self.learning_rate_schedule == "constant":
-            return 1.0
-        if isinstance(num_updates, torch.Tensor):
-            progress = (num_updates / self.num_schedule_updates).clamp(max=1.0)  # type: ignore
-            cosine = torch.cos(math.pi * progress)
-        else:
-            cosine = math.cos(math.pi * min(num_updates / self.num_schedule_updates, 1.0))  # type: ignore
-        return self.final_learning_rate_ratio + (1.0 - self.final_learning_rate_ratio) * 0.5 * (1.0 + cosine)
-
-    def _set_learning_rates(self, offset: int) -> None:
-        """Set the learning rates of the update ``offset`` steps after the start of the current iteration."""
-        if self.learning_rate_schedule == "constant":
-            return
-        if self.use_cuda_graph:
-            factor = self._learning_rate_factor(self._num_critic_updates_tensor + offset)
-        else:
-            factor = self._learning_rate_factor(self.num_critic_updates + offset)
-        for optimizer, base_learning_rate in zip(
-            (self.actor_optimizer, self.critic_optimizer, self.alpha_optimizer), self._base_learning_rates
-        ):
-            for param_group in optimizer.param_groups:
-                if isinstance(param_group["lr"], torch.Tensor):
-                    param_group["lr"].copy_(base_learning_rate * factor)
-                else:
-                    param_group["lr"] = base_learning_rate * factor
 
     def _gradient_step(self, batch: _Batch, update_actor: bool) -> dict[str, torch.Tensor]:
         """Perform one fixed-shape optimizer step."""
@@ -805,6 +777,34 @@ class SAC:
         """Sample actor actions and corrected log probabilities."""
         actions = self.actor(obs, stochastic_output=True)
         return actions, self.actor.get_output_log_prob(actions)
+
+    def _learning_rate_factor(self, num_updates: int | torch.Tensor) -> float | torch.Tensor:
+        """Return the scheduled learning rate as a fraction of the initial learning rate."""
+        if self.learning_rate_schedule == "constant":
+            return 1.0
+        if isinstance(num_updates, torch.Tensor):
+            progress = (num_updates / self.num_schedule_updates).clamp(max=1.0)  # type: ignore
+            cosine = torch.cos(math.pi * progress)
+        else:
+            cosine = math.cos(math.pi * min(num_updates / self.num_schedule_updates, 1.0))  # type: ignore
+        return self.final_learning_rate_ratio + (1.0 - self.final_learning_rate_ratio) * 0.5 * (1.0 + cosine)
+
+    def _set_learning_rates(self, offset: int) -> None:
+        """Set the learning rates of the update ``offset`` steps after the start of the current iteration."""
+        if self.learning_rate_schedule == "constant":
+            return
+        if self.use_cuda_graph:
+            factor = self._learning_rate_factor(self._num_critic_updates_tensor + offset)
+        else:
+            factor = self._learning_rate_factor(self.num_critic_updates + offset)
+        for optimizer, base_learning_rate in zip(
+            (self.actor_optimizer, self.critic_optimizer, self.alpha_optimizer), self._base_learning_rates
+        ):
+            for param_group in optimizer.param_groups:
+                if isinstance(param_group["lr"], torch.Tensor):
+                    param_group["lr"].copy_(base_learning_rate * factor)
+                else:
+                    param_group["lr"] = base_learning_rate * factor
 
     def _get_learning_rate_stats(self) -> dict[str, float]:
         """Return the scheduled learning rates of the next update for logging."""
