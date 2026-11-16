@@ -24,6 +24,26 @@ OBS_DIM = 8
 NUM_ACTIONS = 4
 
 
+@pytest.mark.parametrize("rnn_type", ["gru", "lstm"])
+def test_direct_distillation_collection_keeps_teacher_state_without_gradients(rnn_type: str) -> None:
+    """Collecting teacher targets keeps recurrent history outside the optimization graph."""
+    obs = make_obs(2, 3)
+    groups = {"student": ["policy"], "teacher": ["policy"]}
+    student = RNNModel(obs, groups, "student", 2, hidden_dims=[4], rnn_hidden_dim=4, rnn_type=rnn_type)
+    teacher = RNNModel(obs, groups, "teacher", 2, hidden_dims=[4], rnn_hidden_dim=4, rnn_type=rnn_type)
+    alg = Distillation(student, teacher, RolloutStorage("distillation", 2, 3, obs, [2]), gradient_length=3)
+    for _ in range(3):
+        alg.act(obs)
+        alg.process_env_step(obs, torch.ones(2), torch.zeros(2), {})
+    state = teacher.get_hidden_state()
+    states = state if isinstance(state, tuple) else (state,)
+    assert all(not value.requires_grad for value in states)
+    before = [p.detach().clone() for p in student.parameters()]
+    losses, _ = alg.update()
+    assert torch.isfinite(torch.tensor(losses["behavior"]))
+    assert any(not torch.equal(old, new) for old, new in zip(before, student.parameters()))
+
+
 def _make_distillation_setup(
     gradient_length: int = 3,
     num_learning_epochs: int = 1,

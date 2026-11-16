@@ -33,6 +33,44 @@ RND_CFG = {
 }
 
 
+@pytest.mark.parametrize("rnn_type", ["gru", "lstm"])
+def test_direct_recurrent_collection_does_not_retain_backward_graphs(rnn_type: str) -> None:
+    """Direct collection supports multiple optimization epochs without replaying its autograd graph."""
+    obs = make_obs(2, 3)
+    groups = {"actor": ["policy"], "critic": ["policy"]}
+    actor = RNNModel(
+        obs,
+        groups,
+        "actor",
+        2,
+        hidden_dims=[4],
+        rnn_hidden_dim=4,
+        rnn_type=rnn_type,
+        distribution_cfg={"class_name": "GaussianDistribution"},
+    )
+    critic = RNNModel(obs, groups, "critic", 1, hidden_dims=[4], rnn_hidden_dim=4, rnn_type=rnn_type)
+    alg = PPO(
+        actor,
+        critic,
+        RolloutStorage("rl", 2, 3, obs, [2]),
+        num_learning_epochs=2,
+        num_mini_batches=1,
+        schedule="fixed",
+    )
+    with torch.no_grad():
+        actor(obs)
+        critic(obs)
+    for _ in range(3):
+        alg.act(obs)
+        alg.process_env_step(obs, torch.ones(2), torch.zeros(2), {})
+    before = [p.detach().clone() for p in actor.parameters()]
+    with torch.no_grad():
+        alg.compute_returns(obs)
+    losses, _ = alg.update()
+    assert all(torch.isfinite(torch.tensor(value)) for value in losses.values())
+    assert any(not torch.equal(old, new) for old, new in zip(before, actor.parameters()))
+
+
 def _make_actor(obs: TensorDict, obs_groups: dict, num_actions: int = 4, **kwargs: object) -> MLPModel:
     """Create an MLPModel actor with a Gaussian distribution."""
     defaults: dict[str, object] = {
