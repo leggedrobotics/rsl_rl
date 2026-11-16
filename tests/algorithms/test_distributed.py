@@ -16,6 +16,7 @@ from collections.abc import Callable, Iterable
 from itertools import chain
 from tensordict import TensorDict
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -23,7 +24,7 @@ from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import reduce_gradients_in_buckets
 from tests.algorithms.test_distillation import _fill_distillation_storage, _make_distillation_setup
-from tests.algorithms.test_ppo import NUM_ENVS, NUM_STEPS, OBS_DIM, _build_ppo
+from tests.algorithms.test_ppo import NUM_ENVS, NUM_STEPS, OBS_DIM, _build_ppo, _build_ppo_with_shared_cnn
 from tests.conftest import make_obs
 
 _GLOO_AVAILABLE = torch.distributed.is_available() and torch.distributed.is_gloo_available()
@@ -210,6 +211,33 @@ def _distillation_worker(rank: int, world_size: int, store_file: str, reduce_gra
             torch.distributed.destroy_process_group()
 
 
+def _shared_ppo_reduce_worker(rank: int, world_size: int, store_file: str) -> None:
+    init_gloo(rank, world_size, store_file)
+    try:
+        ppo = _build_ppo_with_shared_cnn()
+        ppo.gpu_world_size = world_size
+        ppo.grad_reduce_bucket_mb = _TINY_BUCKET_MB
+        parameters = ppo.optimizer.param_groups[0]["params"]
+        for parameter in parameters:
+            parameter.grad = torch.full_like(parameter, rank + 1)
+        payload_bytes = []
+        original_reduce = torch.distributed.all_reduce
+
+        def counted_reduce(tensor: torch.Tensor, *args: Any, **kwargs: Any) -> None:
+            payload_bytes.append(tensor.numel() * tensor.element_size())
+            return original_reduce(tensor, *args, **kwargs)
+
+        with patch("torch.distributed.all_reduce", side_effect=counted_reduce):
+            ppo.reduce_parameters()
+        for parameter in parameters:
+            torch.testing.assert_close(parameter.grad, torch.full_like(parameter, (world_size + 1) / 2))
+        unique_bytes = sum(parameter.numel() * parameter.element_size() for parameter in parameters)
+        assert sum(payload_bytes) == unique_bytes
+    finally:
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+
+
 class TestReduceParametersLocal:
     """Single-process tests for ``reduce_parameters``."""
 
@@ -231,6 +259,10 @@ class TestDistributedAlgorithms:
     def test_chunked_reduce_matches_full_concat(self) -> None:
         """Bucketed reduction must match the previous full-buffer average, including oversized and ``None`` grads."""
         spawn_gloo(_reduce_compare_worker)
+
+    def test_shared_ppo_gradients_are_communicated_once(self) -> None:
+        """Shared encoders use one reduction per unique gradient while retaining the rank average."""
+        spawn_gloo(_shared_ppo_reduce_worker)
 
     def test_ppo_parameters_stay_in_sync(self) -> None:
         """PPO ranks that see different rollouts must still share parameters after update."""

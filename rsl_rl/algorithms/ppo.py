@@ -499,4 +499,4 @@ class PPO:
         if self.rnd:
             params = chain(params, self.rnd.parameters())
         # Average the gradients across all GPUs in bounded buckets
-        reduce_gradients_in_buckets(params, self.gpu_world_size, self.grad_reduce_bucket_mb)
+        reduce_gradients_in_buckets(dict.fromkeys(params), self.gpu_world_size, self.grad_reduce_bucket_mb)
