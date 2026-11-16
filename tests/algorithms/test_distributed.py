@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import copy
 import datetime
 import os
 import tempfile
@@ -19,11 +20,12 @@ from typing import Any
 
 import pytest
 
+from rsl_rl.algorithms.global_advantage_ppo import GlobalAdvantagePPO
 from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import reduce_gradients_in_buckets
 from tests.algorithms.test_distillation import _fill_distillation_storage, _make_distillation_setup
-from tests.algorithms.test_ppo import NUM_ENVS, NUM_STEPS, OBS_DIM, _build_ppo
+from tests.algorithms.test_ppo import NUM_ACTIONS, NUM_ENVS, NUM_STEPS, OBS_DIM, _build_ppo, _make_actor, _make_critic
 from tests.conftest import make_obs
 
 _GLOO_AVAILABLE = torch.distributed.is_available() and torch.distributed.is_gloo_available()
@@ -224,6 +226,93 @@ class TestReduceParametersLocal:
             assert param.grad is None
 
 
+def _pooled_advantage_worker(rank: int, world_size: int, store_file: str, use_global: bool) -> None:
+    """Compare an actual distributed PPO update with the same pooled rollout."""
+    init_gloo(rank, world_size, store_file)
+    try:
+        torch.manual_seed(81)
+        obs = make_obs(NUM_ENVS * world_size, OBS_DIM)
+        groups = {"actor": ["policy"], "critic": ["policy"]}
+        settings = dict(num_learning_epochs=1, num_mini_batches=1, schedule="fixed")
+        reference = PPO(
+            _make_actor(obs, groups),
+            _make_critic(obs, groups),
+            RolloutStorage("rl", NUM_ENVS * world_size, NUM_STEPS, obs, [NUM_ACTIONS]),
+            **settings,
+        )
+        shard = slice(rank * NUM_ENVS, (rank + 1) * NUM_ENVS)
+        algorithm_class = GlobalAdvantagePPO if use_global else PPO
+        distributed = algorithm_class(
+            copy.deepcopy(reference.actor),
+            copy.deepcopy(reference.critic),
+            RolloutStorage("rl", NUM_ENVS, NUM_STEPS, obs[shard], [NUM_ACTIONS]),
+            multi_gpu_cfg={"global_rank": rank, "world_size": world_size},
+            **settings,
+        )
+        with torch.inference_mode():
+            for step in range(NUM_STEPS):
+                reference.act(obs)
+                rewards = torch.arange(NUM_ENVS * world_size, dtype=torch.float32) - NUM_ENVS + 0.2 * step
+                next_obs = make_obs(NUM_ENVS * world_size, OBS_DIM)
+                reference.process_env_step(next_obs, rewards, torch.zeros(NUM_ENVS * world_size), {})
+                obs = next_obs
+            for name in ("observations", "actions", "rewards", "dones", "values", "actions_log_prob"):
+                getattr(distributed.storage, name).copy_(getattr(reference.storage, name)[:, shard])
+            distributed.storage.distribution_params = tuple(
+                p[:, shard].clone() for p in reference.storage.distribution_params
+            )
+            distributed.storage.step = NUM_STEPS
+            reference.compute_returns(obs)
+            distributed.compute_returns(obs[shard])
+        expected_advantages = reference.storage.advantages[:, shard]
+        torch.testing.assert_close(distributed.storage.returns, reference.storage.returns[:, shard])
+        if use_global:
+            torch.testing.assert_close(distributed.storage.advantages, expected_advantages, rtol=2e-6, atol=2e-6)
+        else:
+            assert not torch.allclose(distributed.storage.advantages, expected_advantages)
+        reference.update()
+        distributed.update()
+        actor_grads_match = True
+        actor_params_match = True
+        for actual, expected in zip(distributed.actor.parameters(), reference.actor.parameters()):
+            actor_grads_match &= torch.allclose(actual.grad, expected.grad, rtol=2e-5, atol=2e-6)
+            actor_params_match &= torch.allclose(actual, expected, rtol=2e-5, atol=2e-6)
+        assert actor_grads_match == use_global
+        assert actor_params_match == use_global
+        for actual, expected in zip(distributed.critic.parameters(), reference.critic.parameters()):
+            torch.testing.assert_close(actual.grad, expected.grad, rtol=2e-5, atol=2e-6)
+            torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
+        _assert_close_across_ranks(next(distributed.actor.parameters()).detach())
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+def _pooled_statistics_worker(rank: int, world_size: int, store_file: str) -> None:
+    """Global moments weight singleton and unequal shards by their sample counts."""
+    init_gloo(rank, world_size, store_file)
+    try:
+        for counts, values in (((1, 1), (1.0, 5.0)), ((1, 3), (1.0, 3.0, 5.0, 9.0)), ((1, 1), (4.0, 4.0))):
+            obs = make_obs(counts[rank], OBS_DIM)
+            groups = {"actor": ["policy"], "critic": ["policy"]}
+            ppo = GlobalAdvantagePPO(
+                _make_actor(obs, groups),
+                _make_critic(obs, groups),
+                RolloutStorage("rl", counts[rank], 1, obs, [NUM_ACTIONS]),
+                gamma=0.0,
+                multi_gpu_cfg={"global_rank": rank, "world_size": world_size},
+            )
+            pooled = torch.tensor(values)
+            start = sum(counts[:rank])
+            shard = slice(start, start + counts[rank])
+            ppo.storage.rewards[0, :, 0] = pooled[shard]
+            with torch.inference_mode():
+                ppo.compute_returns(obs)
+            expected = ((pooled - pooled.mean()) / (pooled.std() + 1e-8))[shard]
+            torch.testing.assert_close(ppo.storage.advantages.flatten(), expected)
+    finally:
+        torch.distributed.destroy_process_group()
+
+
 @pytest.mark.skipif(not _GLOO_AVAILABLE, reason="torch.distributed gloo backend is required")
 class TestDistributedAlgorithms:
     """Multi-GPU tests for gradient reduction and on-policy updates."""
@@ -243,3 +332,12 @@ class TestDistributedAlgorithms:
     def test_distillation_student_diverges_without_reduction(self) -> None:
         """Different per-rank observations must change the student if gradients are not averaged."""
         spawn_gloo(_distillation_worker, False)
+
+    @pytest.mark.parametrize("use_global", [False, True])
+    def test_pooled_advantage_optimizer_equivalence(self, use_global: bool) -> None:
+        """Only pooled normalization reproduces a single PPO update on the combined rollout."""
+        spawn_gloo(_pooled_advantage_worker, use_global)
+
+    def test_pooled_advantage_statistics(self) -> None:
+        """Count weighting, constant data and singleton shards agree with pooled moments."""
+        spawn_gloo(_pooled_statistics_worker)

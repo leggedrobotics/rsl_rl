@@ -35,6 +35,12 @@ Algorithms
    algorithm useful for transferring policies from training-time privileged observation sets to observations available
    during real-world deployment.
 
+:class:`~rsl_rl.algorithms.global_advantage_ppo.GlobalAdvantagePPO`
+   An opt-in PPO variant available on ``extras`` that normalizes advantages using the pooled rollout across all
+   distributed ranks. This is useful when ranks represent shards of one training batch. The standard PPO class keeps
+   its local normalization semantics, which can be useful when ranks represent different tasks or reward scales.
+   See :ref:`global-advantage-configuration` for configuration and limitations.
+
 Models
 ^^^^^^
 

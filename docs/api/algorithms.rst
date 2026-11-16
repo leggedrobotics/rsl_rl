@@ -9,6 +9,14 @@ PPO
    :undoc-members:
 
 
+GlobalAdvantagePPO
+------------------
+
+.. automodule:: rsl_rl.algorithms.global_advantage_ppo
+   :members:
+   :undoc-members:
+
+
 Distillation
 ------------
 

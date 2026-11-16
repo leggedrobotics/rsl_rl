@@ -253,6 +253,32 @@ PPO
        across GPUs during multi-GPU training. Matches
        :class:`torch.nn.parallel.DistributedDataParallel`'s default ``bucket_cap_mb``.
 
+.. _global-advantage-configuration:
+
+GlobalAdvantagePPO (extras)
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Select ``class_name: GlobalAdvantagePPO`` in the algorithm configuration to treat all distributed ranks as shards of
+one rollout when normalizing advantages. All other PPO settings are inherited, except that
+``normalize_advantage_per_mini_batch`` must be ``False``. For example:
+
+.. code-block:: yaml
+
+   algorithm:
+     class_name: GlobalAdvantagePPO
+     normalize_advantage_per_mini_batch: false
+
+The subclass reuses PPO's GAE and return computation and applies one pooled mean and sample standard deviation to the
+raw advantages. It communicates the count and sum, followed by the centered squared deviation, using two scalar
+collectives per rollout. Statistics are accumulated in float64 and normalized advantages retain the storage dtype.
+Single-process behavior is the same as PPO, and the standard ``PPO`` class is unchanged.
+
+Pooled normalization preserves differences between rank-local advantage distributions. Local normalization instead
+centers and rescales each rank independently, which can be desirable for heterogeneous tasks or reward scales.
+Neither choice guarantees better convergence. Pooled statistics account for unequal shard sizes, but reproducing a
+single-process optimizer update also requires equal-sized rank-local batches because PPO averages gradients equally
+across ranks. With multiple mini-batches, the sample grouping and order must also match the intended pooled updates.
+
 Distillation
 ^^^^^^^^^^^^
 
