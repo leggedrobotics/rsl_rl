@@ -139,6 +139,24 @@ class TestObsGroupConcatenation:
 class TestMLPModelExport:
     """Tests for JIT export fidelity."""
 
+    @pytest.mark.parametrize("dtype,value", [(torch.float32, 2e38), (torch.float64, 1e308)])
+    def test_calibration_retains_finite_policy_outputs(self, dtype: torch.dtype, value: float) -> None:
+        """Calibration on finite constant observations supports inference and parameter gradients."""
+        model, observations = _make_mlp_model(obs_normalization=True)
+        model = model.to(dtype=dtype)
+        observations = observations.to(dtype=dtype)
+        observations["policy"].fill_(value)
+        model.update_normalization(observations)
+        output = model(observations)
+        assert torch.isfinite(output).all()
+        expected = model.mlp(torch.zeros_like(observations["policy"]))
+        torch.testing.assert_close(output, expected)
+        scripted = torch.jit.script(model.as_jit())
+        torch.testing.assert_close(scripted(observations["policy"]), expected)
+        output.square().mean().backward()
+        assert torch.isfinite(model.mlp.output_layer.bias.grad).all()
+        assert torch.count_nonzero(model.mlp.output_layer.bias.grad) > 0
+
     def test_jit_export_model(self) -> None:
         """JIT-exported model should produce deterministic outputs matching the original."""
         actor, obs = _make_mlp_model(stochastic=True)
