@@ -179,3 +179,17 @@ def test_normalizer_standard_deviation_buffer_identity() -> None:
     original = normalizer._std
     normalizer.update(torch.randn(8, 3))
     assert normalizer._std is original
+
+
+@pytest.mark.parametrize("eps", [0.01, 0.1])
+def test_discounted_reward_normalization_respects_epsilon_floor(eps: float) -> None:
+    """Nearly constant returns cannot amplify rewards beyond the configured epsilon floor."""
+    normalizer = EmpiricalDiscountedVariationNormalization(shape=[], eps=eps)
+    normalizer.emp_norm.update(torch.tensor([0.999, 1.001]))
+    normalizer.eval()
+    assert 0 < normalizer.emp_norm.std < eps
+    rewards = torch.tensor([1.0, 2.0], requires_grad=True)
+    normalized = normalizer(rewards)
+    torch.testing.assert_close(normalized, rewards / eps)
+    normalized.sum().backward()
+    torch.testing.assert_close(rewards.grad, torch.full_like(rewards, 1.0 / eps))
