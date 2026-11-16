@@ -308,18 +308,37 @@ def find_nonfinite(
     return flags
 
 
-def raise_if_nonfinite(flags: dict[str, torch.Tensor]) -> None:
-    """Raise ``ValueError`` naming the environment outputs whose flag from :func:`find_nonfinite` is set."""
-    if not flags:
+def raise_if_nonfinite(flags: dict[str, torch.Tensor], synchronize: bool = False) -> None:
+    """Raise ``ValueError`` for non-finite environment outputs.
+
+    When ``synchronize`` is True, every rank in the process group must call this function. A failure on any rank
+    raises on all ranks before they proceed to training collectives. Local failures retain their output names.
+    """
+    if not flags and not synchronize:
         return
-    device = next(iter(flags.values())).device
-    values = torch.stack([flag.to(device) for flag in flags.values()]).tolist()
-    sources = [source for source, value in zip(flags, values) if value]
+    device = next(iter(flags.values())).device if flags else torch.device("cpu")
+    values = (
+        torch.stack([flag.to(device) for flag in flags.values()])
+        if flags
+        else torch.empty(0, dtype=torch.bool, device=device)
+    )
+    if synchronize:
+        collective_device = (
+            torch.device("cuda", torch.cuda.current_device()) if torch.distributed.get_backend() == "nccl" else device
+        )
+        with torch.inference_mode(False):
+            any_nonfinite = values.any().to(device=collective_device, dtype=torch.int32)
+        torch.distributed.all_reduce(any_nonfinite, op=torch.distributed.ReduceOp.MAX)
+        if not any_nonfinite.item():
+            return
+    sources = [source for source, value in zip(flags, values.tolist()) if value]
     if sources:
         raise ValueError(
             f"The {', '.join(sources)} returned by the environment contained NaN or Inf values. This usually indicates"
             " a bug in the environment's step() or reset() function."
         )
+    if synchronize:
+        raise ValueError("An environment on another distributed rank contained NaN or Inf values.")
 
 
 def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.Module:
