@@ -525,10 +525,7 @@ class BetaDistribution(Distribution):
 
     def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
         """Extract the mean from the MLP output and rescale to ``action_range``."""
-        alpha_raw, beta_raw = torch.unbind(mlp_output, dim=-2)
-        alpha = torch.nn.functional.softplus(alpha_raw) + 1.0
-        beta = torch.nn.functional.softplus(beta_raw) + 1.0
-        return (alpha / (alpha + beta)) * self._range_scale + self._range_offset
+        return _beta_deterministic_output(mlp_output, self._range_scale, self._range_offset)
 
     def as_deterministic_output_module(self) -> nn.Module:
         """Return export-friendly module that computes the mean from the MLP output."""
@@ -546,7 +543,7 @@ class BetaDistribution(Distribution):
     @property
     def mean(self) -> torch.Tensor:
         """Return the mean of the Beta distribution, rescaled to ``action_range``."""
-        return (self._alpha / (self._alpha + self._beta)) * self._range_scale + self._range_offset  # type: ignore
+        return _beta_mean(self._alpha, self._beta) * self._range_scale + self._range_offset  # type: ignore
 
     @property
     def std(self) -> torch.Tensor:
@@ -623,7 +620,22 @@ class _BetaDeterministicOutput(nn.Module):
         self.range_offset = range_offset
 
     def forward(self, mlp_output: torch.Tensor) -> torch.Tensor:
-        alpha_raw, beta_raw = torch.unbind(mlp_output, dim=-2)
-        alpha = torch.nn.functional.softplus(alpha_raw) + 1.0
-        beta = torch.nn.functional.softplus(beta_raw) + 1.0
-        return (alpha / (alpha + beta)) * self.range_scale + self.range_offset
+        return _beta_deterministic_output(mlp_output, self.range_scale, self.range_offset)
+
+
+def _beta_mean(alpha: torch.Tensor, beta: torch.Tensor) -> torch.Tensor:
+    """Compute the mean without overflowing the sum of finite concentrations."""
+    scale = torch.maximum(alpha, beta)
+    scaled_alpha = alpha / scale
+    return scaled_alpha / (scaled_alpha + beta / scale)
+
+
+def _beta_deterministic_output(mlp_output: torch.Tensor, range_scale: float, range_offset: float) -> torch.Tensor:
+    """Evaluate the deterministic Beta action in a precision shared by native and exported policies."""
+    dtype = mlp_output.dtype
+    if dtype == torch.float16 or dtype == torch.bfloat16:
+        mlp_output = mlp_output.float()
+    alpha_raw, beta_raw = torch.unbind(mlp_output, dim=-2)
+    alpha = torch.nn.functional.softplus(alpha_raw) + 1.0
+    beta = torch.nn.functional.softplus(beta_raw) + 1.0
+    return (_beta_mean(alpha, beta) * range_scale + range_offset).to(dtype=dtype)
