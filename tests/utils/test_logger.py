@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pathlib
 import torch
 
@@ -23,6 +24,7 @@ class RecordingWriter(LogWriter):
         self.tags: list[str] = []
         self.scalars: dict[str, float] = {}
         self.videos: list[tuple[pathlib.Path, int]] = []
+        self.images: list[tuple[str, np.ndarray, int]] = []
 
     def add_scalar(self, tag: str, scalar_value: float, global_step: int) -> None:  # noqa: D102
         self.tags.append(tag)
@@ -30,6 +32,9 @@ class RecordingWriter(LogWriter):
 
     def save_video(self, video: pathlib.Path, it: int) -> None:  # noqa: D102
         self.videos.append((video, it))
+
+    def add_image(self, tag: str, img_tensor: np.ndarray, global_step: int, dataformats: str = "HWC") -> None:  # noqa: D102
+        self.images.append((tag, img_tensor, global_step))
 
 
 def _make_logger(log_dir: pathlib.Path, num_envs: int = 1) -> Logger:
@@ -156,6 +161,20 @@ def test_step_metrics_accumulate_over_completed_episodes(tmp_path: pathlib.Path)
     assert logger.writer.scalars["Custom/total"] == 44.0
     assert logger.writer.scalars["Training/mean_episode_length"] == 2.0
     torch.testing.assert_close(logger.cur_step_sums["Custom/total"], torch.zeros(2))
+
+
+def test_latest_image_of_each_tag_is_logged_once(tmp_path: pathlib.Path) -> None:
+    """Only the latest image of each tag is logged, once, at the next iteration."""
+    logger = _make_logger(tmp_path)
+    first, latest = torch.zeros(2, 3, 3), torch.ones(2, 3, 3)
+    logger.process_env_step(torch.zeros(1), {"images": {"Metrics/grid": first}}, {})
+    logger.process_env_step(torch.zeros(1), {"images": {"Metrics/grid": latest}}, {})
+
+    _log(logger, 0)
+    _log(logger, 1)
+
+    assert [(tag, it) for tag, _, it in logger.writer.images] == [("Metrics/grid", 0)]
+    np.testing.assert_array_equal(logger.writer.images[0][1], latest.numpy())
 
 
 class TestTimeSeries:

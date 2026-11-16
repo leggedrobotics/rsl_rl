@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pathlib
 from abc import ABC, abstractmethod
 
@@ -26,6 +27,9 @@ class LogWriter(ABC):
             scalar_value: Value of the metric.
             global_step: Current training iteration.
         """
+
+    def add_image(self, tag: str, img_tensor: np.ndarray, global_step: int, dataformats: str = "HWC") -> None:
+        """Log an image of shape (H, W, C)."""
 
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
         """Upload environment and training configuration. Called once at training start."""

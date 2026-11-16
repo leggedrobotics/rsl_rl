@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import os
 import pathlib
 from dataclasses import asdict
@@ -55,6 +56,18 @@ class WandbLogWriter(SummaryWriter, LogWriter):
         """Log a scalar to both TensorBoard and W&B."""
         super().add_scalar(tag, scalar_value, global_step=global_step, walltime=walltime, new_style=new_style)
         wandb.log({tag: scalar_value}, step=global_step)
+
+    def add_image(
+        self,
+        tag: str,
+        img_tensor: np.ndarray,
+        global_step: int | None = None,
+        walltime: float | None = None,
+        dataformats: str = "HWC",
+    ) -> None:
+        """Log an image of shape (H, W, C) to both TensorBoard and W&B."""
+        super().add_image(tag, img_tensor, global_step=global_step, walltime=walltime, dataformats=dataformats)
+        wandb.log({tag: wandb.Image(img_tensor)}, step=global_step)
 
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
         """Upload environment and training configuration to W&B."""
