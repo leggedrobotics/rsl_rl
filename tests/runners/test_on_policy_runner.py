@@ -345,7 +345,10 @@ class TestOnnxBatchExport:
 
     @pytest.mark.parametrize("model_type", ["mlp", "cnn", "gru", "lstm"])
     @pytest.mark.parametrize("dynamic_batch", [False, True])
-    def test_batch_shape_and_inference(self, model_type: str, dynamic_batch: bool, tmp_path: pathlib.Path) -> None:
+    @pytest.mark.parametrize("evaluate", [False, True], ids=["shape", "inference"])
+    def test_batch_shape_and_inference(
+        self, model_type: str, dynamic_batch: bool, evaluate: bool, tmp_path: pathlib.Path
+    ) -> None:
         """Dynamic exports accept multiple batches and preserve recurrent state data flow."""
         torch.manual_seed(19)
         recurrent = model_type in ("gru", "lstm")
@@ -370,6 +373,11 @@ class TestOnnxBatchExport:
                 else:
                     assert dimensions[axis].dim_value == 1
                 assert all(dim.HasField("dim_value") for i, dim in enumerate(dimensions) if i != axis)
+
+        if not evaluate:
+            return
+        if model_type == "lstm":
+            pytest.importorskip("onnx", minversion="1.23.0", reason="Older reference evaluators omit LSTM cell outputs")
 
         wrapper = runner.alg.get_policy().as_onnx().cpu().eval()
         examples = wrapper.get_dummy_inputs()
