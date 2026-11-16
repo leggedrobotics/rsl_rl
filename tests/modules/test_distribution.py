@@ -363,3 +363,21 @@ def test_squashed_gaussian_initial_standard_deviation(kwargs: dict) -> None:
     distribution.init_mlp_weights(mlp)
     distribution.update(mlp(torch.randn(4, 3)))
     torch.testing.assert_close(distribution.std, torch.full((4, 2), 0.5))
+
+
+@pytest.mark.parametrize(
+    ("distribution_type", "action_range"),
+    [
+        (SquashedGaussianDistribution, (0.0, 0.0)),
+        (BetaDistribution, (0.0, 0.0)),
+        (SquashedGaussianDistribution, (1.0, -1.0)),
+        (BetaDistribution, (1.0, -1.0)),
+        (SquashedGaussianDistribution, (-math.inf, 1.0)),
+        (BetaDistribution, (math.nan, 1.0)),
+        (SquashedGaussianDistribution, ([-1.0, 0.0], [1.0, 0.0])),
+    ],
+)
+def test_bounded_distributions_reject_invalid_action_ranges(distribution_type: type, action_range: tuple) -> None:
+    """Invalid affine action transforms fail before producing nonfinite policy densities."""
+    with pytest.raises(ValueError, match="Action bounds"):
+        distribution_type(2, action_range=action_range)
