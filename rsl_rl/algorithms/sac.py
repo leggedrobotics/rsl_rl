@@ -11,10 +11,8 @@ import functools
 import math
 import torch
 import torch.nn as nn
-from collections.abc import Callable
 from dataclasses import dataclass
 from tensordict import TensorDict
-from typing import Any
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import Symmetry, resolve_symmetry_config
@@ -208,7 +206,9 @@ class SAC:
         self._num_critic_updates_tensor = torch.zeros((), device=self.device)
         self._num_steps_since_update = 0
         self._actor_loaded = False
-        self._collection_graphs: dict[tuple, CudaGraphCallable] = {}
+        self._act_graphs: dict[bool, CudaGraphCallable] = {}
+        self._process_env_step_graph: CudaGraphCallable | None = None
+        self._update_graphs: dict[int, CudaGraphCallable] = {}
 
         # Configure optimizer state for CUDA graph capture
         self._configure_optimizer_capture()
@@ -218,12 +218,19 @@ class SAC:
         """Sample actions and store transition data."""
         # Sample uniform actions during warm-up unless an actor was loaded
         uniform = not self._actor_loaded and self.num_env_steps * self.storage.num_envs < self.num_warmup_transitions
-        actions = self._run_collection_step(("act", uniform), functools.partial(self._act, uniform=uniform), obs)
+        if self.use_cuda_graph:
+            if uniform not in self._act_graphs:
+                self._act_graphs[uniform] = CudaGraphCallable(
+                    functools.partial(self._act, uniform=uniform), self.device
+                )
+            actions = self._act_graphs[uniform](obs)["actions"]
+        else:
+            actions = self._act(obs, uniform=uniform)["actions"]
 
         # Record observations and actions before env.step()
         self.transition.observations = obs
-        self.transition.actions = actions["actions"]
-        return actions["actions"]
+        self.transition.actions = actions
+        return actions
 
     @torch.no_grad()
     def process_env_step(
@@ -244,14 +251,17 @@ class SAC:
                 raise ValueError("SAC requires extras['final_obs'] on every step containing a done.")
             final_obs = obs
 
-        # Record the transition and update the episode state
-        self._run_collection_step(
-            ("process_env_step",),
-            self._process_env_step,
+        # Record the transition and update the return statistics
+        process_env_step = self._process_env_step
+        if self.use_cuda_graph:
+            if self._process_env_step_graph is None:
+                self._process_env_step_graph = CudaGraphCallable(self._process_env_step, self.device)
+            process_env_step = self._process_env_step_graph
+        process_env_step(
             self.transition.observations.select(*groups),  # type: ignore
-            self.transition.actions,
-            obs.select(*groups),
+            self.transition.actions,  # type: ignore
             rewards.reshape(-1),
+            obs.select(*groups),
             done_mask,
             time_outs,
             TensorDict({key: final_obs[key] for key in groups}, batch_size=obs.batch_size).to(self.device),
@@ -289,32 +299,39 @@ class SAC:
         # Run all gradient updates of this iteration, captured as a single CUDA graph if enabled
         phase = self.num_critic_updates % self.actor_update_interval
         if self.use_cuda_graph:
-            if phase not in self._graph_updates:
-                self._graph_updates[phase] = CudaGraphCallable(
+            if phase not in self._update_graphs:
+                self._update_graphs[phase] = CudaGraphCallable(
                     functools.partial(self._run_updates, phase=phase), self.device
                 )
-            totals = self._graph_updates[phase]()
+            totals = self._update_graphs[phase]()
         else:
             totals = self._run_updates(phase=phase)
         self.num_critic_updates += self.num_updates
         self.learning_rate = self._base_learning_rates[1] * self._learning_rate_factor(self.num_critic_updates)
 
-        # Divide the losses by the number of updates and move entropy and Q-values to the statistics
+        # Count actor updates separately for averaging actor losses and entropy
         actor_updates = sum((phase + i) % self.actor_update_interval == 0 for i in range(self.num_updates))
         actor_keys = ("actor", "alpha", "entropy", "symmetry")
-        losses = {
-            key: value.double() / (actor_updates if key in actor_keys else self.num_updates)
-            for key, value in totals.items()
+        stat_names = {
+            "entropy": "Model/mean_policy_entropy",
+            "q_value": "Model/mean_critic_q_value",
         }
-        stats = self._get_model_stats()
-        if "entropy" in losses:
-            stats["Model/mean_policy_entropy"] = losses.pop("entropy")
-        stats["Model/mean_critic_q_value"] = losses.pop("q_value")
 
         # Synchronize with the device once for all losses and statistics
-        values = _to_floats({**losses, **stats})
-        stats_dict = self._get_learning_rate_stats() | {key: values[key] for key in stats}
-        return {key: values[key] for key in losses}, stats_dict
+        metrics = _to_floats({**totals, **self._get_model_stats()})
+        losses: dict[str, float] = {}
+        stats = self._get_learning_rate_stats()
+        # Average accumulated metrics and separate losses from statistics
+        for key, value in metrics.items():
+            if key in totals:
+                value /= actor_updates if key in actor_keys else self.num_updates
+                if key in stat_names:
+                    stats[stat_names[key]] = value
+                else:
+                    losses[key] = value
+            else:
+                stats[key] = value
+        return losses, stats
 
     def train_mode(self) -> None:
         """Set train mode for learnable models."""
@@ -485,16 +502,8 @@ class SAC:
 
         return batch
 
-    def _run_collection_step(self, key: tuple, fn: Callable[..., dict[str, torch.Tensor]], *args: Any) -> dict:
-        """Run a fixed-shape collection function eagerly or, with CUDA graphs enabled, as a replayed graph."""
-        if not self.use_cuda_graph:
-            return fn(*args)
-        if key not in self._collection_graphs:
-            self._collection_graphs[key] = CudaGraphCallable(fn, self.device)
-        return self._collection_graphs[key](*args)
-
     def _act(self, obs: TensorDict, uniform: bool) -> dict[str, torch.Tensor]:
-        """Sample uniform or exploration actions using only device operations."""
+        """Sample actions using only device operations."""
         # Keep policy statistics available to the runner during uniform-action warm-up
         with _BatchNormMode(self._actor_batch_norms, training=False):
             actions = self.actor(obs, stochastic_output=True)
@@ -517,13 +526,13 @@ class SAC:
         self,
         observations: TensorDict,
         actions: torch.Tensor,
-        next_observations: TensorDict,
         rewards: torch.Tensor,
+        next_observations: TensorDict,
         dones: torch.Tensor,
         time_outs: torch.Tensor,
         final_observations: TensorDict,
     ) -> dict[str, torch.Tensor]:
-        """Store a transition and update the return statistics and exploration state using only device operations."""
+        """Store a transition and update the return statistics using only device operations."""
         # Replace reset observations with final observations for completed episodes
         next_observations = TensorDict(
             {
@@ -555,7 +564,7 @@ class SAC:
         return {}
 
     def _run_updates(self, phase: int) -> dict[str, torch.Tensor]:
-        """Run the gradient updates of one iteration and return the summed losses.
+        """Run the gradient updates of one iteration and return summed metrics.
 
         All operations, including replay sampling and the learning rate schedule, run on the device, so the whole
         method can be captured in a CUDA graph. ``phase`` is the position in the actor update interval of the first
@@ -574,9 +583,9 @@ class SAC:
                     self._max_abs_return / self.reward_normalization_max_return,
                 )
 
-            # Run the gradient update with the configured actor update interval and sum the losses
-            stats = self._gradient_step(batch, update_actor=(phase + i) % self.actor_update_interval == 0)
-            for key, value in stats.items():
+            # Run the gradient update with the configured actor update interval and sum the metrics
+            metrics = self._gradient_step(batch, update_actor=(phase + i) % self.actor_update_interval == 0)
+            for key, value in metrics.items():
                 totals[key] = totals[key] + value if key in totals else value
         if self.use_cuda_graph:
             self._num_critic_updates_tensor.add_(self.num_updates)
@@ -613,13 +622,13 @@ class SAC:
     def _gradient_step(self, batch: _Batch, update_actor: bool) -> dict[str, torch.Tensor]:
         """Perform one fixed-shape optimizer step."""
         # Update the actor and temperature before the critics
-        stats = self._update_actor_and_alpha(batch) if update_actor else {}
-        stats.update(self._update_critics(batch))
+        metrics = self._update_actor_and_alpha(batch) if update_actor else {}
+        metrics.update(self._update_critics(batch))
         self._update_target_critics()
-        return stats
+        return metrics
 
     def _update_actor_and_alpha(self, batch: _Batch) -> dict[str, torch.Tensor]:
-        """Run one gradient step for the actor and entropy temperature."""
+        """Run one gradient step for the actor and entropy temperature and return losses and sampled entropy."""
         with torch.autocast(
             device_type=torch.device(self.device).type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
         ):
@@ -670,13 +679,13 @@ class SAC:
         self.alpha_optimizer.step()
 
         # Store the losses and sampled entropy
-        stats = {"actor": actor_loss.detach(), "alpha": alpha_loss.detach(), "entropy": entropy}
+        metrics = {"actor": actor_loss.detach(), "alpha": alpha_loss.detach(), "entropy": entropy}
         if symmetry_loss is not None:
-            stats["symmetry"] = symmetry_loss.detach()
-        return stats
+            metrics["symmetry"] = symmetry_loss.detach()
+        return metrics
 
     def _update_critics(self, batch: _Batch) -> dict[str, torch.Tensor]:
-        """Run one gradient step for the critics."""
+        """Run one gradient step for the critics and return the critic loss and mean Q-value."""
         with torch.autocast(
             device_type=torch.device(self.device).type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
         ):
@@ -728,8 +737,8 @@ class SAC:
         # Store the critic loss and mean Q-value
         with torch.no_grad():
             q_values = torch.stack([self._expected_value(output) for output in outputs])
-            stats = {"critic": critic_loss.detach(), "q_value": q_values.mean()}
-        return stats
+            metrics = {"critic": critic_loss.detach(), "q_value": q_values.mean()}
+        return metrics
 
     @torch.no_grad()
     def _update_target_critics(self) -> None:
@@ -801,13 +810,13 @@ class SAC:
         return {
             f"Optimizer/{name}_learning_rate": base_learning_rate * factor
             for name, base_learning_rate in zip(("actor", "critic", "alpha"), self._base_learning_rates)
-        }
+        }  # type: ignore
 
     def _get_model_stats(self) -> dict[str, torch.Tensor]:
         """Return the entropy temperature and policy standard deviation as device scalars for logging."""
         return {
-            "Model/alpha": self.log_alpha.detach().exp().double().reshape(()),
-            "Model/mean_policy_std": self.actor.output_std.detach().mean().double(),
+            "Model/alpha": self.log_alpha.detach().exp().reshape(()),
+            "Model/mean_policy_std": self.actor.output_std.detach().mean(),
         }
 
     def _configure_optimizer_capture(self) -> None:
@@ -827,8 +836,8 @@ class SAC:
                 if "step" in state:
                     state["step"] = state["step"].to(self.device if self.use_cuda_graph else "cpu")
 
-        # Discard graphs that reference the previous optimizer state; one graph is captured per actor update phase
-        self._graph_updates: dict[int, CudaGraphCallable] = {}
+        # Discard graphs that reference the previous optimizer state
+        self._update_graphs.clear()
 
 
 @dataclass

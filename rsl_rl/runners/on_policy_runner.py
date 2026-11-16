@@ -93,7 +93,7 @@ class OnPolicyRunner:
                         actions = self.alg.act(obs)
                         # Step the environment
                         obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
-                        # Record NaN or Inf values from the environment without synchronizing with the device
+                        # Record NaN or Inf values from the environment
                         if self.cfg.get("check_for_nan", True):
                             for source, flag in find_nonfinite(obs, rewards, dones, extras).items():
                                 nonfinite[source] = nonfinite[source] | flag if source in nonfinite else flag
@@ -104,7 +104,7 @@ class OnPolicyRunner:
                         # Book keeping
                         self.logger.process_env_step(dones, extras, step_dict)
 
-                    # Raise once per iteration, before the update, if the environment returned NaN or Inf values
+                    # Raise if the environment returned NaN or Inf values
                     raise_if_nonfinite(nonfinite)
 
                     stop = time.time()

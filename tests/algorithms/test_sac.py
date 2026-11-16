@@ -111,7 +111,7 @@ def test_standard_runner_and_direct_drive(tmp_path: Path, device: str) -> None:
         assert any(not torch.equal(old, current) for old, current in zip(parameters, model.parameters()))
         assert all(torch.isfinite(p).all() for p in model.parameters())
     if device != "cpu":
-        assert 0 in restored.alg._graph_updates
+        assert 0 in restored.alg._update_graphs
     sample = restored.env.get_observations()[:1]
     with torch.inference_mode():
         expected = restored.alg.get_policy()(sample).cpu()
@@ -391,7 +391,7 @@ def test_cuda_graph_delayed_actor_and_resume() -> None:
         cfg[role]["network_cfg"] = {"class_name": "ResidualMLP", "hidden_dim": 16, "num_blocks": 1, "expansion": 2}
     runner = OffPolicyRunner(DummyEnv(device="cuda:0"), cfg, device="cuda:0")
     runner.learn(4)
-    assert all(graph.graph is not None for graph in runner.alg._graph_updates.values())
+    assert all(graph.graph is not None for graph in runner.alg._update_graphs.values())
     checkpoint = runner.alg.save()
     runner.alg.load(checkpoint, None, True)
     runner.learn(1)

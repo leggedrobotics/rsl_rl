@@ -9,7 +9,6 @@ from .log_writer import LogWriter
 from .neptune_log_writer import NeptuneLogWriter
 from .utils import (
     CudaGraphCallable,
-    check_nan,
     compile_model,
     find_nonfinite,
     get_param,
@@ -30,7 +29,6 @@ __all__ = [
     "LogWriter",
     "NeptuneLogWriter",
     "WandbLogWriter",
-    "check_nan",
     "compile_model",
     "find_nonfinite",
     "get_param",
