@@ -210,6 +210,30 @@ def _distillation_worker(rank: int, world_size: int, store_file: str, reduce_gra
             torch.distributed.destroy_process_group()
 
 
+def _finite_half_gradient_worker(rank: int, world_size: int, store_file: str, bucket_bytes: int) -> None:
+    """Average finite half gradients before applying an actual optimizer step."""
+    init_gloo(rank, world_size, store_file)
+    try:
+        model = nn.Linear(4, 2).half()
+        with torch.no_grad():
+            for parameter in model.parameters():
+                parameter.zero_()
+        optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
+        output = model(torch.ones(1, 4, dtype=torch.float16))
+        target = 15000.0 + 5000.0 * rank
+        (output.float() + target).square().sum().backward()
+        assert all(torch.isfinite(parameter.grad).all() for parameter in model.parameters())
+        reduce_gradients_in_buckets(model.parameters(), world_size, bucket_mb=bucket_bytes / (1024 * 1024))
+        for parameter in model.parameters():
+            torch.testing.assert_close(parameter.grad, torch.full_like(parameter, 35000.0))
+        optimizer.step()
+        assert all(torch.isfinite(parameter).all() for parameter in model.parameters())
+        assert all(torch.count_nonzero(parameter) == parameter.numel() for parameter in model.parameters())
+    finally:
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+
+
 class TestReduceParametersLocal:
     """Single-process tests for ``reduce_parameters``."""
 
@@ -243,3 +267,8 @@ class TestDistributedAlgorithms:
     def test_distillation_student_diverges_without_reduction(self) -> None:
         """Different per-rank observations must change the student if gradients are not averaged."""
         spawn_gloo(_distillation_worker, False)
+
+    @pytest.mark.parametrize("bucket_bytes", [8, 64])
+    def test_finite_half_gradients_do_not_overflow_during_averaging(self, bucket_bytes: int) -> None:
+        """Packed gradients and oversized slices retain a representable average across ranks."""
+        spawn_gloo(_finite_half_gradient_worker, bucket_bytes)
