@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import copy
 import tempfile
 import torch
 from tensordict import TensorDict
@@ -15,12 +16,35 @@ import onnx
 import pytest
 
 from rsl_rl.models import MLPModel, QMLPModel
+from rsl_rl.modules import ResidualMLP
 from tests.conftest import make_obs
 
 NUM_ENVS = 4
 OBS_DIM = 8
 NUM_ACTIONS = 4
 OBS_GROUPS = {"actor": ["policy"], "critic": ["policy"]}
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32, torch.float64])
+def test_residual_parameter_normalization_preserves_finite_directions(dtype: torch.dtype) -> None:
+    """Zero rows and large finite parameters retain their intended normalized values."""
+    model = ResidualMLP(8, 4, hidden_dim=8, num_blocks=1).to(dtype=dtype)
+    with torch.no_grad():
+        model.input_layer.weight.fill_(20000)
+        model.input_layer.weight[0].zero_()
+        model.input_norm.weight.fill_(20000)
+        model.input_norm.bias.fill_(10000)
+        model.output_norm.weight.fill_(20000)
+    reference = copy.deepcopy(model).double()
+    reference.normalize_parameters()
+    model.normalize_parameters()
+    for actual, expected in zip(model.parameters(), reference.parameters()):
+        assert torch.isfinite(actual).all()
+        torch.testing.assert_close(actual, expected.to(dtype), rtol=1e-3, atol=1e-5)
+    assert torch.count_nonzero(model.input_layer.weight[0]) == 0
+    model.eval()
+    output = model(torch.randn(4, 8, dtype=dtype))
+    assert torch.isfinite(output).all()
 
 
 def _make_mlp_model(stochastic: bool = False, obs_set: str = "actor", **kwargs: object) -> tuple[MLPModel, TensorDict]:
