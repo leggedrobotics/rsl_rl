@@ -370,3 +370,18 @@ def test_load_without_optimizer_restores_models_and_iteration(tmp_path: pathlib.
     assert not restored.alg.optimizer.state
     for expected, actual in zip(runner.alg.actor.parameters(), restored.alg.actor.parameters()):
         torch.testing.assert_close(actual, expected)
+
+
+def test_nonfinite_environment_outputs_raise_before_the_update() -> None:
+    """NaN rewards are reported at the end of the rollout, before the policy is updated."""
+
+    class NanRewardEnv(DummyEnv):
+        def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:
+            obs, rewards, dones, extras = super().step(actions)
+            return obs, torch.full_like(rewards, torch.nan), dones, extras
+
+    runner = OnPolicyRunner(NanRewardEnv(), _make_train_cfg())
+    before = [p.detach().clone() for p in runner.alg.actor.parameters()]
+    with pytest.raises(ValueError, match="rewards"):
+        runner.learn(1)
+    assert all(torch.equal(a, b) for a, b in zip(before, runner.alg.actor.parameters()))

@@ -54,6 +54,7 @@ class Logger:
         self.length_buffer = deque(maxlen=100)
         self.cur_step_sums: dict[str, torch.Tensor] = {}
         self.cur_episode_length = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self._pending_sums: list[tuple[torch.Tensor, torch.Tensor]] = []
 
         # Decide whether to disable logging
         # Note: We only log from the process with rank 0 (main process)
@@ -127,19 +128,30 @@ class Logger:
             # Update step stats and episode length
             for key, value in step_dict.items():
                 if key not in self.cur_step_sums:
+                    self._flush_pending_sums()
                     with torch.inference_mode(False):
                         self.cur_step_sums[key] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
                     self.step_buffers[key] = deque(maxlen=100)
                 self.cur_step_sums[key] += value.detach().reshape(-1)
             self.cur_episode_length += 1
 
-            # Clear data for completed episodes
-            new_ids = (dones > 0).nonzero(as_tuple=False).flatten()
-            for key, value in self.cur_step_sums.items():
-                self.step_buffers[key].extend(value[new_ids].cpu().tolist())
-                value[new_ids] = 0
-            self.length_buffer.extend(self.cur_episode_length[new_ids].cpu().tolist())
-            self.cur_episode_length[new_ids] = 0
+            # Record and reset episode sums for completed episodes
+            done_mask = dones.reshape(-1) > 0
+            sums = [*self.cur_step_sums.values(), self.cur_episode_length]
+            self._pending_sums.append((done_mask, torch.stack(sums)))
+            for value in sums:
+                value.masked_fill_(done_mask, 0)
+
+    def _flush_pending_sums(self) -> None:
+        """Move the statistics of the episodes completed since the last call into the episode buffers."""
+        if not self._pending_sums:
+            return
+        done_masks = torch.stack([done_mask for done_mask, _ in self._pending_sums])
+        sums = torch.stack([sums for _, sums in self._pending_sums], dim=1)
+        self._pending_sums.clear()
+        buffers = [*self.step_buffers.values(), self.length_buffer]
+        for buffer, values in zip(buffers, sums[:, done_masks].cpu().tolist()):
+            buffer.extend(values)
 
     def log(
         self,
@@ -156,6 +168,8 @@ class Logger:
     ) -> None:
         """Log the training metrics to the logging service and print them to the console.
 
+        ``loss_dict`` contains mean objective losses, logged under ``Loss/``. ``stats_dict`` contains diagnostic
+        statistics with their complete logging tags, such as ``Model/mean_policy_std`` or ``Optimizer/learning_rate``.
         If videos are available, they are uploaded to the logging service (W&B) as well.
         """
         if self.writer is not None:
@@ -201,6 +215,7 @@ class Logger:
             self.writer.add_scalar("Performance/learning_time", learn_time, it)
 
             # Log episode stats and length
+            self._flush_pending_sums()
             episode_stats = {key: statistics.mean(buffer) for key, buffer in self.step_buffers.items() if buffer}
             for key, value in episode_stats.items():
                 self.writer.add_scalar(key, value, it)

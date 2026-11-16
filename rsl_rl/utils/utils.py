@@ -287,49 +287,39 @@ def resolve_obs_groups(
     return obs_groups
 
 
-def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict | None = None) -> None:
-    """Raise ``ValueError`` if any environment output contains NaN or Inf.
+def find_nonfinite(
+    obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict | None = None
+) -> dict[str, torch.Tensor]:
+    """Return a flag per environment output that is ``True`` if the output contains NaN or Inf values.
 
-    If ``extras`` contains ``"final_obs"``, the final observations of environments that are done are checked as well.
-    Entries of environments that are not done are ignored.
+    .. note::
+        If ``extras`` contains ``"final_obs"``, the final observations of environments that are done are checked as
+        well.
     """
-    for key, tensor in obs.items():
-        if not torch.isfinite(tensor).all():
-            has_nan = torch.isnan(tensor).any()
-            has_inf = torch.isinf(tensor).any()
-            value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
-            raise ValueError(
-                f"The observation group '{key}' returned by the environment contains {value_name} values. This usually"
-                " indicates a bug in the environment's step() or reset() function."
-            )
-    if not torch.isfinite(rewards).all():
-        has_nan = torch.isnan(rewards).any()
-        has_inf = torch.isinf(rewards).any()
-        value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
-        raise ValueError(
-            f"The rewards returned by the environment contain {value_name} values. This usually indicates a bug in the"
-            " environment's reward computation."
-        )
-    if not torch.isfinite(dones).all():
-        has_nan = torch.isnan(dones).any()
-        has_inf = torch.isinf(dones).any()
-        value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
-        raise ValueError(
-            f"The dones returned by the environment contain {value_name} values. This usually indicates a bug in the"
-            " environment's termination logic."
-        )
-    if extras is not None and extras.get("final_obs") is not None:
+    flags = {f"observation group '{key}'": ~torch.isfinite(tensor).all() for key, tensor in obs.items()}
+    flags["rewards"] = ~torch.isfinite(rewards).all()
+    flags["dones"] = ~torch.isfinite(dones).all()
+    final_obs = extras.get("final_obs") if extras is not None else None
+    if final_obs is not None:
         done_mask = dones.reshape(-1).bool()
-        for key, tensor in extras["final_obs"].items():
-            tensor = tensor[done_mask.to(tensor.device)]
-            if not torch.isfinite(tensor).all():
-                has_nan = torch.isnan(tensor).any()
-                has_inf = torch.isinf(tensor).any()
-                value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
-                raise ValueError(
-                    f"The final observation group '{key}' returned by the environment contains {value_name} values."
-                    " This usually indicates a bug in the environment's step() function."
-                )
+        for key, tensor in final_obs.items():
+            mask = done_mask.to(tensor.device).reshape(-1, *([1] * (tensor.ndim - 1)))
+            flags[f"final observation group '{key}'"] = ~(torch.isfinite(tensor) | ~mask).all()
+    return flags
+
+
+def raise_if_nonfinite(flags: dict[str, torch.Tensor]) -> None:
+    """Raise ``ValueError`` naming the environment outputs whose flag from :func:`find_nonfinite` is set."""
+    if not flags:
+        return
+    device = next(iter(flags.values())).device
+    values = torch.stack([flag.to(device) for flag in flags.values()]).tolist()
+    sources = [source for source, value in zip(flags, values) if value]
+    if sources:
+        raise ValueError(
+            f"The {', '.join(sources)} returned by the environment contained NaN or Inf values. This usually indicates"
+            " a bug in the environment's step() or reset() function."
+        )
 
 
 def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.Module:
