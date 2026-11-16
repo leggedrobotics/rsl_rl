@@ -397,3 +397,21 @@ def test_cuda_graph_delayed_actor_and_resume() -> None:
     runner.learn(1)
     assert runner.alg.num_critic_updates == 60
     assert all(torch.isfinite(p).all() for p in runner.alg.actor.parameters())
+
+
+def test_target_normalization_is_current_on_first_bootstrap() -> None:
+    """The first target forward uses the same updated input statistics as the online critic."""
+    alg = _build_sac()
+    alg.num_updates = 1
+    obs = DummyEnv().get_observations() + 100.0
+    alg.act(obs)
+    alg.process_env_step(obs + 1.0, torch.ones(4), torch.zeros(4, dtype=torch.bool), {})
+    seen = []
+    handle = alg.target_critics[0].obs_normalizer.register_forward_hook(
+        lambda module, inputs, output: seen.append((inputs[0].clone(), output.clone()))
+    )
+    alg.update()
+    handle.remove()
+    assert len(seen) == 1
+    inputs, actual = seen[0]
+    torch.testing.assert_close(actual, alg.critics[0].obs_normalizer(inputs))

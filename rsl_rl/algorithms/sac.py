@@ -288,8 +288,12 @@ class SAC:
         if self._num_steps_since_update:
             observations = self.storage.latest_observations(self._num_steps_since_update)
             self.actor.update_normalization(observations)  # type: ignore
-            for critic in self.critics:
+            for critic, target in zip(self.critics, self.target_critics):
                 critic.update_normalization(observations)  # type: ignore
+                for target_buffer, source_buffer in zip(
+                    target.obs_normalizer.buffers(), critic.obs_normalizer.buffers()
+                ):
+                    target_buffer.copy_(source_buffer)
             self._num_steps_since_update = 0
 
         # Wait until enough transitions have been collected
