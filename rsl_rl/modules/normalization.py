@@ -48,6 +48,7 @@ class EmpiricalNormalization(nn.Module):
         return (x - self._mean) / (self._std + self.eps)  # type: ignore
 
     @torch.jit.unused
+    @torch.no_grad()
     def update(self, x: torch.Tensor) -> None:
         """Learn input values without computing the output values of them."""
         if not self.training:
