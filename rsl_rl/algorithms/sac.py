@@ -321,6 +321,7 @@ class SAC:
         metrics = _to_floats({**totals, **self._get_model_stats()})
         losses: dict[str, float] = {}
         stats = self._get_learning_rate_stats()
+
         # Average accumulated metrics and separate losses from statistics
         for key, value in metrics.items():
             if key in totals:
@@ -331,6 +332,7 @@ class SAC:
                     losses[key] = value
             else:
                 stats[key] = value
+
         return losses, stats
 
     def train_mode(self) -> None:
