@@ -348,6 +348,40 @@ def _mirror(
     )
 
 
+def test_logging_only_symmetry_preserves_batch_normalized_training() -> None:
+    """Recording symmetry metrics leaves seeded SAC parameters and deployed actions unchanged."""
+    outcomes = []
+    for log_symmetry in (False, True):
+        torch.manual_seed(17)
+        cfg = _make_train_cfg()
+        cfg["multi_gpu"] = None
+        cfg["actor"].update(
+            obs_normalization=False,
+            network_cfg={"class_name": "ResidualMLP", "hidden_dim": 8, "num_blocks": 1},
+        )
+        cfg["algorithm"].update(num_updates=2, actor_update_interval=1)
+        if log_symmetry:
+            cfg["algorithm"]["symmetry_cfg"] = {"data_augmentation_func": _mirror}
+        env = DummyEnv()
+        algorithm = SAC.construct_algorithm(env.get_observations(), env, cfg, "cpu")
+        algorithm.train_mode()
+        observations = env.get_observations()
+        with torch.inference_mode():
+            for _ in range(4):
+                observations, rewards, dones, extras = env.step(algorithm.act(observations))
+                algorithm.process_env_step(observations, rewards, dones, extras)
+        losses, _ = algorithm.update()
+        assert all(torch.isfinite(torch.tensor(value)) for value in losses.values())
+        algorithm.eval_mode()
+        with torch.inference_mode():
+            actions = algorithm.actor(observations).clone()
+        outcomes.append((algorithm.actor.state_dict(), algorithm.critics.state_dict(), actions))
+    for reference, measured in zip(outcomes[0][:2], outcomes[1][:2]):
+        for name in reference:
+            torch.testing.assert_close(measured[name], reference[name], rtol=0.0, atol=0.0)
+    torch.testing.assert_close(outcomes[0][2], outcomes[1][2], rtol=0.0, atol=0.0)
+
+
 @pytest.mark.parametrize("augmentation", [False, True])
 def test_symmetry_replay_endpoints_and_actor_loss(augmentation: bool) -> None:
     """Symmetry handles replay endpoint pairs and the existing auxiliary actor loss."""
