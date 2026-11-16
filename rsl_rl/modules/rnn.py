@@ -42,8 +42,6 @@ class RNN(nn.Module):
         batch_mode = masks is not None
         if batch_mode:
             # Batch mode needs saved hidden states
-            if hidden_state is None:
-                raise ValueError("Hidden states not passed to RNN module during policy update")
             out, _ = self.rnn(input, hidden_state)
             out = unpad_trajectories(out, masks)
         else:
