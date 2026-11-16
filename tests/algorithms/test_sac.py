@@ -297,6 +297,33 @@ def test_terminal_observations_and_missing_final() -> None:
         limited.process_env_step(obs, torch.ones(4), torch.zeros(4), {})
 
 
+def test_actor_update_preserves_frozen_critic_parameters() -> None:
+    """Actor updates must retain the critic's existing frozen parameters."""
+    torch.manual_seed(0)
+    alg = _build_sac()
+    frozen = next(alg.critics[0].parameters())
+    frozen.requires_grad_(False)
+    frozen_before = frozen.detach().clone()
+    actor_before = [parameter.detach().clone() for parameter in alg.actor.parameters()]
+    critic_before = [parameter.detach().clone() for parameter in alg.critics[1].parameters()]
+    obs = DummyEnv().get_observations()
+    alg.act(obs)
+    alg.process_env_step(obs, torch.ones(4), torch.zeros(4), {})
+    batch = alg._sample_batch()
+
+    alg._update_actor_and_alpha(batch)
+
+    assert not frozen.requires_grad
+    assert frozen.grad is None
+    assert any(not torch.equal(before, after) for before, after in zip(actor_before, alg.actor.parameters()))
+
+    alg._update_critics(batch)
+
+    torch.testing.assert_close(frozen, frozen_before, rtol=0, atol=0)
+    assert frozen.grad is None
+    assert any(not torch.equal(before, after) for before, after in zip(critic_before, alg.critics[1].parameters()))
+
+
 @pytest.mark.parametrize(("network", "mixed_precision"), [(None, False), ("ResidualMLP", False), (None, True)])
 def test_opt_in_flash_components_and_export(network: str | None, mixed_precision: bool, tmp_path: Path) -> None:
     """Categorical updates, return scaling, held noise and residual export work through the standard runner."""

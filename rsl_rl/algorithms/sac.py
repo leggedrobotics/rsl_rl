@@ -580,14 +580,19 @@ class SAC:
 
             # Evaluate policy actions without accumulating critic parameter gradients
             normalized_actions = self._normalize_actions(actions)
-            self.critics.requires_grad_(False)
+            trainable_critic_parameters = [
+                parameter for parameter in self.critics.parameters() if parameter.requires_grad
+            ]
+            for parameter in trainable_critic_parameters:
+                parameter.requires_grad_(False)
             try:
                 with _BatchNormMode(self._critic_batch_norms, training=False):
                     q_values = torch.stack([
                         self._expected_value(critic(batch.observations, normalized_actions)) for critic in self.critics
                     ])
             finally:
-                self.critics.requires_grad_(True)
+                for parameter in trainable_critic_parameters:
+                    parameter.requires_grad_(True)
 
             # Compute the actor objective
             q_value = q_values.min(dim=0).values
