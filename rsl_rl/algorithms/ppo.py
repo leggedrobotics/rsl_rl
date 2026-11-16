@@ -141,7 +141,7 @@ class PPO:
         return self.transition.actions  # type: ignore
 
     def process_env_step(
-        self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
+        self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict
     ) -> dict[str, torch.Tensor]:
         """Record one environment step and return per-environment values that the logger sums over each episode."""
         step_dict = {"Training/mean_reward": rewards}
@@ -160,8 +160,30 @@ class PPO:
             step_dict["Rnd/mean_intrinsic_reward"] = self.intrinsic_rewards
         # Bootstrapping on time outs
         if "time_outs" in extras:
+            time_outs = extras["time_outs"].to(self.device).reshape(-1)
+            bootstrap_values = self.transition.values
+            final_obs = extras.get("final_obs")
+            if final_obs is not None and time_outs.any():
+                groups = self.critic.obs_groups + getattr(self.critic, "obs_groups_2d", [])
+                bootstrap_obs = TensorDict(
+                    {
+                        key: torch.where(
+                            time_outs.bool().reshape(-1, *([1] * (obs[key].ndim - 1))),
+                            final_obs[key].to(self.device),
+                            obs[key],
+                        )
+                        for key in groups
+                    },
+                    batch_size=obs.batch_size,
+                )
+                hidden_state = self.critic.get_hidden_state()
+                try:
+                    with torch.no_grad():
+                        bootstrap_values = self.critic(bootstrap_obs)
+                finally:
+                    self.critic.reset(hidden_state=hidden_state)
             self.transition.rewards += self.gamma * torch.squeeze(
-                self.transition.values * extras["time_outs"].unsqueeze(1).to(self.device),  # type: ignore
+                bootstrap_values * time_outs.unsqueeze(1),  # type: ignore
                 1,
             )
         # Record the transition

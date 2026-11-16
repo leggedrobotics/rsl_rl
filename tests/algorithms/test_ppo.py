@@ -547,3 +547,36 @@ class TestSharedCNNEncoders:
         assert ppo.optimizer.state[shared]["step"] == 1
         # The first Adam step moves each parameter by the learning rate
         torch.testing.assert_close((before - shared.detach()).abs().max().item(), 1e-3, atol=1e-6, rtol=0)
+
+
+@pytest.mark.parametrize("critic_kind", ["mlp", "gru", "lstm"])
+def test_timeout_bootstrap_uses_final_observations(critic_kind: str) -> None:
+    """Use post-action values for timeouts without advancing continuing recurrent states."""
+    obs = make_obs(NUM_ENVS, OBS_DIM)
+    groups = {"actor": ["policy"], "critic": ["policy"]}
+    critic = (
+        _make_critic(obs, groups)
+        if critic_kind == "mlp"
+        else RNNModel(obs, groups, "critic", 1, hidden_dims=[16], rnn_hidden_dim=8, rnn_type=critic_kind)
+    )
+    storage = RolloutStorage("rl", NUM_ENVS, 1, obs, [NUM_ACTIONS])
+    ppo = PPO(_make_actor(obs, groups), critic, storage)
+    dones = torch.tensor([True, True, False, False])
+    time_outs = torch.tensor([True, False, False, False])
+    final_obs = obs + 10.0
+    rewards = torch.arange(1, NUM_ENVS + 1).float()
+    with torch.no_grad():
+        ppo.act(obs)
+        reference = copy.deepcopy(critic)
+        expected = rewards + ppo.gamma * reference(final_obs).squeeze(-1) * time_outs
+        state = copy.deepcopy(critic.get_hidden_state())
+        final_obs["policy"][~time_outs] = float("nan")
+        ppo.process_env_step(obs - 10.0, rewards, dones, {"time_outs": time_outs, "final_obs": final_obs})
+    torch.testing.assert_close(storage.rewards[0, :, 0], expected)
+    if state is not None:
+        before = (state,) if isinstance(state, torch.Tensor) else state
+        after = critic.get_hidden_state()
+        after = (after,) if isinstance(after, torch.Tensor) else after
+        for expected_state, actual_state in zip(before, after):
+            expected_state[:, dones] = 0
+            torch.testing.assert_close(actual_state, expected_state)
