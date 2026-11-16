@@ -120,6 +120,31 @@ Neptune
 All logging backends are accessed through a common logger interface, and can be used with both single-GPU and
 distributed multi-GPU training workflows.
 
+Policy Export
+^^^^^^^^^^^^^
+
+The ``extras`` branch supports an optional dynamic batch dimension through the existing
+:func:`~rsl_rl.runners.on_policy_runner.OnPolicyRunner.export_policy_to_onnx` method:
+
+.. code-block:: python
+
+   runner.export_policy_to_onnx("logs/exported", dynamic_batch=True)
+
+This allows one ONNX policy to evaluate multiple environments in a batch. MLP and CNN observations and actions use
+batch axis 0; GRU and LSTM hidden/cell inputs and outputs use batch axis 1. All these axes share the ``batch`` symbol.
+Observation feature dimensions, image sizes, recurrent layer counts and hidden sizes remain fixed. Recurrent callers
+must supply one state per batch element and can feed the exported state outputs into the next inference step.
+
+The optional path explicitly selects the TorchScript ONNX exporter with ``dynamo=False`` and dynamic axes. It does
+not retry another exporter on failure. This route has been checked on PyTorch 2.6.0 and 2.15.0 for MLP, CNN, GRU and LSTM
+policies. The modern exporter in PyTorch 2.6 cannot handle the tested dynamic LSTM, while current PyTorch deprecates
+the legacy exporter; applications should account for that support boundary when choosing their PyTorch version.
+Omitting ``dynamic_batch`` keeps the existing fixed-batch export behavior and exporter selection.
+
+Validation uses ONNX's reference evaluator for actions and recurrent states at batch sizes 1, 3 and 7. Compatibility
+with deployment-specific runtimes and inference throughput depend on the target environment and are not established
+by this export option.
+
 .. _core-components:
 
 Core Components

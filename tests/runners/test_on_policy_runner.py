@@ -8,12 +8,15 @@
 from __future__ import annotations
 
 import copy
+import numpy as np
 import pathlib
 import tempfile
 import torch
 from tensordict import TensorDict
 
+import onnx
 import pytest
+from onnx.reference import ReferenceEvaluator
 
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner
@@ -335,3 +338,62 @@ class TestLoggingWriterLifecycle:
         runner = OnPolicyRunner(DummyEnv(), cfg, log_dir=str(tmp_path), device="cpu")
         runner.learn(num_learning_iterations=2)
         assert runner.logger.writer.calls == ["stop"]
+
+
+class TestOnnxBatchExport:
+    """Check ONNX batch dimensions and inference through the public export method."""
+
+    @pytest.mark.parametrize("model_type", ["mlp", "cnn", "gru", "lstm"])
+    @pytest.mark.parametrize("dynamic_batch", [False, True])
+    def test_batch_shape_and_inference(self, model_type: str, dynamic_batch: bool, tmp_path: pathlib.Path) -> None:
+        """Dynamic exports accept multiple batches and preserve recurrent state data flow."""
+        torch.manual_seed(19)
+        recurrent = model_type in ("gru", "lstm")
+        cfg = _make_train_cfg("rnn" if recurrent else model_type)
+        if recurrent:
+            cfg["actor"]["rnn_type"] = model_type
+            cfg["actor"]["rnn_num_layers"] = 2
+        runner = OnPolicyRunner(DummyEnv(include_image=model_type == "cnn"), cfg, log_dir=None, device="cpu")
+        if dynamic_batch:
+            runner.export_policy_to_onnx(str(tmp_path), dynamic_batch=True)
+        else:
+            runner.export_policy_to_onnx(str(tmp_path))
+        model = onnx.load(tmp_path / "policy.onnx")
+        onnx.checker.check_model(model)
+        model = onnx.shape_inference.infer_shapes(model, strict_mode=True)
+        for values in (model.graph.input, model.graph.output):
+            for index, value in enumerate(values):
+                axis = 1 if recurrent and index > 0 else 0
+                dimensions = value.type.tensor_type.shape.dim
+                if dynamic_batch:
+                    assert dimensions[axis].dim_param == "batch"
+                else:
+                    assert dimensions[axis].dim_value == 1
+                assert all(dim.HasField("dim_value") for i, dim in enumerate(dimensions) if i != axis)
+
+        wrapper = runner.alg.get_policy().as_onnx().cpu().eval()
+        examples = wrapper.get_dummy_inputs()
+        evaluator = ReferenceEvaluator(model)
+        for batch_size in (1, 3, 7) if dynamic_batch else (1,):
+            inputs = tuple(
+                torch.randn(*[
+                    batch_size if i == (1 if recurrent and index > 0 else 0) else size
+                    for i, size in enumerate(example.shape)
+                ])
+                for index, example in enumerate(examples)
+            )
+            feeds = {name: value.numpy() for name, value in zip(wrapper.input_names, inputs)}
+            for _ in range(2 if recurrent else 1):
+                with torch.no_grad():
+                    expected = wrapper(*inputs)
+                expected = (
+                    (expected,) if isinstance(expected, torch.Tensor) else tuple(x for x in expected if x is not None)
+                )
+                actual = evaluator.run(None, feeds)
+                assert len(actual) == len(expected)
+                for result, reference in zip(actual, expected):
+                    np.testing.assert_allclose(result, reference.numpy(), rtol=2e-5, atol=2e-6)
+                if recurrent:
+                    next_obs = torch.randn_like(inputs[0])
+                    inputs = (next_obs, *expected[1:])
+                    feeds = dict(zip(wrapper.input_names, (next_obs.numpy(), *actual[1:])))

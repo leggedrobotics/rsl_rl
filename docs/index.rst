@@ -47,6 +47,7 @@ the core library. These features, mostly contributed by the community, are liste
 :ref:`overview <library-features>`.
 
 - **Equivariant MLP model** that enforces robot symmetries (e.g. left-right mirroring) by construction.
+- **Dynamic-batch ONNX export** for batched MLP, CNN, GRU and LSTM policy inference.
 
 Learning Environments
 ---------------------
