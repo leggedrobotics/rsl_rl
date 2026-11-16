@@ -96,6 +96,19 @@ class TestEmpiricalNormalization:
         assert not torch.any(torch.isnan(norm._mean))
         assert not torch.any(torch.isnan(norm._std))
 
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_low_precision_observations_keep_finite_moments(self, dtype: torch.dtype) -> None:
+        """Low-precision observations must not overflow or round running moments."""
+        norm = EmpiricalNormalization(shape=1, eps=0.0)
+        data = torch.tensor([[0.0], [1000.0]], dtype=dtype)
+        expected = data.double()
+
+        norm.update(data)
+
+        torch.testing.assert_close(norm.mean.double(), expected.mean(dim=0))
+        torch.testing.assert_close(norm.std.double(), expected.std(dim=0, unbiased=False))
+        torch.testing.assert_close(norm(data).double(), torch.tensor([[-1.0], [1.0]], dtype=torch.float64))
+
     def test_distributed_update_combines_mean_and_variance(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Distributed updates should match moments computed from samples on all ranks."""
         norm = EmpiricalNormalization(shape=1)
