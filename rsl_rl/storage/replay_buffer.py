@@ -118,60 +118,10 @@ class ReplayBuffer:
         """Return the number of stored transitions across all environments."""
         return self.num_steps * self.num_envs
 
-    def _initialize_storage(self, transition: ReplayBuffer.Transition) -> None:
-        """Allocate replay tensors using the shapes and dtypes of the first transition."""
-        # Limit capacity to the configured fraction of free GPU memory
-        if self.max_memory_fraction is not None and torch.device(self.device).type == "cuda":
-            free_memory, _ = torch.cuda.mem_get_info(torch.device(self.device))
-            bytes_per_step = sum(
-                value.numel() * value.element_size()  # type: ignore
-                for value in (
-                    *transition.observations.values(include_nested=True, leaves_only=True),
-                    transition.actions,
-                    transition.rewards,
-                    *transition.next_observations.values(include_nested=True, leaves_only=True),
-                    transition.dones,
-                    transition.terminated,
-                )
-            )
-            num_affordable_steps = int(self.max_memory_fraction * free_memory) // bytes_per_step
-            if num_affordable_steps < self.num_slots:
-                warnings.warn(
-                    f"Reducing replay from {self.num_slots} to {num_affordable_steps} steps per environment"
-                    " to fit the configured GPU memory fraction.",
-                )
-                self.num_slots = num_affordable_steps
-
-        # Ensure the minimum replay window still fits
-        if self.num_slots < self.min_steps_per_env:
-            raise ValueError(f"Replay capacity must hold at least {self.min_steps_per_env} steps per environment.")
-
-        # Allocate mutable tensors even when collection runs under inference mode
-        with torch.inference_mode(False):
-            self.observations = TensorDict(
-                {
-                    key: torch.empty(self.num_slots, *value.shape, dtype=value.dtype, device=self.device)
-                    for key, value in transition.observations.items(include_nested=True, leaves_only=True)
-                },
-                batch_size=[self.num_slots, self.num_envs],
-                device=self.device,
-            )
-            self.actions = torch.empty(
-                self.num_slots, *transition.actions.shape, dtype=transition.actions.dtype, device=self.device
-            )
-            self.rewards = torch.empty(
-                self.num_slots, *transition.rewards.shape, dtype=transition.rewards.dtype, device=self.device
-            )
-            self.next_observations = TensorDict(
-                {
-                    key: torch.empty(self.num_slots, *value.shape, dtype=value.dtype, device=self.device)
-                    for key, value in transition.next_observations.items(include_nested=True, leaves_only=True)
-                },
-                batch_size=[self.num_slots, self.num_envs],
-                device=self.device,
-            )
-            self.dones = torch.empty(self.num_slots, self.num_envs, dtype=torch.bool, device=self.device)
-            self.terminated = torch.empty(self.num_slots, self.num_envs, dtype=torch.bool, device=self.device)
+    @property
+    def write_index(self) -> torch.Tensor:
+        """Device tensor with the slot that the next :meth:`write_transition` writes to."""
+        return self._step_tensor
 
     @torch.no_grad()
     def add_transition(self, transition: ReplayBuffer.Transition) -> None:
@@ -213,10 +163,12 @@ class ReplayBuffer:
         self.step = (self.step + 1) % self.num_slots
         self.num_steps = min(self.num_steps + 1, self.num_slots)
 
-    @property
-    def write_index(self) -> torch.Tensor:
-        """Device tensor with the slot that the next :meth:`write_transition` writes to."""
-        return self._step_tensor
+    def clear(self) -> None:
+        """Discard stored transitions while retaining allocated memory."""
+        self.num_steps = 0
+        self.step = 0
+        self._num_steps_tensor.zero_()
+        self._step_tensor.zero_()
 
     def latest_indices(self, num_steps: int) -> torch.Tensor:
         """Return the slots of the latest ``num_steps`` transitions, oldest first."""
@@ -276,9 +228,57 @@ class ReplayBuffer:
             terminated=self.terminated[last, env_ids],  # type: ignore
         )
 
-    def clear(self) -> None:
-        """Discard stored transitions while retaining allocated memory."""
-        self.num_steps = 0
-        self.step = 0
-        self._num_steps_tensor.zero_()
-        self._step_tensor.zero_()
+    def _initialize_storage(self, transition: ReplayBuffer.Transition) -> None:
+        """Allocate replay tensors using the shapes and dtypes of the first transition."""
+        # Limit capacity to the configured fraction of free GPU memory
+        if self.max_memory_fraction is not None and torch.device(self.device).type == "cuda":
+            free_memory, _ = torch.cuda.mem_get_info(torch.device(self.device))
+            bytes_per_step = sum(
+                value.numel() * value.element_size()  # type: ignore
+                for value in (
+                    *transition.observations.values(include_nested=True, leaves_only=True),
+                    transition.actions,
+                    transition.rewards,
+                    *transition.next_observations.values(include_nested=True, leaves_only=True),
+                    transition.dones,
+                    transition.terminated,
+                )
+            )
+            num_affordable_steps = int(self.max_memory_fraction * free_memory) // bytes_per_step
+            if num_affordable_steps < self.num_slots:
+                warnings.warn(
+                    f"Reducing replay from {self.num_slots} to {num_affordable_steps} steps per environment"
+                    " to fit the configured GPU memory fraction.",
+                )
+                self.num_slots = num_affordable_steps
+
+        # Ensure the minimum replay window still fits
+        if self.num_slots < self.min_steps_per_env:
+            raise ValueError(f"Replay capacity must hold at least {self.min_steps_per_env} steps per environment.")
+
+        # Allocate mutable tensors even when collection runs under inference mode
+        with torch.inference_mode(False):
+            self.observations = TensorDict(
+                {
+                    key: torch.empty(self.num_slots, *value.shape, dtype=value.dtype, device=self.device)
+                    for key, value in transition.observations.items(include_nested=True, leaves_only=True)
+                },
+                batch_size=[self.num_slots, self.num_envs],
+                device=self.device,
+            )
+            self.actions = torch.empty(
+                self.num_slots, *transition.actions.shape, dtype=transition.actions.dtype, device=self.device
+            )
+            self.rewards = torch.empty(
+                self.num_slots, *transition.rewards.shape, dtype=transition.rewards.dtype, device=self.device
+            )
+            self.next_observations = TensorDict(
+                {
+                    key: torch.empty(self.num_slots, *value.shape, dtype=value.dtype, device=self.device)
+                    for key, value in transition.next_observations.items(include_nested=True, leaves_only=True)
+                },
+                batch_size=[self.num_slots, self.num_envs],
+                device=self.device,
+            )
+            self.dones = torch.empty(self.num_slots, self.num_envs, dtype=torch.bool, device=self.device)
+            self.terminated = torch.empty(self.num_slots, self.num_envs, dtype=torch.bool, device=self.device)

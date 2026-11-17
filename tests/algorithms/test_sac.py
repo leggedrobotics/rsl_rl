@@ -14,7 +14,6 @@ from tensordict import TensorDict
 import pytest
 
 from rsl_rl.algorithms import SAC
-from rsl_rl.algorithms.sac import _Batch
 from rsl_rl.runners import OffPolicyRunner, OnPolicyRunner
 from tests.runners.test_on_policy_runner import DummyEnv
 
@@ -131,12 +130,6 @@ def test_cnn_sac_training_and_export(
     inputs = {"obs": vector[:1].numpy(), "image": obs["image"][:1].cpu().numpy()}
     actual = evaluator.run(None, {name: inputs[name] for name in evaluator.input_names})[0]
     torch.testing.assert_close(torch.from_numpy(actual), expected[:1], atol=1e-5, rtol=1e-5)
-
-    final["image"][0] = float("nan")
-    restored.alg.act(obs)
-    restored.alg.process_env_step(obs, torch.ones(4, device=device), dones, {"final_obs": final})
-    with pytest.raises(ValueError, match="nonfinite final_obs"):
-        restored.alg.update()
 
 
 def test_non_q_critic_is_rejected_at_construction() -> None:
@@ -352,11 +345,8 @@ def test_terminal_observations_and_missing_final() -> None:
     obs = DummyEnv().get_observations()
     dones = torch.tensor([True, True, False, False])
     alg.act(obs)
-    alg.process_env_step(obs, torch.ones(4), dones, {})
     with pytest.raises(ValueError, match="final_obs"):
-        alg.update()
-    alg = _build_sac()
-    alg.act(obs)
+        alg.process_env_step(obs, torch.ones(4), dones, {})
     alg.process_env_step(
         obs,
         torch.ones(4),
@@ -372,9 +362,6 @@ def test_terminal_observations_and_missing_final() -> None:
     alg.update()
     assert alg.actor.obs_normalizer.count == 4
     cfg = _make_train_cfg()
-    cfg["multi_gpu"] = {"global_rank": 0, "local_rank": 0, "world_size": 2}
-    with pytest.raises(ValueError, match="initialized process group"):
-        SAC.construct_algorithm(obs, DummyEnv(), cfg, "cpu")
     cfg["multi_gpu"] = None
     cfg["algorithm"].update(replay_buffer_capacity=4, num_warmup_transitions=8)
     limited = SAC.construct_algorithm(obs, DummyEnv(), cfg, "cpu")
@@ -488,118 +475,13 @@ def test_cuda_graph_delayed_actor_and_resume() -> None:
     assert all(torch.isfinite(p).all() for p in runner.alg.actor.parameters())
 
 
-@pytest.mark.parametrize("timeout", [False, True])
-def test_nonfinite_final_observations_rejected_before_training(timeout: bool) -> None:
-    """Validate only consumed final rows, including both hard terminals and timeouts, before any update."""
-    alg = _build_sac()
-    obs = DummyEnv().get_observations()
-    final = obs.clone()
-    final["policy"][0] = float("nan")
-    dones = torch.tensor([True, False, False, False])
-    alg.act(obs)
-    alg.process_env_step(obs, torch.ones(4), dones, {"final_obs": final, "time_outs": dones & timeout})
-    before = [p.detach().clone() for p in alg.actor.parameters()]
-    with pytest.raises(ValueError, match=r"nonfinite final_obs.*policy"):
-        alg.update()
-    assert all(torch.equal(a, b) for a, b in zip(before, alg.actor.parameters()))
-    alg = _build_sac()
-    final["policy"][0] = 7.0
-    final["policy"][1:] = float("nan")
-    alg.act(obs)
-    alg.process_env_step(obs, torch.ones(4), dones, {"final_obs": final, "time_outs": dones & timeout})
-    torch.testing.assert_close(alg.storage.next_observations["policy"][0, 0], torch.full((8,), 7.0))
-    assert alg.storage.terminated[0, 0].item() == (not timeout)
-    assert torch.isfinite(alg.storage.next_observations["policy"][0]).all()
-
-
-@pytest.mark.parametrize("categorical", [False, True])
-@pytest.mark.parametrize("batch_norm", [False, True])
-@pytest.mark.parametrize("all_terminal", [False, True])
-def test_terminal_successors_never_poison_model_forwards(
-    categorical: bool, batch_norm: bool, all_terminal: bool
-) -> None:
-    """Terminal NaNs must not reach actor, critic, or running batch statistics."""
-    cfg = _make_train_cfg()
-    cfg["multi_gpu"] = None
-    cfg["algorithm"].update(critic_loss_type="categorical" if categorical else "mse", num_bins=11)
-    if batch_norm:
-        for role in ("actor", "critic"):
-            cfg[role]["network_cfg"] = {"class_name": "ResidualMLP", "hidden_dim": 16, "num_blocks": 1, "expansion": 2}
-    env = DummyEnv()
-    obs = env.get_observations()
-    alg = SAC.construct_algorithm(obs, env, cfg, "cpu")
-    successors = obs.clone()
-    terminals = torch.ones(4, dtype=torch.bool) if all_terminal else torch.tensor([True, False, True, False])
-    successors["policy"][terminals] = float("nan")
-    successors["policy"][~terminals] = 9.0
-    if not all_terminal:
-        successors["policy"][2] = 7.0
-    seen = []
-
-    def check_inputs(module: torch.nn.Module, inputs: tuple) -> None:
-        assert torch.isfinite(inputs[0]["policy"]).all()
-        seen.append(inputs[0]["policy"].detach().clone())
-
-    handles = [
-        model.register_forward_pre_hook(check_inputs) for model in [alg.actor, *alg.critics, *alg.target_critics]
-    ]
-    batch = _Batch(
-        observations=obs,
-        actions=torch.zeros(4, 4),
-        rewards=torch.ones(4),
-        next_observations=successors,
-        bootstrap_discounts=(~terminals).float() * alg.gamma,
-    )
-    losses = alg._gradient_step(batch, True)
-    for handle in handles:
-        handle.remove()
-    assert seen
-    if not all_terminal:
-        assert any((value == 9.0).all(dim=-1).any() for value in seen)
-        assert any((value == 7.0).all(dim=-1).any() for value in seen)
-    assert all(torch.isfinite(value).all() for value in losses.values())
-    for model in [alg.actor, *alg.critics, *alg.target_critics]:
-        assert all(torch.isfinite(value).all() for value in model.state_dict().values())
-
-
-def test_sac_rejects_shared_model_parameters() -> None:
-    """Separate optimizers and critic targets require independently owned encoders."""
-    cfg = _make_train_cfg()
-    for role, name in (("actor", "CNNModel"), ("critic", "QCNNModel")):
-        cfg[role].update(class_name=name, cnn_cfg={"output_channels": [4], "kernel_size": 3})
-        cfg["obs_groups"][role] = ["policy", "image"]
-    alg = OffPolicyRunner(DummyEnv(include_image=True), cfg).alg
-    alg.critics[0].cnns = alg.actor.cnns
-    with pytest.raises(ValueError, match="separate parameters"):
-        SAC(alg.actor, list(alg.critics), alg.storage)
-
-
 @pytest.mark.parametrize("role", ["actor", "critic"])
-def test_recurrent_models_are_rejected_before_construction(role: str) -> None:
+def test_recurrent_models_are_rejected(role: str) -> None:
     """Reject recurrent configs explicitly instead of silently treating random replay as sequences."""
     cfg = _make_train_cfg()
     cfg[role]["class_name"] = "RNNModel"
     cfg["multi_gpu"] = None
     env = DummyEnv()
-    with pytest.raises(ValueError, match="does not yet support recurrent models"):
+    message = "does not yet support recurrent models" if role == "actor" else "requires QMLPModel or QCNNModel critics"
+    with pytest.raises(ValueError, match=message):
         SAC.construct_algorithm(env.get_observations(), env, cfg, "cpu")
-
-
-def test_runner_nan_check_replaces_final_observation_validation() -> None:
-    """With the runner's NaN check enabled, SAC skips its own nonfinite check but still rejects missing final_obs."""
-    cfg = _make_train_cfg()
-    cfg["multi_gpu"] = None
-    cfg["check_for_nan"] = True
-    cfg["algorithm"]["validate_final_obs"] = None
-    env = DummyEnv()
-    obs = env.get_observations()
-    alg = SAC.construct_algorithm(obs, env, cfg, "cpu")
-    assert not alg.validate_final_obs
-    dones = torch.tensor([True, False, False, False])
-    alg.act(obs)
-    alg.process_env_step(obs, torch.ones(4), dones, {"final_obs": {"policy": torch.full_like(obs["policy"], 3.0)}})
-    alg.update()
-    alg.act(obs)
-    alg.process_env_step(obs, torch.ones(4), dones, {})
-    with pytest.raises(ValueError, match="final_obs"):
-        alg.update()

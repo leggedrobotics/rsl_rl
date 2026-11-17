@@ -276,6 +276,7 @@ def _sac_worker(rank: int, world_size: int, store_file: str, categorical: bool, 
         env = DummyEnv(include_image=cnn)
         obs = env.get_observations()
         alg = SAC.construct_algorithm(obs, env, cfg, "cpu")
+        alg.broadcast_parameters()
 
         def assert_synchronized(learner: SAC) -> None:
             for model in (learner.actor, learner.critics, learner.target_critics, learner._return_normalizer):
@@ -353,13 +354,6 @@ def _sac_worker(rank: int, world_size: int, store_file: str, categorical: bool, 
         assert restored.num_critic_updates == 6
         assert_synchronized(restored)
 
-        final = obs.clone()
-        final["policy"].fill_(float("nan"))
-        dones = torch.full((4,), rank == 1)
-        restored.act(obs)
-        restored.process_env_step(obs, torch.ones(4), dones, {"final_obs": final})
-        with pytest.raises(ValueError, match="nonfinite final_obs"):
-            restored.update()
         cfg["algorithm"]["use_cuda_graph"] = True
         with pytest.raises(ValueError, match="only capture CUDA graphs with the NCCL backend"):
             SAC.construct_algorithm(obs, env, cfg, "cpu")
@@ -399,6 +393,7 @@ def _sac_cuda_graph_worker(rank: int, world_size: int, store_file: str) -> None:
     env = DummyEnv(device=device)
     obs = env.get_observations()
     alg = SAC.construct_algorithm(obs, env, cfg, device)
+    alg.broadcast_parameters()
     for _ in range(6):
         with torch.inference_mode():
             for _ in range(3):

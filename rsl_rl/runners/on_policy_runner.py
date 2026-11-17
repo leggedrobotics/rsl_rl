@@ -145,11 +145,9 @@ class OnPolicyRunner:
             self.logger.abort_logging_writer()
             raise
         finally:
-            # Release captured CUDA graphs, whose NCCL collectives would otherwise block destroying the process group.
-            # Only algorithms that capture CUDA graphs implement this method.
-            release_cuda_graphs = getattr(self.alg, "release_cuda_graphs", None)
-            if self.is_distributed and release_cuda_graphs is not None:
-                release_cuda_graphs()
+            # Release captured CUDA graphs
+            if self.is_distributed and getattr(self.alg, "release_cuda_graphs", None) is not None:
+                self.alg.release_cuda_graphs()  # type: ignore
 
         # Close the run as finished
         self.logger.stop_logging_writer()

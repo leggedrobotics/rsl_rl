@@ -166,7 +166,12 @@ class CNNModel(MLPModel):
 
 
 class QCNNModel(CNNModel):
-    """CNN-based state-action value model with actions concatenated after image encoding."""
+    """CNN-based state-action value model.
+
+    The model concatenates the (optionally normalized) 1D observations and CNN-encoded 2D observations with the actions
+    and maps them to an output of dimension ``output_dim``. This is a scalar Q-value for ``output_dim=1`` or, e.g., the
+    logits of a categorical value distribution.
+    """
 
     def __init__(
         self,
@@ -183,7 +188,22 @@ class QCNNModel(CNNModel):
         cnn_cfg: dict[str, dict] | dict[str, Any] | None = None,
         cnns: nn.ModuleDict | dict[str, nn.Module] | None = None,
     ) -> None:
-        """Initialize CNN encoders and a Q head consuming encoded observations and runtime actions."""
+        """Initialize the Q model.
+
+        Args:
+            obs: Observation Dictionary.
+            obs_groups: Dictionary mapping observation sets to lists of observation groups.
+            obs_set: Observation set to use for this model (e.g., "critic").
+            output_dim: Dimension of the output.
+            action_dim: Dimension of the actions.
+            hidden_dims: Hidden dimensions of the MLP.
+            activation: Activation function of the CNN and MLP.
+            obs_normalization: Whether to normalize the 1D observations before feeding them to the MLP.
+            network_cfg: Configuration dictionary for the network after the CNN encoders. ``None`` uses the default MLP.
+            distribution_cfg: Output distribution configuration. Only ``None`` is supported.
+            cnn_cfg: Configuration of the CNN encoder(s).
+            cnns: CNN modules to use, e.g., for sharing CNNs between actor and critic. If None, new CNNs are created.
+        """
         if distribution_cfg is not None:
             raise ValueError("The QCNNModel does not support an output distribution.")
         self.action_dim = action_dim
@@ -201,20 +221,20 @@ class QCNNModel(CNNModel):
         )
 
     def forward(self, obs: TensorDict, actions: torch.Tensor) -> torch.Tensor:
-        """Evaluate Q while retaining gradients through actions and image encoders."""
+        """Forward pass of the state-action value model."""
         return self.mlp(torch.cat([self.get_latent(obs), actions], dim=-1))
 
-    def _get_latent_dim(self) -> int:
-        """Return the combined vector observation, image latent and action dimension."""
-        return super()._get_latent_dim() + self.action_dim
-
     def as_jit(self) -> nn.Module:
-        """Reject the actor-only TorchScript export interface for state-action critics."""
+        """Critics are not exported to TorchScript."""
         raise NotImplementedError("TorchScript export is not necessary because critics are not exported.")
 
     def as_onnx(self) -> nn.Module:
-        """Reject the actor-only ONNX export interface for state-action critics."""
+        """Critics are not exported to ONNX."""
         raise NotImplementedError("ONNX export is not necessary because critics are not exported.")
+
+    def _get_latent_dim(self) -> int:
+        """Return the combined observation latent and action dimension for the MLP head."""
+        return super()._get_latent_dim() + self.action_dim
 
 
 class _TorchCNNModel(nn.Module):
