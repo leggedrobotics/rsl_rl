@@ -255,10 +255,11 @@ PPO
 SAC
 ^^^
 .. note::
-   SAC requires :class:`~rsl_rl.models.mlp_model.QMLPModel` critics and an actor with a
-   :class:`~rsl_rl.modules.distribution.SquashedGaussianDistribution`. We recommend using 
+   SAC requires :class:`~rsl_rl.models.mlp_model.QMLPModel` or :class:`~rsl_rl.models.cnn_model.QCNNModel` critics and
+   an actor with a :class:`~rsl_rl.modules.distribution.SquashedGaussianDistribution`. We recommend using
    :class:`~rsl_rl.modules.mlp.ResidualMLP` networks for the actor and critics, selected through the model's
-   ``network_cfg`` as described in :ref:`Model Configuration <model-configuration>`.
+   ``network_cfg`` as described in :ref:`Model Configuration <model-configuration>`. Recurrent actors and critics are
+   not supported.
 
 .. list-table::
    :header-rows: 1
@@ -279,7 +280,7 @@ SAC
    * - ``replay_buffer_capacity``
      - int
      - ``10000000``
-     - Number of transitions that can be stored in the replay buffer.
+     - Number of transitions that can be stored in the replay buffer per GPU.
    * - ``max_replay_memory_fraction``
      - float | None
      - ``None``
@@ -291,7 +292,7 @@ SAC
    * - ``batch_size``
      - int
      - ``2048``
-     - Number of transitions sampled per optimization step.
+     - Number of transitions sampled per optimization step per GPU.
    * - ``num_return_steps``
      - int
      - ``3``
@@ -311,7 +312,7 @@ SAC
    * - ``num_warmup_transitions``
      - int
      - ``100000``
-     - Minimum number of transitions in the replay buffer before optimization starts.
+     - Minimum number of transitions in the replay buffer per GPU before optimization starts.
    * - ``actor_learning_rate``
      - float
      - ``0.0001``
@@ -413,6 +414,12 @@ SAC
      - dict | None
      - ``None``
      - Optional symmetry extension configuration.
+   * - ``grad_reduce_bucket_mb``
+     - float
+     - ``25``
+     - Maximum size, in megabytes, of a single packed gradient buffer used when reducing gradients
+       across GPUs during multi-GPU training. Matches
+       :class:`torch.nn.parallel.DistributedDataParallel`'s default ``bucket_cap_mb``.
 
 Distillation
 ^^^^^^^^^^^^
@@ -474,8 +481,9 @@ Model Configuration
 Different algorithms use models for different purposes. For example, :class:`~rsl_rl.algorithms.ppo.PPO` uses an actor
 and a critic, while :class:`~rsl_rl.algorithms.distillation.Distillation` uses a student and a teacher. Even though
 their function may differ, algorithms can generally use the same underlying model classes. Available models include
-:class:`~rsl_rl.models.mlp_model.MLPModel`, :class:`~rsl_rl.models.rnn_model.RNNModel`, and
-:class:`~rsl_rl.models.cnn_model.CNNModel`, and :class:`~rsl_rl.models.mlp_model.QMLPModel`.
+:class:`~rsl_rl.models.mlp_model.MLPModel`, :class:`~rsl_rl.models.rnn_model.RNNModel`,
+:class:`~rsl_rl.models.cnn_model.CNNModel`, :class:`~rsl_rl.models.mlp_model.QMLPModel`, and
+:class:`~rsl_rl.models.cnn_model.QCNNModel`.
 
 MLPModel
 ^^^^^^^^
@@ -697,6 +705,30 @@ the same configuration keys, except that ``distribution_cfg`` must be ``None``.
      - ...
 
 
+QCNNModel
+^^^^^^^^^
+
+The :class:`~rsl_rl.models.cnn_model.QCNNModel` inherits from the :class:`~rsl_rl.models.cnn_model.CNNModel` and shares
+the same configuration keys, except that ``distribution_cfg`` must be ``None``.
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - Model class name. Valid values: ``"QCNNModel"``.
+   * - ...
+     - ...
+     - ...
+     - ...
+
+
 Distribution Configuration
 --------------------------
 
@@ -907,9 +939,14 @@ Symmetry Augmentation
 Example Configuration
 ---------------------
 
-While the previous sections make it seem rather complicated to set up a configuration, the required configuration to run 
-a training with, e.g., :class:`~rsl_rl.algorithms.ppo.PPO` is actually quite simple. The following configuration is
-already sufficient:
+While the previous sections cover many configuration options, only a few are needed to start training. The following
+examples provide minimal configurations for :class:`~rsl_rl.algorithms.ppo.PPO`, :class:`~rsl_rl.algorithms.sac.SAC`,
+and :class:`~rsl_rl.algorithms.distillation.Distillation`.
+
+PPO
+^^^
+
+Use :class:`~rsl_rl.runners.on_policy_runner.OnPolicyRunner` with the following configuration:
 
 .. code-block:: yaml
 
@@ -926,6 +963,52 @@ already sufficient:
      critic:
        class_name: MLPModel
 
+SAC
+^^^
+
+Use :class:`~rsl_rl.runners.off_policy_runner.OffPolicyRunner` with a squashed Gaussian actor and state-action critics:
+
+.. code-block:: yaml
+
+   runner:
+     num_steps_per_env: 8
+     obs_groups: {"actor": ["policy"], "critic": ["policy", "privileged"]}
+     save_interval: 100
+     algorithm:
+       class_name: SAC
+     actor:
+       class_name: MLPModel
+       network_cfg:
+         class_name: ResidualMLP
+       distribution_cfg:
+         class_name: SquashedGaussianDistribution
+     critic:
+       class_name: QMLPModel
+       network_cfg:
+         class_name: ResidualMLP
+
+Distillation
+^^^^^^^^^^^^
+
+Use :class:`~rsl_rl.runners.distillation_runner.DistillationRunner`. The teacher's model configuration and input
+observation groups must match the policy being distilled. This example matches the actor in the PPO example above:
+
+.. code-block:: yaml
+
+   runner:
+     num_steps_per_env: 60
+     obs_groups: {"student": ["policy"], "teacher": ["policy"]}
+     save_interval: 100
+     algorithm:
+       class_name: Distillation
+     student:
+       class_name: MLPModel
+       distribution_cfg:
+         class_name: GaussianDistribution
+     teacher:
+       class_name: MLPModel
+       distribution_cfg:
+         class_name: GaussianDistribution
 
 .. _observation-configuration:
 
