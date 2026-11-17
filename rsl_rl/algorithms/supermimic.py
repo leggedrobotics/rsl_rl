@@ -288,7 +288,6 @@ class SuperMimic:
         self.update_schedule = update_schedule
         self.learning_rate_schedule_unit = learning_rate_schedule_unit
         self.env_steps = 0
-        self._scheduled_updates = 0
         self.num_warmup_steps = num_warmup_steps
         self.num_world_model_warmup_iterations = num_world_model_warmup_iterations
 
@@ -337,7 +336,7 @@ class SuperMimic:
 
         # Initialize update counters and collection state
         self.iteration = 0
-        self._update_debt = 0.0
+        self._update_debt = 1.0 - updates_per_step if update_schedule == "from_start" else 0.0
         self._last_obs: TensorDict | None = None
         self._last_actions: torch.Tensor | None = None
         self._last_previous_actions: torch.Tensor | None = None
@@ -484,7 +483,7 @@ class SuperMimic:
             mirrored.set("window_break", window["window_break"][:count])
             window = torch.cat((mirrored, window[count:]))
         mask = index.valid.float()
-        if self.world_model_window > 1:
+        if not self.world_model_full_windows and self.world_model_window > 1:
             mask[:, 1:] *= torch.cumprod((~window["window_break"][:, :-1]).long(), dim=1)
         return window, mask
 
@@ -537,15 +536,16 @@ class SuperMimic:
         target = self.task.representation.unflatten(window["next_state"])
         scale = torch.maximum(self.world_model.out_norm.std, self.error_floor)
         errors = self.task.world_model_loss(prediction, target, scale)
-        loss = (errors * mask).sum(dim=1).mean()
-        if self.world_model_loss_reduction == "mean":
-            loss = (errors * mask).sum() / mask.sum().clamp(min=1)
-        metrics = {"world_model_error": (errors.detach() * mask).sum() / mask.sum().clamp(min=1)}
+        masked_errors = errors * mask
+        valid_count = mask.sum().clamp(min=1)
+        mean_error = masked_errors.sum() / valid_count
+        loss = mean_error if self.world_model_loss_reduction == "mean" else masked_errors.sum(dim=1).mean()
+        metrics = {"world_model_error": mean_error.detach()}
         if self.task.num_labels:
             bce = nn.functional.binary_cross_entropy_with_logits(
                 torch.stack(logits, 1).float(), window["labels"].float(), reduction="none"
             )
-            label_loss = (bce.mean(dim=-1) * mask).sum() / mask.sum().clamp(min=1)
+            label_loss = (bce.mean(dim=-1) * mask).sum() / valid_count
             loss = loss + label_loss
             metrics["label_loss"] = label_loss.detach()
         self._apply(loss, "world_model", self.world_model)
@@ -710,19 +710,12 @@ class SuperMimic:
         if self._collected_steps:
             totals["window_break_fraction"] = [self._window_break_sum / self._collected_steps]
             self._collected_steps = 0
-        count = 0
-        if self.update_schedule == "from_start":
-            scheduled = int(max(self.env_steps - 1, 0) * self.updates_per_step) + int(self.env_steps > 0)
-            count = scheduled - self._scheduled_updates
-            self._scheduled_updates = scheduled
-            if self.storage.num_steps < self.num_warmup_steps:
-                count = 0
-            self._update_debt = 0.0
-        elif self.storage.num_steps < self.num_warmup_steps:
-            self._update_debt = 0.0
-        else:
-            count = int(self._update_debt + 1e-9)
-            self._update_debt -= count
+        count = max(int(self._update_debt + 1e-9), 0)
+        self._update_debt -= count
+        if self.storage.num_steps < self.num_warmup_steps:
+            count = 0
+            if self.update_schedule == "after_warmup":
+                self._update_debt = 0.0
         for _ in range(count):
             if self.learning_rate_schedule_unit == "env_steps":
                 self._update_learning_rate()
@@ -896,13 +889,14 @@ class SuperMimic:
                 if self.actor_learning_rate_multiplier > 1:
                     self.actor_learning_rate_decay_from = loaded_dict.get("actor_learning_rate_decay_from")
                 self.env_steps = loaded_dict.get("env_steps", 0)
-                self._scheduled_updates = int(max(self.env_steps - 1, 0) * self.updates_per_step) + int(
-                    self.env_steps > 0
-                )
         self.storage.clear()
         self.actor.reset()
         self._last_obs = self._last_actions = self._last_previous_actions = None
         self._update_debt = 0.0
+        if self.update_schedule == "from_start":
+            self._update_debt = (
+                (self.env_steps - 1) * self.updates_per_step % 1 if self.env_steps else 1 - self.updates_per_step
+            )
         self._window_break_sum.zero_()
         self._collected_steps = 0
         self._update_learning_rate()

@@ -607,16 +607,28 @@ def test_collection_schedule_keeps_fractional_credit_through_warmup() -> None:
         ScalarEnv(),
     )
     counts = []
-    for _ in range(11):
+    for _ in range(13):
         _collect(learner, env, 1)
         learner.update()
         counts.append(learner.iteration)
-    assert counts == [0, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4]
+    assert counts == [0, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4]
     for optimizer in learner.optimizers.values():
         assert optimizer.param_groups[0]["lr"] == pytest.approx(2e-4 * 0.03)
-    restored = _learner(learning_rate_schedule_unit="env_steps", num_schedule_updates=10)
+    restored = _learner(
+        updates_per_step=0.4,
+        update_schedule="from_start",
+        num_warmup_steps=4,
+        learning_rate_schedule_unit="env_steps",
+        num_schedule_updates=10,
+    )
     restored.load(copy.deepcopy(learner.save()), None, True)
-    assert restored.env_steps == 11
+    assert restored.env_steps == 13
+    resumed_counts = []
+    for _ in range(6):
+        _collect(restored, env, 1)
+        restored.update()
+        resumed_counts.append(restored.iteration)
+    assert resumed_counts == [4, 4, 4, 4, 4, 5]
 
 
 def test_collection_can_select_actions_before_updating_moments() -> None:
