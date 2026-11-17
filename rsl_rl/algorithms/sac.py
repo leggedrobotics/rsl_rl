@@ -223,7 +223,7 @@ class SAC:
             dict.fromkeys(
                 group
                 for model in (self.actor, *self.critics)
-                for group in model.obs_groups + getattr(model, "obs_groups_2d", [])
+                for group in model.obs_groups + getattr(model, "obs_groups_2d", [])  # type: ignore
             )
         )
 
