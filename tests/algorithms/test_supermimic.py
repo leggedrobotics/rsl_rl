@@ -1014,3 +1014,48 @@ def test_reference_action_is_ignored_unless_enabled() -> None:
         learner.actor.eval()
         action = learner.actor(obs)
     torch.testing.assert_close(action, learner.actor.forward_history(learner.actor.history, obs["goal"]))
+
+
+
+
+def test_task_model_loss_uses_integrated_coordinates_and_valid_mean(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A task may supervise coordinates beyond the predicted increment without window-length scaling."""
+    env, learner = ScalarEnv(), _learner(world_model_loss_reduction="mean")
+    _collect(learner, env, 4)
+    learner.task.num_labels = 0
+
+    def integrated_loss(prediction: State, target: State, scale: torch.Tensor) -> torch.Tensor:
+        coordinate = prediction[0][..., 0]
+        return coordinate * 0 + 2.75
+
+    monkeypatch.setattr(learner.task, "world_model_loss", integrated_loss)
+    result = learner._fit_world_model()
+    assert result["world_model_loss"].item() == pytest.approx(2.75)
+    assert result["world_model_error"].item() == pytest.approx(2.75)
+
+
+def test_raw_world_model_preserves_task_normalized_context() -> None:
+    """Physical residual outputs and fixed-range context bypass empirical rescaling when requested."""
+    model = WorldModel(
+        EuclideanStateRepresentation(1),
+        1,
+        1,
+        1,
+        hidden_dims=(8,),
+        activation="gelu",
+        normalize_output=False,
+        normalize_context=False,
+        zero_initialize_output=False,
+    )
+    state, action, context = torch.ones(4, 1), torch.ones(4, 1) * 2, torch.ones(4, 1) * 0.75
+    model.observe((state,), action, context, (state + 7,))
+    seen = []
+    handle = model.net.register_forward_pre_hook(lambda module, inputs: seen.append(inputs[0].detach()))
+    with torch.no_grad():
+        model.net.output_layer.weight.zero_()
+        model.net.output_layer.bias.fill_(3.0)
+    result = model((state,), action, context)[0]
+    handle.remove()
+    torch.testing.assert_close(result, state + 3)
+    torch.testing.assert_close(seen[0][:, -1:], context)
+    torch.testing.assert_close(seen[0][:, :2], torch.zeros(4, 2))

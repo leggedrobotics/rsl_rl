@@ -29,22 +29,29 @@ class WorldModel(nn.Module):
         hidden_dims: tuple[int, ...] = (2048, 2048, 2048),
         num_labels: int = 0,
         label_hidden_dims: tuple[int, ...] = (512, 512),
+        activation: str = "swish",
+        normalize_output: bool = True,
+        normalize_context: bool = True,
+        zero_initialize_output: bool = True,
     ) -> None:
         """Build normalized residual dynamics and an optional event head."""
         super().__init__()
         self.representation = representation
         self.feature_dim, self.num_actions = feature_dim, num_actions
-        self.in_norm = EmpiricalNormalization(feature_dim + num_actions + context_dim)
+        self.normalize_output = normalize_output
+        self.normalize_context = normalize_context
+        self.in_norm = EmpiricalNormalization(feature_dim + num_actions + (context_dim if normalize_context else 0))
         self.out_norm = EmpiricalNormalization(representation.increment_dim, eps=1e-4)
         self.net = MLP(
             feature_dim + num_actions + context_dim,
             representation.increment_dim,
             hidden_dims,
-            activation="swish",
+            activation=activation,
             norm="layer",
         )
-        nn.init.zeros_(self.net.output_layer.weight)
-        nn.init.zeros_(self.net.output_layer.bias)
+        if zero_initialize_output:
+            nn.init.zeros_(self.net.output_layer.weight)
+            nn.init.zeros_(self.net.output_layer.bias)
         self.label_head = (
             MLP(feature_dim + context_dim, num_labels, label_hidden_dims, norm="layer") if num_labels else None
         )
@@ -55,7 +62,8 @@ class WorldModel(nn.Module):
 
     def observe(self, state: State, actions: torch.Tensor, context: torch.Tensor, successor: State) -> None:
         """Update real-transition input and increment statistics at collection time."""
-        self.in_norm.update(self.inputs(state, actions, context))
+        inputs = self.inputs(state, actions, context)
+        self.in_norm.update(inputs if self.normalize_context else inputs[..., : self.feature_dim + self.num_actions])
         self.out_norm.update(self.representation.increments(state, successor))
 
     def label_logits(self, state: State, context: torch.Tensor) -> torch.Tensor:
@@ -63,13 +71,22 @@ class WorldModel(nn.Module):
         if self.label_head is None:
             raise ValueError("The world model has no event label head.")
         start = self.feature_dim + self.num_actions
-        mean = torch.cat((self.in_norm.mean[: self.feature_dim], self.in_norm.mean[start:]))
-        std = torch.cat((self.in_norm.std[: self.feature_dim], self.in_norm.std[start:])) + self.in_norm.eps
-        features = torch.cat((self.representation.features(state), context), -1)
-        return self.label_head((features - mean) / std)
+        features = self.representation.features(state)
+        features = (features - self.in_norm.mean[: self.feature_dim]) / (
+            self.in_norm.std[: self.feature_dim] + self.in_norm.eps
+        )
+        if self.normalize_context:
+            context = (context - self.in_norm.mean[start:]) / (self.in_norm.std[start:] + self.in_norm.eps)
+        return self.label_head(torch.cat((features, context), -1))
 
     def forward(self, state: State, actions: torch.Tensor, context: torch.Tensor) -> State:
         """Integrate the predicted physical increment without detaching its inputs."""
-        increment = self.net(self.in_norm(self.inputs(state, actions, context))).float()
-        increment = self.out_norm.inverse(increment)
+        inputs = self.inputs(state, actions, context)
+        if self.normalize_context:
+            inputs = self.in_norm(inputs)
+        else:
+            inputs = torch.cat((self.in_norm(inputs[..., : self.feature_dim + self.num_actions]), context), -1)
+        increment = self.net(inputs).float()
+        if self.normalize_output:
+            increment = self.out_norm.inverse(increment)
         return self.representation.integrate(state, increment)

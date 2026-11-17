@@ -66,6 +66,7 @@ class SuperMimic:
         world_model_window: int = 8,
         world_model_batch_size: int = 2048,
         world_model_mirror_fraction: float = 0.0,
+        world_model_loss_reduction: str = "sum",
         # Policy parameters
         num_policy_updates: int = 1,
         horizon: int = 32,
@@ -78,6 +79,8 @@ class SuperMimic:
         lam: float = 0.95,
         num_critic_epochs: int = 5,
         num_critic_mini_batches: int = 4,
+        critic_survival_weighting: bool = True,
+        critic_bootstrap_clipping: bool = True,
         # Optimizer parameters
         learning_rate: float = 2e-4,
         actor_learning_rate: float | None = None,
@@ -118,6 +121,7 @@ class SuperMimic:
             world_model_batch_size: Replay anchors per dynamics optimizer step.
             world_model_mirror_fraction: Fraction of each dynamics batch replaced by its left-right mirror image from
                 :meth:`DifferentiableTask.mirror`.
+            world_model_loss_reduction: Sum over a replay window or mean over all valid positions.
             num_policy_updates: Actor updates and associated critic fits per learner iteration.
             horizon: Imagined policy horizon.
             policy_batch_size: Starts per actor update.
@@ -129,6 +133,8 @@ class SuperMimic:
             lam: TD(lambda) mixing coefficient for value targets.
             num_critic_epochs: Epochs per critic fit.
             num_critic_mini_batches: Minibatches per critic epoch.
+            critic_survival_weighting: Weight value regression by imagined survival probabilities.
+            critic_bootstrap_clipping: Cap values before computing critic return targets.
             learning_rate: Initial learning rate of the world model and critic, and of the actor unless overridden.
             actor_learning_rate: Initial actor learning rate. None uses ``learning_rate``.
             actor_learning_rate_multiplier: Factor on the actor learning rate early in training. It decays linearly to 1
@@ -273,6 +279,11 @@ class SuperMimic:
         self.world_model_window = world_model_window
         self.world_model_batch_size = world_model_batch_size
         self.num_mirrored_windows = round(world_model_mirror_fraction * world_model_batch_size)
+        if world_model_loss_reduction not in ("sum", "mean"):
+            raise ValueError("world_model_loss_reduction must be 'sum' or 'mean'.")
+        self.world_model_loss_reduction = world_model_loss_reduction
+        self.critic_survival_weighting = critic_survival_weighting
+        self.critic_bootstrap_clipping = critic_bootstrap_clipping
 
         # Policy parameters
         self.num_policy_updates = num_policy_updates
@@ -418,7 +429,7 @@ class SuperMimic:
         physical = self.task.representation.unflatten(state)
         self.world_model.observe(
             physical,
-            actions,
+            self.task.dynamics_actions(actions),
             self.task.dynamics_context(physical, context, previous_actions),
             self.task.representation.unflatten(successor),
         )
@@ -468,7 +479,7 @@ class SuperMimic:
         """Apply learned dynamics, event probabilities and task-owned analytic state."""
         with torch.autocast(torch.device(self.device).type, dtype=torch.bfloat16, enabled=self.use_mixed_precision):
             raw_next = self._world_model_forward(
-                state, actions, self.task.dynamics_context(state, context, previous_actions)
+                state, self.task.dynamics_actions(actions), self.task.dynamics_context(state, context, previous_actions)
             )
             # Successor events depend on the action just applied, so their history includes it
             next_previous_actions = torch.cat((previous_actions[..., 1:, :], actions.unsqueeze(-2)), dim=-2)
@@ -497,8 +508,10 @@ class SuperMimic:
         prediction = tuple(torch.stack(values, dim=1) for values in zip(*predictions))
         target = self.task.representation.unflatten(window["next_state"])
         scale = torch.maximum(self.world_model.out_norm.std, self.error_floor)
-        errors = (self.task.representation.error(prediction, target) / scale).square().mean(dim=-1)
+        errors = self.task.world_model_loss(prediction, target, scale)
         loss = (errors * mask).sum(dim=1).mean()
+        if self.world_model_loss_reduction == "mean":
+            loss = (errors * mask).sum() / mask.sum().clamp(min=1)
         metrics = {"world_model_error": (errors.detach() * mask).sum() / mask.sum().clamp(min=1)}
         if self.task.num_labels:
             bce = nn.functional.binary_cross_entropy_with_logits(
@@ -508,7 +521,9 @@ class SuperMimic:
             loss = loss + label_loss
             metrics["label_loss"] = label_loss.detach()
         self._apply(loss, "world_model", self.world_model)
-        metrics["world_model_loss"] = loss.detach() / self.world_model_window
+        metrics["world_model_loss"] = loss.detach() / (
+            self.world_model_window if self.world_model_loss_reduction == "sum" else 1
+        )
         return metrics
 
     def _value(self, features: torch.Tensor) -> torch.Tensor:
@@ -578,9 +593,14 @@ class SuperMimic:
         """
         with torch.no_grad():
             self.critic.update_normalization(TensorDict({"critic": features[0]}, batch_size=features.shape[1:2]))
-            targets = lambda_returns(rewards, terminals, self._cap(self._value(features)), self.gamma, self.lam)
+            values = self._value(features)
+            if self.critic_bootstrap_clipping:
+                values = self._cap(values)
+            targets = lambda_returns(rewards, terminals, values, self.gamma, self.lam)
             targets = self._cap(targets).flatten()
         features, reach = features[:-1].flatten(0, 1), reach.flatten()
+        if not self.critic_survival_weighting:
+            reach = torch.ones_like(reach)
         losses = []
         for _ in range(self.num_critic_epochs):
             permutation = torch.rand(features.shape[0], device=self.device).argsort()
