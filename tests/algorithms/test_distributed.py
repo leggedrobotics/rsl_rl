@@ -355,8 +355,17 @@ def _sac_worker(rank: int, world_size: int, store_file: str, categorical: bool, 
         assert_synchronized(restored)
 
         cfg["algorithm"]["use_cuda_graph"] = True
-        with pytest.raises(ValueError, match="only capture CUDA graphs with the NCCL backend"):
+        with pytest.raises(ValueError, match="CUDA graph capture requires a CUDA device"):
             SAC.construct_algorithm(obs, env, cfg, "cpu")
+        with pytest.raises(ValueError, match="only capture CUDA graphs with the NCCL backend"):
+            SAC(
+                alg.actor,
+                alg.critics,
+                alg.storage,
+                device="cuda:0",
+                use_cuda_graph=True,
+                multi_gpu_cfg=cfg["multi_gpu"],
+            )
     finally:
         torch.distributed.destroy_process_group()
 
