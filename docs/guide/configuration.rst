@@ -971,7 +971,7 @@ Use :class:`~rsl_rl.runners.off_policy_runner.OffPolicyRunner` with a squashed G
 .. code-block:: yaml
 
    runner:
-     num_steps_per_env: 24
+     num_steps_per_env: 8
      obs_groups: {"actor": ["policy"], "critic": ["policy", "privileged"]}
      save_interval: 100
      algorithm:
