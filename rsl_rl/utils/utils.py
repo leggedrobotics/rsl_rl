@@ -384,12 +384,9 @@ class CudaGraphCallable:
                 # Capture the function using inputs with fixed memory addresses
                 self._static_args = tuple(arg.clone() for arg in args)
                 self.graph = torch.cuda.CUDAGraph()
-                grad_enabled = torch.is_grad_enabled()
-                with (
-                    torch.inference_mode(False),
-                    torch.set_grad_enabled(grad_enabled),
-                    torch.cuda.graph(self.graph, stream=self._stream),
-                ):
+                with torch.inference_mode(False):
+                    self.graph.register_generator_state(torch.cuda.default_generators[self._stream.device.index])
+                with torch.cuda.graph(self.graph, stream=self._stream):
                     self._static_outputs = self.fn(*self._static_args)
             else:
                 # Copy new inputs into the buffers referenced by the captured graph
