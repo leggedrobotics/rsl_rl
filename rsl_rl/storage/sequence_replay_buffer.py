@@ -161,6 +161,35 @@ class SequenceReplayBuffer:
             device=self.device,
         )
 
+    def sample_sequences(self, batch_size: int, length: int) -> ReplayIndex:
+        """Sample complete windows, uniformly over eligible environments and then their starts.
+
+        Interior transitions cannot terminate or contain external state edits. The last stored state may precede
+        a termination, but the terminating successor is not part of the window.
+        """
+        if batch_size < 1 or length < 1 or length > self.num_slots:
+            raise ValueError("Batch size must be positive and sequence length must fit replay capacity.")
+        if self.num_steps < length:
+            raise RuntimeError("Not enough stored states for a complete replay window.")
+        ages = torch.arange(self.num_slots, device=self.device)
+        oldest = (self._step_tensor - self._num_steps_tensor) % self.num_slots
+        slots = (oldest + ages) % self.num_slots
+        ended = self._data["dones"][slots]
+        if "window_break" in self._data:
+            ended = ended | self._data["window_break"][slots]
+        prefix = torch.cat((ended.new_zeros((1, self.num_envs)), ended), dim=0).long().cumsum(0)
+        last = (ages + length - 1).clamp(max=self.num_slots)
+        valid = (prefix[last] == prefix[ages]) & (ages[:, None] + length <= self._num_steps_tensor)
+        cumulative = valid.T.contiguous().cumsum(1)
+        counts = cumulative[:, -1]
+        torch._assert_async((counts > 0).any(), "No complete replay windows remain within episode boundaries.")
+        env_ids = torch.multinomial((counts > 0).float(), batch_size, replacement=True)
+        choice = (torch.rand(batch_size, device=self.device) * counts[env_ids]).long()
+        starts = torch.searchsorted(cumulative[env_ids], choice[:, None], right=True)
+        slots = (oldest + starts + torch.arange(length, device=self.device)) % self.num_slots
+        ids = slots * self.num_envs + env_ids[:, None]
+        return ReplayIndex(ids, torch.ones_like(ids, dtype=torch.bool))
+
     def clear(self) -> None:
         """Discard stored transitions while retaining allocated memory."""
         self.num_steps = self.step = 0

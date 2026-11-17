@@ -86,3 +86,28 @@ def test_history_repeats_earliest_episode_or_stored_frame() -> None:
         expected = torch.arange(anchor - 3, anchor + 1).clamp(min=earliest).float()
         torch.testing.assert_close(values[row], expected)
         assert index.valid[row].sum() == min(4, anchor - earliest + 1)
+
+
+def test_complete_windows_balance_environments_and_exclude_boundaries() -> None:
+    """Unequal valid-window counts must not oversample an environment or cross a reset or edit."""
+    replay = SequenceReplayBuffer(3, 18)
+    for step in range(10):
+        replay.add(
+            TensorDict(
+                {
+                    "value": torch.full((3, 1), step),
+                    "dones": torch.tensor([True, step in (5, 8), False]),
+                    "window_break": torch.tensor([False, False, step == 4]),
+                },
+                [3],
+            )
+        )
+    torch.manual_seed(42)
+    index = replay.sample_sequences(6000, length=3)
+    values = replay.gather(["value"], index.ids)["value"][..., 0]
+    envs = index.ids[:, 0] % 3
+    assert index.valid.all() and (envs != 0).all()
+    assert ((envs == 1).float().mean() - 0.5).abs() < 0.04
+    assert (values[envs == 1] == torch.tensor([6, 7, 8])).all()
+    assert set(values[envs == 2, 0].tolist()) == {5, 6, 7}
+    assert (values[:, 1:] - values[:, :-1] == 1).all()

@@ -45,6 +45,7 @@ class SuperMimicActor(nn.Module):
         activation: str = "elu",
         norm: str = "none",
         output_gain: float = 0.01,
+        normalize_before_action: bool = True,
     ) -> None:
         """Construct the networks and nonpersistent collection history.
 
@@ -59,6 +60,7 @@ class SuperMimicActor(nn.Module):
         self.use_reference_action = use_reference_action
         self.obs_dim, self.goal_dim = obs_dim, goal_dim
         self.history_length, self.num_actions = history_length, num_actions
+        self.normalize_before_action = normalize_before_action
         # LayerNorm keeps hidden activations from growing a goal-independent component that saturates the tanh latent
         self.encoder = (
             MLP(goal_dim, latent_dim, encoder_hidden_dims, activation=activation, norm="layer")
@@ -116,17 +118,24 @@ class SuperMimicActor(nn.Module):
         policy_goal = self.task.actor_goal(state, goal)
         if self.training:
             frame = self.task.add_noise(frame)
-            self.obs_norm.update(frame)
-            if self.goal_dim:
-                self.goal_norm.update(policy_goal)
+            if self.normalize_before_action:
+                self._update_normalization(frame, policy_goal)
         shifted = torch.cat((self.history[:, 1:], frame.unsqueeze(1)), dim=1)
         self.history.copy_(torch.where(self.fresh[:, None, None], frame[:, None].expand_as(shifted), shifted))
         self.fresh.zero_()
         action = self.forward_history(self.history, policy_goal)
         if self.use_reference_action:
             action = action + self.task.reference_action(state, goal)
+        if self.training and not self.normalize_before_action:
+            self._update_normalization(frame, policy_goal)
         self.previous_actions.copy_(torch.cat((self.previous_actions[:, 1:], action[:, None]), dim=1))
         return action
+
+    def _update_normalization(self, frame: torch.Tensor, goal: torch.Tensor) -> None:
+        """Update collection moments once, either before or after selecting the action."""
+        self.obs_norm.update(frame)
+        if self.goal_dim:
+            self.goal_norm.update(goal)
 
     def forward_history(self, obs_history: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
         """Evaluate the stateless differentiable policy used during imagination."""
