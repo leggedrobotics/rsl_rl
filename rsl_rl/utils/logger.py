@@ -50,6 +50,7 @@ class Logger:
 
         # Create buffers
         self.ep_extras = []
+        self.images: dict[str, torch.Tensor] = {}
         self.step_buffers: dict[str, deque] = {}
         self.length_buffer = deque(maxlen=100)
         self.cur_step_sums: dict[str, torch.Tensor] = {}
@@ -124,6 +125,7 @@ class Logger:
                 self.ep_extras.append(extras["episode"])
             elif "log" in extras:
                 self.ep_extras.append(extras["log"])
+            self.images.update(extras.get("images", {}))
 
             # Update step stats and episode length
             for key, value in step_dict.items():
@@ -207,6 +209,11 @@ class Logger:
                 self.writer.add_scalar(f"Loss/{key}", value, it)
             for key, value in stats_dict.items():
                 self.writer.add_scalar(key, value, it)
+
+            # Log the latest image of each tag
+            for tag, image in self.images.items():
+                self.writer.add_image(tag, torch.as_tensor(image).cpu().numpy(), it, dataformats="HWC")
+            self.images.clear()
 
             # Log performance
             fps = int(collection_size / (collect_time + learn_time))
