@@ -66,9 +66,9 @@ class SAC:
         actor_update_interval: int = 2,
         num_warmup_transitions: int = 100_000,
         # Optimizer parameters
-        actor_learning_rate: float = 0.0001,
-        critic_learning_rate: float = 0.0001,
-        alpha_learning_rate: float = 0.0001,
+        actor_learning_rate: float = 0.0003,
+        critic_learning_rate: float = 0.0003,
+        alpha_learning_rate: float = 0.0003,
         max_grad_norm: float | None = None,
         optimizer: str = "adam",
         weight_decay: float = 0.0,

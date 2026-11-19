@@ -315,15 +315,15 @@ SAC
      - Minimum number of transitions in the replay buffer per GPU before optimization starts.
    * - ``actor_learning_rate``
      - float
-     - ``0.0001``
+     - ``0.0003``
      - Optimizer learning rate for the actor.
    * - ``critic_learning_rate``
      - float
-     - ``0.0001``
+     - ``0.0003``
      - Optimizer learning rate for the critics.
    * - ``alpha_learning_rate``
      - float
-     - ``0.0001``
+     - ``0.0003``
      - Optimizer learning rate for the entropy temperature.
    * - ``max_grad_norm``
      - float | None

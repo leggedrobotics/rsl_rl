@@ -408,7 +408,7 @@ def test_opt_in_flash_components_and_export(network: str | None, mixed_precision
     checkpoint = runner.alg.save()
     restored = OffPolicyRunner(DummyEnv(), cfg)
     restored.alg.load(checkpoint, None, True)
-    assert restored.alg.learning_rate == runner.alg.learning_rate < cfg["algorithm"].get("critic_learning_rate", 1e-4)
+    assert restored.alg.learning_rate == runner.alg.learning_rate < cfg["algorithm"].get("critic_learning_rate", 3e-4)
 
 
 def _mirror(
