@@ -118,6 +118,7 @@ class Distillation:
 
         self.num_updates = 0
 
+    @torch.no_grad()
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Sample actions and store transition data."""
         # Compute the actions
