@@ -34,6 +34,7 @@ class CNNModel(MLPModel):
         hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
+        network_cfg: dict | None = None,
         distribution_cfg: dict | None = None,
         cnn_cfg: dict[str, dict] | dict[str, Any] | None = None,
         cnns: nn.ModuleDict | dict[str, nn.Module] | None = None,
@@ -48,6 +49,7 @@ class CNNModel(MLPModel):
             hidden_dims: Hidden dimensions of the MLP.
             activation: Activation function of the CNN and MLP.
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
+            network_cfg: Configuration dictionary for the network after the CNN encoders. ``None`` uses the default MLP.
             distribution_cfg: Configuration dictionary for the output distribution.
             cnn_cfg: Configuration of the CNN encoder(s).
             cnns: CNN modules to use, e.g., for sharing CNNs between actor and critic. If None, new CNNs are created.
@@ -95,6 +97,7 @@ class CNNModel(MLPModel):
             hidden_dims,
             activation,
             obs_normalization,
+            network_cfg,
             distribution_cfg,
         )
 
@@ -160,6 +163,78 @@ class CNNModel(MLPModel):
     def _get_latent_dim(self) -> int:
         """Return the latent dimensionality consumed by the MLP head."""
         return self.obs_dim + self.cnn_latent_dim
+
+
+class QCNNModel(CNNModel):
+    """CNN-based state-action value model.
+
+    The model concatenates the (optionally normalized) 1D observations and CNN-encoded 2D observations with the actions
+    and maps them to an output of dimension ``output_dim``. This is a scalar Q-value for ``output_dim=1`` or, e.g., the
+    logits of a categorical value distribution.
+    """
+
+    def __init__(
+        self,
+        obs: TensorDict,
+        obs_groups: dict[str, list[str]],
+        obs_set: str,
+        output_dim: int,
+        action_dim: int,
+        hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
+        activation: str = "elu",
+        obs_normalization: bool = False,
+        network_cfg: dict | None = None,
+        distribution_cfg: dict | None = None,
+        cnn_cfg: dict[str, dict] | dict[str, Any] | None = None,
+        cnns: nn.ModuleDict | dict[str, nn.Module] | None = None,
+    ) -> None:
+        """Initialize the Q model.
+
+        Args:
+            obs: Observation Dictionary.
+            obs_groups: Dictionary mapping observation sets to lists of observation groups.
+            obs_set: Observation set to use for this model (e.g., "critic").
+            output_dim: Dimension of the output.
+            action_dim: Dimension of the actions.
+            hidden_dims: Hidden dimensions of the MLP.
+            activation: Activation function of the CNN and MLP.
+            obs_normalization: Whether to normalize the 1D observations before feeding them to the MLP.
+            network_cfg: Configuration dictionary for the network after the CNN encoders. ``None`` uses the default MLP.
+            distribution_cfg: Output distribution configuration. Only ``None`` is supported.
+            cnn_cfg: Configuration of the CNN encoder(s).
+            cnns: CNN modules to use, e.g., for sharing CNNs between actor and critic. If None, new CNNs are created.
+        """
+        if distribution_cfg is not None:
+            raise ValueError("The QCNNModel does not support an output distribution.")
+        self.action_dim = action_dim
+        super().__init__(
+            obs,
+            obs_groups,
+            obs_set,
+            output_dim,
+            hidden_dims=hidden_dims,
+            activation=activation,
+            obs_normalization=obs_normalization,
+            network_cfg=network_cfg,
+            cnn_cfg=cnn_cfg,
+            cnns=cnns,
+        )
+
+    def forward(self, obs: TensorDict, actions: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the state-action value model."""
+        return self.mlp(torch.cat([self.get_latent(obs), actions], dim=-1))
+
+    def as_jit(self) -> nn.Module:
+        """Critics are not exported to TorchScript."""
+        raise NotImplementedError("TorchScript export is not necessary because critics are not exported.")
+
+    def as_onnx(self) -> nn.Module:
+        """Critics are not exported to ONNX."""
+        raise NotImplementedError("ONNX export is not necessary because critics are not exported.")
+
+    def _get_latent_dim(self) -> int:
+        """Return the combined observation latent and action dimension for the MLP head."""
+        return super()._get_latent_dim() + self.action_dim
 
 
 class _TorchCNNModel(nn.Module):

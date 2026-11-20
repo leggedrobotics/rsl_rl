@@ -48,6 +48,14 @@ the core library. These features, mostly contributed by the community, are liste
 
 - **Equivariant MLP model** that enforces robot symmetries (e.g. left-right mirroring) by construction.
 
+Key Features
+------------
+
+- **Minimal, readable codebase** with clear extension points for rapid prototyping.
+- **Robotics-first methods** including PPO, SAC, and Student-Teacher Distillation.
+- **High-throughput training** with native Multi-GPU support.
+- **Proven performance** in numerous research publications.
+
 Learning Environments
 ---------------------
 

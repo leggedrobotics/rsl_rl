@@ -287,32 +287,38 @@ def resolve_obs_groups(
     return obs_groups
 
 
-def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor) -> None:
-    """Raise ``ValueError`` if any environment output contains NaN or Inf."""
-    for key, tensor in obs.items():
-        if not torch.isfinite(tensor).all():
-            has_nan = torch.isnan(tensor).any()
-            has_inf = torch.isinf(tensor).any()
-            value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
-            raise ValueError(
-                f"The observation group '{key}' returned by the environment contains {value_name} values. This usually"
-                " indicates a bug in the environment's step() or reset() function."
-            )
-    if not torch.isfinite(rewards).all():
-        has_nan = torch.isnan(rewards).any()
-        has_inf = torch.isinf(rewards).any()
-        value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
+def find_nonfinite(
+    obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict | None = None
+) -> dict[str, torch.Tensor]:
+    """Return a flag per environment output that is ``True`` if the output contains NaN or Inf values.
+
+    .. note::
+        If ``extras`` contains ``"final_obs"``, the final observations of environments that are done are checked as
+        well.
+    """
+    flags = {f"observation group '{key}'": ~torch.isfinite(tensor).all() for key, tensor in obs.items()}
+    flags["rewards"] = ~torch.isfinite(rewards).all()
+    flags["dones"] = ~torch.isfinite(dones).all()
+    final_obs = extras.get("final_obs") if extras is not None else None
+    if final_obs is not None:
+        done_mask = dones.reshape(-1).bool()
+        for key, tensor in final_obs.items():
+            mask = done_mask.to(tensor.device).reshape(-1, *([1] * (tensor.ndim - 1)))
+            flags[f"final observation group '{key}'"] = ~(torch.isfinite(tensor) | ~mask).all()
+    return flags
+
+
+def raise_if_nonfinite(flags: dict[str, torch.Tensor]) -> None:
+    """Raise ``ValueError`` naming the environment outputs whose flag from :func:`find_nonfinite` is set."""
+    if not flags:
+        return
+    device = next(iter(flags.values())).device
+    values = torch.stack([flag.to(device) for flag in flags.values()]).tolist()
+    sources = [source for source, value in zip(flags, values) if value]
+    if sources:
         raise ValueError(
-            f"The rewards returned by the environment contain {value_name} values. This usually indicates a bug in the"
-            " environment's reward computation."
-        )
-    if not torch.isfinite(dones).all():
-        has_nan = torch.isnan(dones).any()
-        has_inf = torch.isinf(dones).any()
-        value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
-        raise ValueError(
-            f"The dones returned by the environment contain {value_name} values. This usually indicates a bug in the"
-            " environment's termination logic."
+            f"The {', '.join(sources)} returned by the environment contained NaN or Inf values. This usually indicates"
+            " a bug in the environment's step() or reset() function."
         )
 
 
@@ -340,6 +346,56 @@ def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.M
             f"forward pattern. Use 'default' or 'max-autotune-no-cudagraphs', or set to None to disable."
         )
     return torch.compile(model, mode=mode)  # type: ignore
+
+
+class CudaGraphCallable:
+    """Run a function in a CUDA graph after a few eager warm-up calls.
+
+    The inputs of each call are copied into static buffers before the graph is replayed. The function must only use
+    tensor operations that are valid during graph capture and return a dictionary of tensors.
+    """
+
+    def __init__(self, fn: Callable[..., dict[str, torch.Tensor]], device: str, num_warmup: int = 3) -> None:
+        """Initialize the graph wrapper.
+
+        Args:
+            fn: Function to capture. Must return a dictionary of tensors.
+            device: CUDA device on which to run warm-up calls and capture the graph.
+            num_warmup: Number of eager calls before graph capture.
+        """
+        self.fn = fn
+        self.num_warmup = num_warmup
+        self.num_calls = 0
+        self.graph: torch.cuda.CUDAGraph | None = None
+        self._stream = torch.cuda.Stream(device=device)
+
+    def __call__(self, *args: torch.Tensor | TensorDict) -> dict[str, torch.Tensor]:
+        """Run an eager warm-up call or replay the captured graph with new inputs."""
+        with torch.cuda.device(self._stream.device):
+            if self.graph is None and self.num_calls < self.num_warmup:
+                # Run eager warm-up calls on the capture stream before recording the graph
+                self.num_calls += 1
+                self._stream.wait_stream(torch.cuda.current_stream())
+                with torch.cuda.stream(self._stream):
+                    outputs = self.fn(*args)
+                torch.cuda.current_stream().wait_stream(self._stream)
+                return outputs
+            if self.graph is None:
+                # Capture the function using inputs with fixed memory addresses
+                self._static_args = tuple(arg.clone() for arg in args)
+                self.graph = torch.cuda.CUDAGraph()
+                with torch.inference_mode(False):
+                    self.graph.register_generator_state(torch.cuda.default_generators[self._stream.device.index])
+                with torch.cuda.graph(self.graph, stream=self._stream):
+                    self._static_outputs = self.fn(*self._static_args)
+            else:
+                # Copy new inputs into the buffers referenced by the captured graph
+                for static, arg in zip(self._static_args, args):
+                    static.copy_(arg)
+
+            # Replay the graph and return independent copies of its outputs
+            self.graph.replay()
+            return {key: value.clone() for key, value in self._static_outputs.items()}
 
 
 def reduce_gradients_in_buckets(params: Iterable[torch.nn.Parameter], world_size: int, bucket_mb: float) -> None:

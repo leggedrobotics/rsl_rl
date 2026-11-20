@@ -13,7 +13,7 @@ import torch
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
-from rsl_rl.utils import check_nan, resolve_callable
+from rsl_rl.utils import find_nonfinite, raise_if_nonfinite, resolve_callable
 from rsl_rl.utils.logger import Logger
 
 
@@ -57,9 +57,15 @@ class OnPolicyRunner:
         """Run the learning loop for the specified number of iterations."""
         # Randomize initial episode lengths (for exploration)
         if init_at_random_ep_len:
-            self.env.episode_length_buf = torch.randint_like(
-                self.env.episode_length_buf, high=int(self.env.max_episode_length)
-            )
+            if isinstance(self.env.max_episode_length, torch.Tensor):
+                self.env.episode_length_buf = (
+                    torch.rand_like(self.env.episode_length_buf, dtype=torch.float)
+                    * self.env.max_episode_length.to(self.env.episode_length_buf.device)
+                ).to(self.env.episode_length_buf.dtype)
+            else:
+                self.env.episode_length_buf = torch.randint_like(
+                    self.env.episode_length_buf, high=int(self.env.max_episode_length)
+                )
 
         # Start learning
         obs = self.env.get_observations().to(self.device)
@@ -81,22 +87,25 @@ class OnPolicyRunner:
                 start = time.time()
                 # Rollout
                 with torch.inference_mode():
+                    nonfinite: dict[str, torch.Tensor] = {}
                     for _ in range(self.cfg["num_steps_per_env"]):
                         # Sample actions
                         actions = self.alg.act(obs)
                         # Step the environment
                         obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
-                        # Check for NaN or Inf values from the environment
+                        # Record NaN or Inf values from the environment
                         if self.cfg.get("check_for_nan", True):
-                            check_nan(obs, rewards, dones)
+                            for source, flag in find_nonfinite(obs, rewards, dones, extras).items():
+                                nonfinite[source] = nonfinite[source] | flag if source in nonfinite else flag
                         # Move to device
                         obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                         # Process the step
-                        self.alg.process_env_step(obs, rewards, dones, extras)
-                        # Extract intrinsic rewards if RND is used (only for logging)
-                        intrinsic_rewards = self.alg.intrinsic_rewards if self.cfg["algorithm"].get("rnd_cfg") else None
+                        step_dict = self.alg.process_env_step(obs, rewards, dones, extras)
                         # Book keeping
-                        self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
+                        self.logger.process_env_step(dones, extras, step_dict)
+
+                    # Raise if the environment returned NaN or Inf values
+                    raise_if_nonfinite(nonfinite)
 
                     stop = time.time()
                     collect_time = stop - start
@@ -106,7 +115,7 @@ class OnPolicyRunner:
                     self.alg.compute_returns(obs)
 
                 # Update policy
-                loss_dict = self.alg.update()
+                loss_dict, stats_dict = self.alg.update()
 
                 stop = time.time()
                 learn_time = stop - start
@@ -120,9 +129,7 @@ class OnPolicyRunner:
                     collect_time=collect_time,
                     learn_time=learn_time,
                     loss_dict=loss_dict,
-                    learning_rate=self.alg.learning_rate,
-                    action_std=self.alg.get_policy().output_std,
-                    rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"].get("rnd_cfg") else None,
+                    stats_dict=stats_dict,
                 )
 
                 # Save model
@@ -137,6 +144,10 @@ class OnPolicyRunner:
             # Close the run as aborted, e.g., due to a KeyboardInterrupt or an exception
             self.logger.abort_logging_writer()
             raise
+        finally:
+            # Release captured CUDA graphs
+            if self.is_distributed and getattr(self.alg, "release_cuda_graphs", None) is not None:
+                self.alg.release_cuda_graphs()  # type: ignore
 
         # Close the run as finished
         self.logger.stop_logging_writer()
@@ -177,6 +188,7 @@ class OnPolicyRunner:
         """Export the model to a Torch JIT file."""
         jit_model = self.alg.get_policy().as_jit()
         jit_model.to("cpu")
+        jit_model.eval()
 
         if not os.path.exists(path):
             os.makedirs(path, exist_ok=True)

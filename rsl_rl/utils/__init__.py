@@ -8,9 +8,11 @@
 from .log_writer import LogWriter
 from .neptune_log_writer import NeptuneLogWriter
 from .utils import (
-    check_nan,
+    CudaGraphCallable,
     compile_model,
+    find_nonfinite,
     get_param,
+    raise_if_nonfinite,
     reduce_gradients_in_buckets,
     resolve_callable,
     resolve_class,
@@ -23,12 +25,14 @@ from .utils import (
 from .wandb_log_writer import WandbLogWriter
 
 __all__ = [
+    "CudaGraphCallable",
     "LogWriter",
     "NeptuneLogWriter",
     "WandbLogWriter",
-    "check_nan",
     "compile_model",
+    "find_nonfinite",
     "get_param",
+    "raise_if_nonfinite",
     "reduce_gradients_in_buckets",
     "resolve_callable",
     "resolve_class",

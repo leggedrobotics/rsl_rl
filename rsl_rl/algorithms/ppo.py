@@ -67,6 +67,12 @@ class PPO:
         grad_reduce_bucket_mb: float = 25,
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
+        # Validate configuration
+        if actor.distribution is None:
+            raise ValueError("PPO requires an actor with an output distribution.")
+        if schedule not in ("fixed", "adaptive"):
+            raise ValueError(f"Unsupported learning rate schedule: {schedule}. Expected 'fixed' or 'adaptive'.")
+
         # Device-related parameters
         self.device = device
         self.is_multi_gpu = multi_gpu_cfg is not None
@@ -136,32 +142,34 @@ class PPO:
 
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
-    ) -> None:
-        """Record one environment step."""
+    ) -> dict[str, torch.Tensor]:
+        """Record one environment step and return per-environment values that the logger sums over each episode."""
+        step_dict = {"Training/mean_reward": rewards}
         # Record the rewards and dones
         # Note: We clone here because later on we bootstrap the rewards based on timeouts
         self.transition.rewards = rewards.clone()
         self.transition.dones = dones
-
         # Compute the intrinsic rewards and add to extrinsic rewards
         if self.rnd:
             # Compute the intrinsic rewards
             self.intrinsic_rewards = self.rnd.get_intrinsic_reward(obs)
             # Add intrinsic rewards to extrinsic rewards
             self.transition.rewards += self.intrinsic_rewards
-
+            step_dict["Training/mean_reward"] = rewards + self.intrinsic_rewards
+            step_dict["Rnd/mean_extrinsic_reward"] = rewards
+            step_dict["Rnd/mean_intrinsic_reward"] = self.intrinsic_rewards
         # Bootstrapping on time outs
         if "time_outs" in extras:
             self.transition.rewards += self.gamma * torch.squeeze(
                 self.transition.values * extras["time_outs"].unsqueeze(1).to(self.device),  # type: ignore
                 1,
             )
-
         # Record the transition
         self.storage.add_transition(self.transition)
         self.transition.clear()
         self.actor.reset(dones)
         self.critic.reset(dones)
+        return step_dict
 
     def compute_returns(self, obs: TensorDict) -> None:
         """Compute return and advantage targets from stored transitions."""
@@ -190,11 +198,11 @@ class PPO:
         if not self.normalize_advantage_per_mini_batch and st.advantages.numel() > 1:
             st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
 
-    def update(self) -> dict[str, float]:
-        """Run optimization epochs over stored batches and return mean losses."""
+    def update(self) -> tuple[dict[str, float], dict[str, float]]:
+        """Run optimization epochs over stored batches and return mean losses and statistics."""
         mean_value_loss = 0
         mean_surrogate_loss = 0
-        mean_entropy = 0
+        mean_entropy_loss = 0
         # RND loss
         mean_rnd_loss = 0 if self.rnd else None
         # Symmetry loss
@@ -282,7 +290,10 @@ class PPO:
                 else:
                     value_loss = (batch.returns - values).pow(2).mean()
 
-                loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+                # Entropy loss
+                entropy_loss = -entropy.mean()
+
+                loss = surrogate_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
 
                 # RND loss
                 rnd_loss = self.rnd.compute_loss(batch.observations[:original_batch_size]) if self.rnd else None  # type: ignore
@@ -316,7 +327,7 @@ class PPO:
             # Store the losses
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
-            mean_entropy += entropy.mean().item()
+            mean_entropy_loss += entropy_loss.item()
             # RND loss
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
@@ -335,7 +346,7 @@ class PPO:
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
-        mean_entropy /= num_updates
+        mean_entropy_loss /= num_updates
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
         if mean_symmetry_loss is not None:
@@ -345,17 +356,25 @@ class PPO:
         loss_dict = {
             "value": mean_value_loss,
             "surrogate": mean_surrogate_loss,
-            "entropy": mean_entropy,
+            "entropy": mean_entropy_loss,
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
 
+        # Construct the stats dictionary
+        stats_dict = {
+            "Optimizer/learning_rate": self.learning_rate,
+            "Model/mean_policy_std": self.actor.output_std.mean().item(),
+        }
+        if self.rnd:
+            stats_dict["Rnd/rnd_weight"] = self.rnd.weight
+
         # Clear the storage
         self.storage.clear()
 
-        return loss_dict
+        return loss_dict, stats_dict
 
     def train_mode(self) -> None:
         """Set train mode for learnable models."""
@@ -384,17 +403,14 @@ class PPO:
             saved_dict["rnd_update_counter"] = self.rnd.update_counter
         return saved_dict
 
+    def get_default_load_cfg(self) -> dict:
+        """Return the default selection for resuming this algorithm's own checkpoints."""
+        return {"actor": True, "critic": True, "optimizer": True, "iteration": True, "rnd": True}
+
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load specified models from a saved dict."""
-        # If no load_cfg is provided, load all models and states
         if load_cfg is None:
-            load_cfg = {
-                "actor": True,
-                "critic": True,
-                "optimizer": True,
-                "iteration": True,
-                "rnd": True,
-            }
+            load_cfg = self.get_default_load_cfg()
 
         # Load the specified models
         if load_cfg.get("actor"):
@@ -445,7 +461,7 @@ class PPO:
         # Resolve symmetry config if used
         alg_cfg = resolve_symmetry_config(alg_cfg, env)
 
-        # Initialize the policy
+        # Initialize the actor and critic
         actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **actor_cfg).to(device)
         print(f"Actor Model: {actor}")
         if alg_cfg.pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critic
