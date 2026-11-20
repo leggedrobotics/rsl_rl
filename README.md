@@ -21,6 +21,7 @@ and features common algorithms for robot learning.
 
 RSL-RL is currently used by the following robot learning libraries:
 
+- [Alloy](https://github.com/argonrobotics-ai/alloy) (built on top of MuJoCo Warp and Newton)
 - [Isaac Lab](https://github.com/isaac-sim/IsaacLab) (built on top of NVIDIA Isaac Sim)
 - [Legged Gym](https://github.com/leggedrobotics/legged_gym) (built on top of NVIDIA Isaac Gym)
 - [mjlab](https://github.com/mujocolab/mjlab) (built on top of MuJoCo Warp)
