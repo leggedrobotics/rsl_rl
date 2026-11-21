@@ -529,6 +529,11 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
      - int
      - ``2048``
      - Replay anchors per dynamics optimizer step.
+   * - ``world_model_mirror_fraction``
+     - float
+     - ``0.0``
+     - Fraction of each dynamics batch replaced by its left-right mirror image; requires a task that
+       implements ``mirror``.
    * - ``num_policy_updates``
      - int
      - ``1``
@@ -572,7 +577,34 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
    * - ``learning_rate``
      - float
      - ``2e-4``
-     - Initial learning rate for all optimizers.
+     - Initial learning rate of the world model and critic, and of the actor unless overridden.
+   * - ``actor_learning_rate``
+     - float | None
+     - ``None``
+     - Initial actor learning rate. ``None`` uses ``learning_rate``.
+   * - ``actor_learning_rate_multiplier``
+     - float
+     - ``1.0``
+     - Factor on the actor learning rate early in training. It decays linearly to 1 over
+       ``actor_learning_rate_decay_iterations``, starting when ``actor_learning_rate_decay_reward`` or
+       ``actor_learning_rate_decay_start`` is reached, whichever comes first.
+   * - ``actor_learning_rate_decay_iterations``
+     - int
+     - ``300``
+     - Learner iterations over which the multiplier decays to 1.
+   * - ``actor_learning_rate_decay_reward``
+     - float | None
+     - ``None``
+     - Mean reward per step of the episodes completed since the previous update that starts the decay.
+   * - ``actor_learning_rate_decay_start``
+     - int | None
+     - ``None``
+     - Learner iteration at which the decay starts at the latest.
+   * - ``muon_models``
+     - tuple[str]
+     - ``()``
+     - Models among ``"actor"`` and ``"world_model"`` whose hidden weight matrices are trained with Muon;
+       their other parameters and all other models use Adam.
    * - ``max_grad_norm``
      - float
      - ``1.0``
@@ -892,6 +924,11 @@ Feature widths are inferred at construction.
      - tuple[int]
      - ``(2048, 1024, 512, 256)``
      - Action decoder layers.
+   * - ``use_reference_action``
+     - bool
+     - ``False``
+     - Add the network output to the task's ``reference_action``; exported policies take the reference
+       action as an additional input.
 
 WorldModel
 ^^^^^^^^^^

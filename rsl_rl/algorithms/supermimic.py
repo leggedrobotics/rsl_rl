@@ -21,9 +21,10 @@ from rsl_rl.algorithms.supermimic_task import DifferentiableTask, State
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
 from rsl_rl.models.supermimic_actor import SuperMimicActor
+from rsl_rl.modules.mlp import MLP
 from rsl_rl.modules.world_model import WorldModel
 from rsl_rl.storage import SequenceReplayBuffer
-from rsl_rl.utils import CudaGraphCallable, compile_model, resolve_class, resolve_obs_groups
+from rsl_rl.utils import CudaGraphCallable, Muon, compile_model, resolve_class, resolve_obs_groups
 
 
 def lambda_returns(
@@ -64,6 +65,7 @@ class SuperMimic:
         num_world_model_updates: int = 10,
         world_model_window: int = 8,
         world_model_batch_size: int = 2048,
+        world_model_mirror_fraction: float = 0.0,
         # Policy parameters
         num_policy_updates: int = 1,
         horizon: int = 32,
@@ -78,6 +80,12 @@ class SuperMimic:
         num_critic_mini_batches: int = 4,
         # Optimizer parameters
         learning_rate: float = 2e-4,
+        actor_learning_rate: float | None = None,
+        actor_learning_rate_multiplier: float = 1.0,
+        actor_learning_rate_decay_iterations: int = 300,
+        actor_learning_rate_decay_reward: float | None = None,
+        actor_learning_rate_decay_start: int | None = None,
+        muon_models: tuple[str, ...] = (),
         max_grad_norm: float = 1.0,
         # Learning rate schedule parameters
         num_schedule_updates: int = 250_000,
@@ -107,6 +115,8 @@ class SuperMimic:
             num_world_model_updates: Dynamics optimizer steps per learner iteration.
             world_model_window: Maximum autoregressive dynamics fitting horizon.
             world_model_batch_size: Replay anchors per dynamics optimizer step.
+            world_model_mirror_fraction: Fraction of each dynamics batch replaced by its left-right mirror image from
+                :meth:`DifferentiableTask.mirror`.
             num_policy_updates: Actor updates and associated critic fits per learner iteration.
             horizon: Imagined policy horizon.
             policy_batch_size: Starts per actor update.
@@ -118,7 +128,19 @@ class SuperMimic:
             lam: TD(lambda) mixing coefficient for value targets.
             num_critic_epochs: Epochs per critic fit.
             num_critic_mini_batches: Minibatches per critic epoch.
-            learning_rate: Initial learning rate for all optimizers.
+            learning_rate: Initial learning rate of the world model and critic, and of the actor unless overridden.
+            actor_learning_rate: Initial actor learning rate. None uses ``learning_rate``.
+            actor_learning_rate_multiplier: Factor on the actor learning rate early in training. It decays linearly to 1
+                over ``actor_learning_rate_decay_iterations`` learner iterations, starting at the first update whose
+                episodes reach ``actor_learning_rate_decay_reward`` or at ``actor_learning_rate_decay_start``,
+                whichever comes first.
+            actor_learning_rate_decay_iterations: Learner iterations over which the multiplier decays to 1.
+            actor_learning_rate_decay_reward: Mean reward per step, over episodes completed since the previous update,
+                that starts the decay. None disables this trigger.
+            actor_learning_rate_decay_start: Learner iteration at which the decay starts at the latest. None disables
+                this trigger.
+            muon_models: Models among ``"actor"`` and ``"world_model"`` whose hidden weight matrices are trained with
+                :class:`~rsl_rl.utils.Muon`; their other parameters and all other models use Adam.
             max_grad_norm: Global gradient-norm limit for each model.
             num_schedule_updates: Learner iterations in the shared cosine learning-rate schedule.
             final_learning_rate_ratio: Final learning rate relative to its initial value.
@@ -151,6 +173,23 @@ class SuperMimic:
             raise ValueError("num_warmup_steps must cover the model window; world-model warmup must be nonnegative.")
         if not 0 <= gamma < 1 or not 0 <= lam <= 1 or not 0 <= final_learning_rate_ratio <= 1:
             raise ValueError("Invalid discount, lambda or final learning-rate ratio.")
+        if actor_learning_rate is not None and actor_learning_rate <= 0:
+            raise ValueError("actor_learning_rate must be positive or None.")
+        if actor_learning_rate_multiplier < 1 or actor_learning_rate_decay_iterations < 1:
+            raise ValueError(
+                "The actor learning-rate multiplier must be at least 1 and decay over at least 1 iteration."
+            )
+        if (
+            actor_learning_rate_multiplier > 1
+            and actor_learning_rate_decay_reward is None is actor_learning_rate_decay_start
+        ):
+            raise ValueError("An actor learning-rate multiplier needs a decay reward or a decay start iteration.")
+        if not set(muon_models) <= {"actor", "world_model"}:
+            raise ValueError("muon_models may only contain 'actor' and 'world_model'.")
+        if not 0 <= world_model_mirror_fraction <= 1:
+            raise ValueError("world_model_mirror_fraction must lie in [0, 1].")
+        if world_model_mirror_fraction and type(task).mirror is DifferentiableTask.mirror:
+            raise ValueError("Mirror augmentation requires a task that implements mirror().")
         if action_noise < 0:
             raise ValueError("Action noise must be nonnegative.")
         if actor_ema_halflife is not None and actor_ema_halflife < 1:
@@ -192,12 +231,24 @@ class SuperMimic:
         self._actor_forward = self.actor.forward_history
 
         # Create the optimizers
-        optimizer_kwargs = {"lr": learning_rate, "fused": torch.device(device).type == "cuda"}
-        self.optimizers = {
-            "world_model": torch.optim.Adam(self.world_model.parameters(), **optimizer_kwargs),
-            "actor": torch.optim.Adam(self.actor.parameters(), betas=(0.9, 0.95), **optimizer_kwargs),
-            "critic": torch.optim.Adam(self.critic.parameters(), **optimizer_kwargs),
+        self._base_learning_rates = {
+            "world_model": learning_rate,
+            "actor": learning_rate if actor_learning_rate is None else actor_learning_rate,
+            "critic": learning_rate,
         }
+        modules = {"world_model": self.world_model, "actor": self.actor, "critic": self.critic}
+        fused = torch.device(device).type == "cuda"
+        self.optimizers: dict[str, torch.optim.Optimizer] = {}
+        self.muon_optimizers: dict[str, Muon] = {}
+        for name, module in modules.items():
+            matrices = _hidden_matrices(module) if name in muon_models else []
+            if matrices:
+                self.muon_optimizers[name] = Muon(matrices, lr=self._base_learning_rates[name])
+            others = [parameter for parameter in module.parameters() if all(parameter is not m for m in matrices)]
+            betas = (0.9, 0.95) if name == "actor" else (0.9, 0.999)
+            self.optimizers[name] = torch.optim.Adam(
+                others, lr=self._base_learning_rates[name], betas=betas, fused=fused
+            )
         self._configure_optimizer_capture()
 
         # Add storage
@@ -212,6 +263,7 @@ class SuperMimic:
         self.num_world_model_updates = num_world_model_updates
         self.world_model_window = world_model_window
         self.world_model_batch_size = world_model_batch_size
+        self.num_mirrored_windows = round(world_model_mirror_fraction * world_model_batch_size)
 
         # Policy parameters
         self.num_policy_updates = num_policy_updates
@@ -233,10 +285,14 @@ class SuperMimic:
         self.num_critic_mini_batches = num_critic_mini_batches
 
         # Learning rate schedule parameters
-        self.initial_learning_rate = learning_rate
         self.learning_rate = learning_rate
         self.num_schedule_updates = num_schedule_updates
         self.final_learning_rate_ratio = final_learning_rate_ratio
+        self.actor_learning_rate_multiplier = actor_learning_rate_multiplier
+        self.actor_learning_rate_decay_iterations = actor_learning_rate_decay_iterations
+        self.actor_learning_rate_decay_reward = actor_learning_rate_decay_reward
+        self.actor_learning_rate_decay_start = actor_learning_rate_decay_start
+        self.actor_learning_rate_decay_from: int | None = None if actor_learning_rate_multiplier > 1 else 0
 
         # Initialize update counters and collection state
         self.iteration = 0
@@ -247,6 +303,11 @@ class SuperMimic:
         self._collected_steps = 0
         self._window_break_sum = torch.zeros((), device=device)
         self._nonfinite_final_obs = torch.zeros(2, dtype=torch.bool, device=device)
+        # Per-step reward of running and completed episodes for the actor learning-rate decay trigger
+        self._episode_reward = torch.zeros(self.storage.num_envs, device=device)
+        self._episode_length = torch.zeros(self.storage.num_envs, device=device)
+        self._completed_episodes = torch.zeros(2, device=device)
+        self._update_learning_rate()
 
     def _set(self, obs: TensorDict, name: str) -> torch.Tensor:
         """Read an explicit observation set with no policy-group fallback."""
@@ -296,6 +357,7 @@ class SuperMimic:
             obs.select(*self._successor_keys).to(self.device),
             extras["final_obs"].select(*self._final_keys).to(self.device),
             dones.reshape(-1).to(self.device).bool(),
+            rewards.reshape(-1).to(self.device),
         )
         self.storage.advance()
         self._collected_steps += 1
@@ -311,6 +373,7 @@ class SuperMimic:
         obs: TensorDict,
         final: TensorDict,
         done: torch.Tensor,
+        rewards: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """Store the transition, update dynamics statistics and reset finished histories on the device."""
         state, successor = self._set(start, "state"), self._set(final, "state")
@@ -337,6 +400,13 @@ class SuperMimic:
         self._nonfinite_final_obs.logical_or_(
             torch.stack((~torch.isfinite(successor).all(), ~torch.isfinite(labels).all()))
         )
+        if self.actor_learning_rate_decay_reward is not None:
+            self._episode_reward.add_(rewards)
+            self._episode_length.add_(1)
+            per_step = torch.where(done, self._episode_reward / self._episode_length, 0.0)
+            self._completed_episodes.add_(torch.stack((per_step.sum(), done.sum())))
+            self._episode_reward.masked_fill_(done, 0.0)
+            self._episode_length.masked_fill_(done, 0.0)
         self.storage.write(transition)
         physical = self.task.representation.unflatten(state)
         self.world_model.observe(
@@ -362,6 +432,11 @@ class SuperMimic:
         if self.task.num_labels:
             keys.append("labels")
         window = self.storage.gather(keys, index.ids)
+        if self.num_mirrored_windows:
+            count = self.num_mirrored_windows
+            mirrored = self.task.mirror(window[:count].exclude("window_break"))
+            mirrored.set("window_break", window["window_break"][:count])
+            window = torch.cat((mirrored, window[count:]))
         mask = index.valid.float()
         if self.world_model_window > 1:
             mask[:, 1:] *= torch.cumprod((~window["window_break"][:, :-1]).long(), dim=1)
@@ -451,6 +526,8 @@ class SuperMimic:
                     torch.device(self.device).type, dtype=torch.bfloat16, enabled=self.use_mixed_precision
                 ):
                     action = self._actor_forward(history, self.task.actor_goal(state, goal))
+                if self.actor.use_reference_action:
+                    action = action + self.task.reference_action(state, goal)
                 successor, _, labels = self._predict(state, action, context, previous)
                 rewards.append(self.task.reward(state, action, successor, goal, previous, labels=labels))
                 terminals.append(self.task.termination_prob(successor, goal, labels=labels))
@@ -515,18 +592,20 @@ class SuperMimic:
 
         Fused optimizers skip nonfinite steps on the device; other optimizers check the gradient norm on the host.
         """
-        optimizer = self.optimizers[name]
-        optimizer.zero_grad(set_to_none=True)
+        optimizers = [self.optimizers[name], *([self.muon_optimizers[name]] if name in self.muon_optimizers else [])]
+        module.zero_grad(set_to_none=True)
         loss.backward()
         norm = nn.utils.clip_grad_norm_(module.parameters(), self.max_grad_norm)
         if clip_value is not None:
             nn.utils.clip_grad_value_(module.parameters(), clip_value)
         finite = torch.isfinite(norm)
-        if optimizer.defaults.get("fused"):
-            optimizer.found_inf = (~finite).float()
-            optimizer.step()
+        if optimizers[0].defaults.get("fused"):
+            for optimizer in optimizers:
+                optimizer.found_inf = (~finite).float()
+                optimizer.step()
         elif finite:
-            optimizer.step()
+            for optimizer in optimizers:
+                optimizer.step()
         if name == "actor" and self.actor_ema is not None:
             self._update_actor_ema(finite)
         return norm.detach()
@@ -551,7 +630,18 @@ class SuperMimic:
 
     def update(self) -> tuple[dict[str, float], dict[str, float]]:
         """Run accumulated learner updates and return mean losses and statistics."""
-        nonfinite_state, nonfinite_labels = self._nonfinite_final_obs.tolist()
+        nonfinite_state, nonfinite_labels, reward_sum, episodes = torch.cat((
+            self._nonfinite_final_obs.float(),
+            self._completed_episodes,
+        )).tolist()
+        self._completed_episodes.zero_()
+        if (
+            self.actor_learning_rate_decay_from is None
+            and self.actor_learning_rate_decay_reward is not None
+            and episodes
+            and reward_sum / episodes >= self.actor_learning_rate_decay_reward
+        ):
+            self.actor_learning_rate_decay_from = self.iteration
         if nonfinite_state or nonfinite_labels:
             sets = [name for name, flag in (("state", nonfinite_state), ("labels", nonfinite_labels)) if flag]
             raise ValueError(f"SuperMimic received nonfinite final_obs in the observation sets {sets}.")
@@ -605,20 +695,39 @@ class SuperMimic:
     def _update_learning_rate(self) -> None:
         """Set all optimizer rates for the next learner iteration, clamping at the cosine floor."""
         progress = min(self.iteration / self.num_schedule_updates, 1.0)
-        self.learning_rate = self.initial_learning_rate * (
-            self.final_learning_rate_ratio
-            + (1 - self.final_learning_rate_ratio) * 0.5 * (1 + math.cos(math.pi * progress))
+        factor = self.final_learning_rate_ratio + (1 - self.final_learning_rate_ratio) * 0.5 * (
+            1 + math.cos(math.pi * progress)
         )
-        for optimizer in self.optimizers.values():
+        self.learning_rate = self._base_learning_rates["world_model"] * factor
+        for name, optimizer in self._all_optimizers():
             for group in optimizer.param_groups:
+                learning_rate = self._base_learning_rates[name] * factor
+                if name == "actor":
+                    learning_rate *= self._actor_learning_rate_multiplier()
                 if isinstance(group["lr"], torch.Tensor):
-                    group["lr"].fill_(self.learning_rate)
+                    group["lr"].fill_(learning_rate)
                 else:
-                    group["lr"] = self.learning_rate
+                    group["lr"] = learning_rate
+
+    def _actor_learning_rate_multiplier(self) -> float:
+        """Return the actor learning-rate multiplier, starting its decay at the latest scheduled iteration."""
+        start = self.actor_learning_rate_decay_start
+        if self.actor_learning_rate_decay_from is None and start is not None and self.iteration >= start:
+            self.actor_learning_rate_decay_from = start
+        if self.actor_learning_rate_decay_from is None:
+            return self.actor_learning_rate_multiplier
+        progress = min(
+            (self.iteration - self.actor_learning_rate_decay_from) / self.actor_learning_rate_decay_iterations, 1.0
+        )
+        return self.actor_learning_rate_multiplier + (1 - self.actor_learning_rate_multiplier) * progress
+
+    def _all_optimizers(self) -> list[tuple[str, torch.optim.Optimizer]]:
+        """Return each Adam and Muon optimizer with the name of the model it trains."""
+        return [*self.optimizers.items(), *self.muon_optimizers.items()]
 
     def _configure_optimizer_capture(self) -> None:
         """Configure capturable optimizers with device learning rates for CUDA graphs and discard stale graphs."""
-        for optimizer in self.optimizers.values():
+        for _, optimizer in self._all_optimizers():
             for group in optimizer.param_groups:
                 lr = float(group["lr"])
                 group["lr"] = torch.tensor(lr, device=self.device) if self.use_cuda_graph else lr
@@ -665,8 +774,11 @@ class SuperMimic:
             "critic_state_dict": self._raw_critic.state_dict(),
             "world_model_state_dict": self.world_model.state_dict(),
             **{f"{key}_optimizer_state_dict": optimizer.state_dict() for key, optimizer in self.optimizers.items()},
+            **{f"{key}_muon_optimizer_state_dict": muon.state_dict() for key, muon in self.muon_optimizers.items()},
             "iteration": self.iteration,
         }
+        if self.actor_learning_rate_multiplier > 1:
+            saved["actor_learning_rate_decay_from"] = self.actor_learning_rate_decay_from
         if self.actor_ema is not None:
             saved["actor_ema_state_dict"] = {
                 **saved["actor_state_dict"],
@@ -704,9 +816,13 @@ class SuperMimic:
             if load_cfg.get("optimizer"):
                 for key in self.optimizers:
                     self.optimizers[key].load_state_dict(loaded_dict[f"{key}_optimizer_state_dict"])
+                for key in self.muon_optimizers:
+                    self.muon_optimizers[key].load_state_dict(loaded_dict[f"{key}_muon_optimizer_state_dict"])
                 self._configure_optimizer_capture()
             if load_cfg.get("iteration"):
                 self.iteration = loaded_dict["iteration"]
+                if self.actor_learning_rate_multiplier > 1:
+                    self.actor_learning_rate_decay_from = loaded_dict.get("actor_learning_rate_decay_from")
         self.storage.clear()
         self.actor.reset()
         self._last_obs = self._last_actions = self._last_previous_actions = None
@@ -802,6 +918,16 @@ class SuperMimic:
         )
         learner.compile(cfg.get("torch_compile_mode"))
         return learner
+
+
+def _hidden_matrices(module: nn.Module) -> list[nn.Parameter]:
+    """Return the weights of the linear layers between the first and last layer of each MLP in a module."""
+    matrices = []
+    for mlp in module.modules():
+        if isinstance(mlp, MLP):
+            linears = [layer for layer in mlp if isinstance(layer, nn.Linear)]
+            matrices += [layer.weight for layer in linears[1:-1]]
+    return matrices
 
 
 @contextmanager

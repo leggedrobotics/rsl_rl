@@ -41,12 +41,19 @@ class SuperMimicActor(nn.Module):
         latent_dim: int = 32,
         encoder_hidden_dims: tuple[int, ...] = (2048, 1024, 512, 256),
         decoder_hidden_dims: tuple[int, ...] = (2048, 1024, 512, 256),
+        use_reference_action: bool = False,
     ) -> None:
-        """Construct the networks and nonpersistent collection history."""
+        """Construct the networks and nonpersistent collection history.
+
+        With ``use_reference_action``, the network output is a correction added to the task's
+        :meth:`~rsl_rl.algorithms.supermimic_task.DifferentiableTask.reference_action`, and exported policies take the
+        reference action as an additional input.
+        """
         super().__init__()
         if min(history_length, num_envs, num_actions, obs_dim, task.action_history_length) < 1 or goal_dim < 0:
             raise ValueError("Actor/history dimensions must be positive and goal_dim nonnegative.")
         self.task, self.obs_groups = task, obs_groups
+        self.use_reference_action = use_reference_action
         self.obs_dim, self.goal_dim = obs_dim, goal_dim
         self.history_length, self.num_actions = history_length, num_actions
         # LayerNorm keeps hidden activations from growing a goal-independent component that saturates the tanh latent
@@ -102,6 +109,8 @@ class SuperMimicActor(nn.Module):
         self.history.copy_(torch.where(self.fresh[:, None, None], frame[:, None].expand_as(shifted), shifted))
         self.fresh.zero_()
         action = self.forward_history(self.history, policy_goal)
+        if self.use_reference_action:
+            action = action + self.task.reference_action(state, goal)
         self.previous_actions.copy_(torch.cat((self.previous_actions[:, 1:], action[:, None]), dim=1))
         return action
 
@@ -137,7 +146,9 @@ class SuperMimicActor(nn.Module):
         return self.noise_std
 
     def as_jit(self) -> nn.Module:
-        """Return the stateless network with explicit deployable history and optional goal inputs."""
+        """Return the stateless network with explicit deployable history, optional goal and reference inputs."""
+        if self.use_reference_action:
+            return _GoalReferenceActorExport(self) if self.goal_dim else _ReferenceActorExport(self)
         return _GoalActorExport(self) if self.goal_dim else _ActorExport(self)
 
     def as_onnx(self) -> nn.Module:
@@ -196,3 +207,51 @@ class _GoalActorExport(_ActorExport):
     def input_names(self) -> list[str]:
         """Return deployment input names."""
         return ["obs_history", "goal"]
+
+
+class _ReferenceActorExport(_ActorExport):
+    """Stateless export that adds the policy output to a reference action."""
+
+    def __init__(self, actor: SuperMimicActor) -> None:
+        super().__init__(actor)
+        self.num_actions = actor.num_actions
+
+    def forward(self, obs_history: torch.Tensor, reference_action: torch.Tensor) -> torch.Tensor:
+        """Return the reference action corrected by the policy."""
+        return self.decoder(self.obs_norm(obs_history).flatten(-2)) + reference_action
+
+    def get_dummy_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return representative history and reference-action inputs."""
+        return torch.zeros(1, self.history_length, self.obs_dim), torch.zeros(1, self.num_actions)
+
+    @property
+    def input_names(self) -> list[str]:
+        """Return deployment input names."""
+        return ["obs_history", "reference_action"]
+
+
+class _GoalReferenceActorExport(_GoalActorExport):
+    """Stateless export with a goal input that adds the policy output to a reference action."""
+
+    def __init__(self, actor: SuperMimicActor) -> None:
+        super().__init__(actor)
+        self.num_actions = actor.num_actions
+
+    def forward(self, obs_history: torch.Tensor, goal: torch.Tensor, reference_action: torch.Tensor) -> torch.Tensor:
+        """Return the reference action corrected by the goal-conditioned policy."""
+        history = self.obs_norm(obs_history).flatten(-2)
+        encoded = torch.tanh(self.encoder(self.goal_norm(goal)))
+        return self.decoder(torch.cat((encoded, history), dim=-1)) + reference_action
+
+    def get_dummy_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return representative history, goal and reference-action inputs."""
+        return (
+            torch.zeros(1, self.history_length, self.obs_dim),
+            torch.zeros(1, self.goal_dim),
+            torch.zeros(1, self.num_actions),
+        )
+
+    @property
+    def input_names(self) -> list[str]:
+        """Return deployment input names."""
+        return ["obs_history", "goal", "reference_action"]
