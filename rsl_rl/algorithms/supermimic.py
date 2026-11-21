@@ -123,8 +123,8 @@ class SuperMimic:
             num_schedule_updates: Learner iterations in the shared cosine learning-rate schedule.
             final_learning_rate_ratio: Final learning rate relative to its initial value.
             use_mixed_precision: Enable BF16 matrix operations while integrating physical states in FP32.
-            use_cuda_graph: Capture each learner iteration in a CUDA graph. Requires a CUDA device and task heads
-                without host synchronization.
+            use_cuda_graph: Capture each learner iteration and the collection calls in CUDA graphs. Requires a CUDA
+                device and task heads without host synchronization.
             device: Device for models and learning tensors.
             multi_gpu_cfg: Unsupported distributed configuration; supplying one raises.
         """
@@ -173,6 +173,17 @@ class SuperMimic:
         self.task = task
         self.obs_groups = obs_groups
         self.actor.noise_std.fill_(action_noise)
+
+        # Observation groups read during collection, so captured collection calls receive fixed inputs
+        def groups(*names: str) -> list[str]:
+            return list(dict.fromkeys(key for name in names for key in obs_groups.get(name, ())))
+
+        self._actor_keys = groups("state", "goal", "context", "prev_action", "prev_prev_action")
+        self._start_keys = groups("state", "goal", "context")
+        self._successor_keys = groups("state", "prev_action", "prev_prev_action")
+        self._final_keys = groups("state", "labels")
+        self._act_graphs: dict[bool, CudaGraphCallable] = {}
+        self._process_env_step_graph: CudaGraphCallable | None = None
         self.error_floor = error_floor
 
         # Handles to the uncompiled modules for state_dict operations and export
@@ -244,14 +255,25 @@ class SuperMimic:
     @torch.no_grad()
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Record the physical start and choose a noisy actor action; update actor moments now."""
-        self.actor.sync_actions(obs)
-        self._last_previous_actions = self.actor.previous_actions.clone()
-        keys = {key for name in ("state", "goal", "context") for key in self.obs_groups.get(name, ())}
-        self._last_obs = obs.select(*keys).clone()
-        action = self.actor(obs)
-        self._last_actions = action + torch.randn_like(action) * self.actor.noise_std
-        self.actor.previous_actions[:, -1].copy_(self._last_actions)
+        obs = obs.select(*self._actor_keys)
+        act = self._act
+        if self.use_cuda_graph:
+            if self.actor.training not in self._act_graphs:
+                self._act_graphs[self.actor.training] = CudaGraphCallable(self._act, self.device)
+            act = self._act_graphs[self.actor.training]
+        outputs = act(obs)
+        self._last_obs = obs.select(*self._start_keys).clone()
+        self._last_actions, self._last_previous_actions = outputs["actions"], outputs["previous_actions"]
         return self._last_actions
+
+    def _act(self, obs: TensorDict) -> dict[str, torch.Tensor]:
+        """Choose a noisy action and record it as the latest action using only device operations."""
+        self.actor.sync_actions(obs)
+        previous_actions = self.actor.previous_actions.clone()
+        action = self.actor(obs)
+        action = action + torch.randn_like(action) * self.actor.noise_std
+        self.actor.previous_actions[:, -1].copy_(action)
+        return {"actions": action, "previous_actions": previous_actions}
 
     @torch.no_grad()
     def process_env_step(
@@ -262,10 +284,37 @@ class SuperMimic:
             raise RuntimeError("act() must precede process_env_step().")
         if extras.get("final_obs") is None or extras.get("final_obs_every_step") is not True:
             raise ValueError("SuperMimic requires every-step extras['final_obs'] with final_obs_every_step=True.")
-        final = extras["final_obs"].to(self.device)
-        state, successor = self._set(self._last_obs, "state"), self._set(final, "state")
-        context, goal = self._set(self._last_obs, "context"), self._set(self._last_obs, "goal")
-        done = dones.reshape(-1).bool()
+        process = self._process_env_step
+        if self.use_cuda_graph:
+            if self._process_env_step_graph is None:
+                self._process_env_step_graph = CudaGraphCallable(self._process_env_step, self.device)
+            process = self._process_env_step_graph
+        process(
+            self._last_obs,
+            self._last_actions,
+            self._last_previous_actions,
+            obs.select(*self._successor_keys).to(self.device),
+            extras["final_obs"].select(*self._final_keys).to(self.device),
+            dones.reshape(-1).to(self.device).bool(),
+        )
+        self.storage.advance()
+        self._collected_steps += 1
+        self._update_debt += self.updates_per_step
+        self._last_obs = self._last_actions = self._last_previous_actions = None
+        return {"Training/mean_reward": rewards}
+
+    def _process_env_step(
+        self,
+        start: TensorDict,
+        actions: torch.Tensor,
+        previous_actions: torch.Tensor,
+        obs: TensorDict,
+        final: TensorDict,
+        done: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Store the transition, update dynamics statistics and reset finished histories on the device."""
+        state, successor = self._set(start, "state"), self._set(final, "state")
+        context, goal = self._set(start, "context"), self._set(start, "goal")
         window_break = (self._set(obs, "state") != successor).any(dim=-1) & ~done
         transition = TensorDict(
             {
@@ -273,8 +322,8 @@ class SuperMimic:
                 "next_state": successor,
                 "goal": goal,
                 "context": context,
-                "actions": self._last_actions,
-                "prev_actions": self._last_previous_actions,
+                "actions": actions,
+                "prev_actions": previous_actions,
                 "dones": done,
                 "window_break": window_break,
             },
@@ -288,22 +337,19 @@ class SuperMimic:
         self._nonfinite_final_obs.logical_or_(
             torch.stack((~torch.isfinite(successor).all(), ~torch.isfinite(labels).all()))
         )
-        self.storage.add(transition)
-        start = self.task.representation.unflatten(state)
+        self.storage.write(transition)
+        physical = self.task.representation.unflatten(state)
         self.world_model.observe(
-            start,
-            self._last_actions,
-            self.task.dynamics_context(start, context, self._last_previous_actions),
+            physical,
+            actions,
+            self.task.dynamics_context(physical, context, previous_actions),
             self.task.representation.unflatten(successor),
         )
         reset_action = self._set(obs, "prev_action") if "prev_action" in self.obs_groups else None
         reset_previous = self._set(obs, "prev_prev_action") if "prev_prev_action" in self.obs_groups else None
         self.actor.reset(done, reset_action, reset_previous)
         self._window_break_sum.add_(window_break.float().mean())
-        self._collected_steps += 1
-        self._update_debt += self.updates_per_step
-        self._last_obs = self._last_actions = self._last_previous_actions = None
-        return {"Training/mean_reward": rewards}
+        return {}
 
     def compute_returns(self, obs: TensorDict) -> None:
         """Replay and imagination construct their own return targets during update."""
