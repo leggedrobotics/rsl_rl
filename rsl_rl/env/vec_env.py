@@ -101,7 +101,8 @@ class VecEnv(ABC):
               events, or command resampling. SAC requires this key whenever an environment is done, so it can store
               the correct next observation for that transition. Include the groups used by the actor and critics,
               with the same shapes and device as the returned observations. Entries for environments that are not
-              done are ignored. Keep the tensors unchanged until ``process_env_step()`` has recorded the transition.
+              done are ignored unless ``extras["final_obs_every_step"] = True`` signals capture on every step, which
+              SuperMimic requires. Keep the tensors unchanged until ``process_env_step()`` has recorded the transition.
 
             - "log" (dict[str, float | torch.Tensor]): Additional information for logging and debugging purposes.
                The key should be a string and start with "/" for namespacing. The value can be a scalar or a

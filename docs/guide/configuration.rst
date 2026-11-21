@@ -473,6 +473,135 @@ Distillation
        :class:`torch.nn.parallel.DistributedDataParallel`'s default ``bucket_cap_mb``.
 
 
+SuperMimic
+^^^^^^^^^^
+
+SuperMimic uses ``actor``, ``world_model`` and ``critic`` model configurations. ``task_cfg.class_name`` resolves a
+:class:`~rsl_rl.algorithms.supermimic_task.DifferentiableTask` with ``env``, ``device`` and the remaining task kwargs.
+The task supplies physical coordinates, rewards and feature construction.
+Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 0.1]`` after global norm clipping.
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - ``"SuperMimic"``.
+   * - ``task_cfg``
+     - dict
+     - required
+     - Differentiable task class and kwargs.
+   * - ``replay_buffer_capacity``
+     - int
+     - ``1000000``
+     - Total physical transitions across environments; allocated lazily.
+   * - ``max_replay_memory_fraction``
+     - float | None
+     - ``None``
+     - Optional fraction of free device memory available to replay.
+   * - ``updates_per_step``
+     - float
+     - ``0.4``
+     - Learner iterations accrued per collected environment step.
+   * - ``num_warmup_steps``
+     - int
+     - ``64``
+     - Stored steps per environment before learning; must cover ``world_model_window``.
+   * - ``num_world_model_warmup_iterations``
+     - int
+     - ``500``
+     - Learner iterations fitting only dynamics.
+   * - ``num_world_model_updates``
+     - int
+     - ``10``
+     - Dynamics optimizer steps per learner iteration.
+   * - ``world_model_window``
+     - int
+     - ``8``
+     - Maximum autoregressive dynamics fitting horizon.
+   * - ``world_model_batch_size``
+     - int
+     - ``2048``
+     - Replay anchors per dynamics optimizer step.
+   * - ``num_policy_updates``
+     - int
+     - ``1``
+     - Actor updates and associated critic fits per learner iteration.
+   * - ``horizon``
+     - int
+     - ``32``
+     - Imagined policy horizon.
+   * - ``policy_batch_size``
+     - int
+     - ``4096``
+     - Starts per actor update.
+   * - ``gamma``
+     - float
+     - ``0.99``
+     - Reward discount.
+   * - ``max_step_reward``
+     - float | None
+     - ``None``
+     - Optional per-step reward bound used to cap values at the maximum discounted return.
+   * - ``action_noise``
+     - float
+     - ``0.1``
+     - Standard deviation of additive collection noise.
+   * - ``actor_ema_halflife``
+     - int | None
+     - ``None``
+     - Deployment-only actor exponential moving average (EMA) half-life in actor optimizer steps, e.g. ``500``.
+   * - ``lam``
+     - float
+     - ``0.95``
+     - TD(lambda) mixing coefficient for value targets.
+   * - ``num_critic_epochs``
+     - int
+     - ``5``
+     - Epochs per critic fit.
+   * - ``num_critic_mini_batches``
+     - int
+     - ``4``
+     - Minibatches per critic epoch.
+   * - ``learning_rate``
+     - float
+     - ``2e-4``
+     - Initial learning rate for all optimizers.
+   * - ``max_grad_norm``
+     - float
+     - ``1.0``
+     - Global gradient-norm limit for each model.
+   * - ``num_schedule_updates``
+     - int
+     - ``250000``
+     - Learner iterations in the shared cosine learning-rate schedule.
+   * - ``final_learning_rate_ratio``
+     - float
+     - ``0.03``
+     - Final learning rate relative to its initial value.
+   * - ``use_mixed_precision``
+     - bool
+     - ``False``
+     - Enable BF16 matrix operations while integrating physical states in FP32.
+   * - ``use_cuda_graph``
+     - bool
+     - ``False``
+     - Capture each learner iteration in a CUDA graph. Requires a CUDA device and task heads without host
+       synchronization.
+
+When enabled, inference and JIT/ONNX exports use EMA parameters with live normalization buffers.
+Collection and policy optimization keep using the live actor.
+After each successful actor step ``n``, the averaging decay is
+``min(0.5 ** (1 / h), (1 + n) / (10 + n))``, where ``h`` is the half-life and ``n`` starts at one.
+``None`` disables averaging. Use the same ``actor_ema_halflife`` setting for training and play/export.
+In Isaac Lab, pass ``agent.algorithm.actor_ema_halflife=500`` to play with or export that EMA actor.
+
 .. _model-configuration:
 
 Model Configuration
@@ -728,6 +857,67 @@ the same configuration keys, except that ``distribution_cfg`` must be ``None``.
      - ...
      - ...
 
+SuperMimicActor
+^^^^^^^^^^^^^^^
+
+The actor consumes deployable features from the task and exports explicit ``obs_history`` and optional ``goal`` inputs.
+Feature widths are inferred at construction.
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - ``"SuperMimicActor"``.
+   * - ``history_length``
+     - int
+     - ``5``
+     - Number of actor frames; reset history repeats its first frame.
+   * - ``latent_dim``
+     - int
+     - ``32``
+     - Encoded goal width.
+   * - ``encoder_hidden_dims``
+     - tuple[int]
+     - ``(2048, 1024, 512, 256)``
+     - Goal encoder layers.
+   * - ``decoder_hidden_dims``
+     - tuple[int]
+     - ``(2048, 1024, 512, 256)``
+     - Action decoder layers.
+
+WorldModel
+^^^^^^^^^^
+
+The world model predicts physical increments and optional successor event labels. The task defines integration
+coordinates and feature widths.
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - ``"WorldModel"``.
+   * - ``hidden_dims``
+     - tuple[int]
+     - ``(2048, 2048, 2048)``
+     - Dynamics network layers with LayerNorm.
+   * - ``label_hidden_dims``
+     - tuple[int]
+     - ``(512, 512)``
+     - Optional event-head layers.
 
 Distribution Configuration
 --------------------------
@@ -1066,6 +1256,21 @@ Depending on the algorithm and extensions used, RSL-RL expects different observa
      - Observations used as input to the teacher model.
    * - ``rnd_state``
      - Observations used as input to the RND extension.
+
+   * - ``state``
+     - SuperMimic physical state, noise-free; required without a policy-group fallback.
+   * - ``goal``
+     - Optional SuperMimic task goal.
+   * - ``context``
+     - Optional noise-free privileged dynamics and critic context.
+   * - ``labels``
+     - Optional binary successor events with ``task.num_labels`` columns.
+   * - ``prev_action`` / ``prev_prev_action``
+     - Optional action vectors overriding SuperMimic's collection history, including nonzero reset commands.
+
+SuperMimic optional sets must be mapped explicitly. Its critic inputs are constructed by ``task.critic_obs``;
+do not map a ``critic`` set for this algorithm. Task action histories are oldest-first with shape
+``[..., task.action_history_length, num_actions]``.
 
 Incomplete or incorrect configurations are handled in :func:`~rsl_rl.utils.utils.resolve_obs_groups`, which provides 
 detailed information on how errors are resolved.
