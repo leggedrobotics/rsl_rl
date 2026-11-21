@@ -254,8 +254,10 @@ class SuperMimic:
         return self._last_actions
 
     @torch.no_grad()
-    def process_env_step(self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict) -> None:
-        """Record every-step pre-event successors and update dynamics statistics in place."""
+    def process_env_step(
+        self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict
+    ) -> dict[str, torch.Tensor]:
+        """Record every-step pre-event successors and return per-environment values summed over each episode."""
         if self._last_obs is None or self._last_actions is None:
             raise RuntimeError("act() must precede process_env_step().")
         if extras.get("final_obs") is None or extras.get("final_obs_every_step") is not True:
@@ -301,6 +303,7 @@ class SuperMimic:
         self._collected_steps += 1
         self._update_debt += self.updates_per_step
         self._last_obs = self._last_actions = self._last_previous_actions = None
+        return {"Training/mean_reward": rewards}
 
     def compute_returns(self, obs: TensorDict) -> None:
         """Replay and imagination construct their own return targets during update."""
@@ -503,8 +506,11 @@ class SuperMimic:
     def actor_ema_updates(self, value: int) -> None:
         self._actor_ema_updates.fill_(value)
 
-    def update(self) -> dict[str, float]:
-        """Run accumulated learner updates; the runner's collection cadence remains external."""
+    def update(self) -> tuple[dict[str, float], dict[str, float]]:
+        """Run accumulated learner updates and return mean losses and statistics.
+
+        The runner's collection cadence remains external.
+        """
         nonfinite_state, nonfinite_labels = self._nonfinite_final_obs.tolist()
         if nonfinite_state or nonfinite_labels:
             sets = [name for name, flag in (("state", nonfinite_state), ("labels", nonfinite_labels)) if flag]
@@ -539,7 +545,10 @@ class SuperMimic:
             metrics.update(zip(totals, means))
             self._window_break_sum.zero_()
         metrics["learner_updates"] = float(self.iteration)
-        return metrics
+        losses = {key: value for key, value in metrics.items() if key.endswith("_loss")}
+        stats = {f"SuperMimic/{key}": value for key, value in metrics.items() if key not in losses}
+        stats["Optimizer/learning_rate"] = self.learning_rate
+        return losses, stats
 
     def _run_iteration(self, update_policy: bool) -> dict[str, torch.Tensor]:
         """Run one learner iteration and return the mean of each metric over its updates."""
