@@ -109,6 +109,35 @@ def _build_ppo_with_shared_cnn() -> PPO:
 class TestGAEComputation:
     """Tests for generalized advantage estimation in ``compute_returns``."""
 
+    @pytest.mark.parametrize("rnn_type", ["gru", "lstm"])
+    def test_first_single_step_recurrent_update(self, rnn_type: str) -> None:
+        """An initial one-step recurrent rollout can train from implicit zero hidden states."""
+        torch.manual_seed(0)
+        obs = make_obs(NUM_ENVS, OBS_DIM)
+        groups = {"actor": ["policy"], "critic": ["policy"]}
+        model_cfg = {"hidden_dims": [16], "rnn_type": rnn_type, "rnn_hidden_dim": 16}
+        actor = RNNModel(
+            obs,
+            groups,
+            "actor",
+            NUM_ACTIONS,
+            distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0},
+            **model_cfg,
+        )
+        critic = RNNModel(obs, groups, "critic", 1, **model_cfg)
+        storage = RolloutStorage("rl", NUM_ENVS, 1, obs, [NUM_ACTIONS])
+        ppo = PPO(actor, critic, storage, num_learning_epochs=1, num_mini_batches=2, schedule="fixed")
+        before = next(actor.parameters()).detach().clone()
+        with torch.no_grad():
+            ppo.act(obs)
+            ppo.process_env_step(obs, torch.arange(NUM_ENVS, dtype=torch.float32), torch.zeros(NUM_ENVS), {})
+            ppo.compute_returns(obs)
+
+        losses, _ = ppo.update()
+
+        assert all(torch.isfinite(torch.tensor(value)) for value in losses.values())
+        assert not torch.equal(next(actor.parameters()), before)
+
     @pytest.mark.parametrize("per_batch", [False, True])
     def test_singleton_advantage_is_preserved(self, per_batch: bool) -> None:
         """A singleton retains its learning signal through global and per-batch normalization."""
