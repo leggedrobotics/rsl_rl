@@ -215,7 +215,7 @@ def test_direct_and_standard_runner_train_all_models() -> None:
     learner, env = _learner(), ScalarEnv()
     _collect(learner, env, 4)
     losses, stats = learner.update()
-    assert {"world_model_loss", "policy_loss", "critic_loss", "label_loss"} == losses.keys()
+    assert {"world_model", "policy", "critic", "label"} == losses.keys()
     assert all(torch.isfinite(torch.tensor(value)) for value in (losses | stats).values())
     assert stats["SuperMimic/policy_grad_norm"] > 0
     for module in (learner.actor, learner.world_model):
@@ -223,7 +223,7 @@ def test_direct_and_standard_runner_train_all_models() -> None:
     checkpoint = copy.deepcopy(learner.save())
     learner.load(checkpoint, None, strict=True)
     _collect(learner, env, 4, inference=False)
-    assert torch.isfinite(torch.tensor(learner.update()[0]["world_model_loss"]))
+    assert torch.isfinite(torch.tensor(learner.update()[0]["world_model"]))
 
 
 def test_replay_start_padding_repeats_the_same_noisy_reset_frame(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -666,7 +666,7 @@ def test_task_without_successor_event_labels(monkeypatch: pytest.MonkeyPatch) ->
     learner = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, "cpu")
     _collect(learner, env, 4)
     losses, stats = learner.update()
-    assert learner.world_model.label_head is None and "label_loss" not in losses
+    assert learner.world_model.label_head is None and "label" not in losses
     assert all(torch.isfinite(torch.tensor(value)) for value in (losses | stats).values())
     assert stats["SuperMimic/policy_grad_norm"] > 0
 
@@ -741,4 +741,4 @@ def test_cuda_graph_matches_eager_and_resumes() -> None:
     for _ in range(5):
         _collect(graphed, env, 3)
         losses, _ = graphed.update()
-    assert graphed._graph_updates and math.isfinite(losses["world_model_loss"])
+    assert graphed._graph_updates and math.isfinite(losses["world_model"])

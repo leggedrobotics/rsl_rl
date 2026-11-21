@@ -545,8 +545,8 @@ class SuperMimic:
             metrics.update(zip(totals, means))
             self._window_break_sum.zero_()
         metrics["learner_updates"] = float(self.iteration)
-        losses = {key: value for key, value in metrics.items() if key.endswith("_loss")}
-        stats = {f"SuperMimic/{key}": value for key, value in metrics.items() if key not in losses}
+        losses = {key.removesuffix("_loss"): value for key, value in metrics.items() if key.endswith("_loss")}
+        stats = {f"SuperMimic/{key}": value for key, value in metrics.items() if not key.endswith("_loss")}
         stats["Optimizer/learning_rate"] = self.learning_rate
         return losses, stats
 
