@@ -22,6 +22,7 @@ from rsl_rl.algorithms.supermimic_task import DifferentiableTask, EuclideanState
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import WorldModel
 from rsl_rl.runners import OffPolicyRunner
+from rsl_rl.utils import Muon
 
 
 class ScalarTask(DifferentiableTask):
@@ -761,13 +762,23 @@ def test_cuda_graph_collection_matches_eager_across_resets_and_pushes() -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
-def test_cuda_graph_matches_eager_and_resumes() -> None:
-    """Graphed learner iterations match eager updates exactly and recapture after loading optimizer state."""
+@pytest.mark.parametrize("option", ["default", "muon", "actor_multiplier", "reference_action", "mirror"])
+def test_cuda_graph_matches_eager_and_resumes(option: str) -> None:
+    """Graphed learner iterations match eager updates exactly with each optional training feature."""
+    options = {
+        "default": {},
+        "muon": {"muon_models": ("actor", "world_model")},
+        "actor_multiplier": {"actor_learning_rate_multiplier": 4.0, "actor_learning_rate_decay_reward": 0.5},
+        "reference_action": {"task_cfg": {"class_name": ReferenceScalarTask}},
+        "mirror": {"task_cfg": {"class_name": MirroredScalarTask}, "world_model_mirror_fraction": 0.5},
+    }[option]
 
     def train(use_cuda_graph: bool) -> tuple[SuperMimic, ScalarEnv, list[dict[str, float]]]:
         torch.manual_seed(0)
-        env = ScalarEnv(device="cuda:0")
-        learner = _learner(env, use_cuda_graph=use_cuda_graph, actor_ema_halflife=3, action_noise=0.0)
+        env = ScalarEnv(goal_dim=1, device="cuda:0") if option == "reference_action" else ScalarEnv(device="cuda:0")
+        cfg = _cfg(use_cuda_graph=use_cuda_graph, actor_ema_halflife=3, action_noise=0.0, **options)
+        cfg["actor"]["use_reference_action"] = option == "reference_action"
+        learner = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, env.device)
         metrics = []
         for _ in range(6):
             _collect(learner, env, 3)
@@ -785,3 +796,183 @@ def test_cuda_graph_matches_eager_and_resumes() -> None:
         _collect(graphed, env, 3)
         losses, _ = graphed.update()
     assert graphed._graph_updates and math.isfinite(losses["world_model"])
+
+
+def test_muon_matches_torch_and_skips_nonfinite_steps() -> None:
+    """The capturable Muon matches PyTorch's Adam-matched Muon and leaves state unchanged on skipped steps."""
+    torch.manual_seed(0)
+    ours, reference = torch.nn.Parameter(torch.randn(16, 8)), torch.nn.Parameter(torch.randn(16, 8))
+    with torch.no_grad():
+        reference.copy_(ours)
+    muon = Muon([ours], lr=1e-2, weight_decay=0.1)
+    torch_muon = torch.optim.Muon([reference], lr=1e-2, weight_decay=0.1, adjust_lr_fn="match_rms_adamw")
+    for _ in range(3):
+        ours.grad, reference.grad = (torch.randn(16, 8),) * 2
+        muon.step()
+        torch_muon.step()
+    torch.testing.assert_close(ours, reference)
+    before, momentum = ours.detach().clone(), muon.state[ours]["momentum_buffer"].clone()
+    muon.found_inf, ours.grad = torch.tensor(1.0), torch.full((16, 8), float("nan"))
+    muon.step()
+    assert torch.equal(ours.detach(), before) and torch.equal(muon.state[ours]["momentum_buffer"], momentum)
+
+
+def test_muon_trains_hidden_matrices_and_resumes() -> None:
+    """Muon owns the inner MLP weights of the actor and world model; the critic and other parameters stay on Adam."""
+    env = ScalarEnv()
+    cfg = {
+        "world_model": {"class_name": "WorldModel", "hidden_dims": (16, 16), "label_hidden_dims": (8, 8)},
+        "actor": {**_cfg()["actor"], "decoder_hidden_dims": (8, 8)},
+    }
+    learner = SuperMimic.construct_algorithm(
+        env.get_observations(), env, {**_cfg(muon_models=("actor", "world_model")), **cfg}, env.device
+    )
+    assert set(learner.muon_optimizers) == {"world_model", "actor"}
+    muon = {id(p) for group in learner.muon_optimizers["world_model"].param_groups for p in group["params"]}
+    assert muon == {id(learner.world_model.net[3].weight), id(learner.world_model.label_head[3].weight)}
+    adam = {id(p) for group in learner.optimizers["world_model"].param_groups for p in group["params"]}
+    assert not muon & adam and len(muon | adam) == len(list(learner.world_model.parameters()))
+    _collect(learner, env, 8)
+    assert math.isfinite(learner.update()[0]["world_model"])
+    saved = learner.save()
+    assert {"world_model_muon_optimizer_state_dict", "actor_muon_optimizer_state_dict"} <= saved.keys()
+    restored = SuperMimic.construct_algorithm(
+        env.get_observations(), env, {**_cfg(muon_models=("actor", "world_model")), **cfg}, env.device
+    )
+    restored.load(saved, None, strict=True)
+    torch.testing.assert_close(restored.save(), saved, rtol=0, atol=0)
+    world_model_only = SuperMimic.construct_algorithm(
+        env.get_observations(), env, {**_cfg(muon_models=("world_model",)), **cfg}, env.device
+    )
+    assert set(world_model_only.muon_optimizers) == {"world_model"}
+    with pytest.raises(ValueError, match="muon_models"):
+        _learner(muon_models=("critic",))
+
+
+def test_actor_learning_rate_follows_the_shared_schedule() -> None:
+    """A separate actor learning rate keeps its ratio to the shared rate through the cosine schedule."""
+    learner = _learner(actor_learning_rate=8e-4, num_schedule_updates=10)
+    for _ in range(4):
+        learner.iteration += 1
+        learner._update_learning_rate()
+        actor_lr = learner.optimizers["actor"].param_groups[0]["lr"]
+        assert actor_lr == pytest.approx(4 * learner.optimizers["critic"].param_groups[0]["lr"])
+        assert learner.learning_rate == learner.optimizers["world_model"].param_groups[0]["lr"]
+
+
+def _actor_ratio(learner: SuperMimic) -> float:
+    return learner.optimizers["actor"].param_groups[0]["lr"] / learner.optimizers["critic"].param_groups[0]["lr"]
+
+
+def test_actor_learning_rate_multiplier_decays_after_reward_or_iteration() -> None:
+    """The multiplier holds until episodes reach the reward or the start iteration, then decays linearly to 1."""
+    env = ScalarEnv()
+    learner = _learner(
+        env,
+        actor_learning_rate_multiplier=4.0,
+        actor_learning_rate_decay_iterations=2,
+        actor_learning_rate_decay_start=50,
+    )
+    assert _actor_ratio(learner) == pytest.approx(4.0)
+    learner.iteration = 51
+    learner._update_learning_rate()
+    assert learner.actor_learning_rate_decay_from == 50 and _actor_ratio(learner) == pytest.approx(2.5)
+    learner.iteration = 60
+    learner._update_learning_rate()
+    assert _actor_ratio(learner) == pytest.approx(1.0)
+
+    learner = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_reward=float("-inf"))
+    _collect(learner, env, 6)
+    learner.update()
+    start = learner.actor_learning_rate_decay_from
+    assert start is not None and start <= learner.iteration
+    learner.iteration = start + 1
+    learner._update_learning_rate()
+    assert _actor_ratio(learner) == pytest.approx(4.0 + (1.0 - 4.0) / 300)
+    restored = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_reward=float("-inf"))
+    restored.load(learner.save(), None, strict=True)
+    assert restored.actor_learning_rate_decay_from == start
+
+    never = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_reward=float("inf"))
+    _collect(never, env, 6)
+    never.update()
+    assert never.actor_learning_rate_decay_from is None and _actor_ratio(never) == pytest.approx(4.0)
+    with pytest.raises(ValueError, match="decay"):
+        _learner(env, actor_learning_rate_multiplier=4.0)
+
+
+class MirroredScalarTask(ScalarTask):
+    """The scalar system is symmetric under negation of all physical quantities."""
+
+    def mirror(self, window: TensorDict) -> TensorDict:
+        """Negate states, actions and context and keep event labels."""
+        mirrored = window.clone()
+        for key in ("state", "next_state", "actions", "context", "prev_actions"):
+            mirrored[key] = -window[key]
+        return mirrored
+
+
+def test_world_model_mirror_augmentation_replaces_a_fixed_share_of_windows() -> None:
+    """The first windows of each batch are mirrored and the rest, the mask and window breaks stay unchanged."""
+    env = ScalarEnv()
+    learner = _learner(env, world_model_mirror_fraction=0.25, task_cfg={"class_name": MirroredScalarTask})
+    assert learner.num_mirrored_windows == 2
+    _collect(learner, env, 8)
+    torch.manual_seed(0)
+    mirrored, mirrored_mask = learner._windows(8)
+    learner.num_mirrored_windows = 0
+    torch.manual_seed(0)
+    window, mask = learner._windows(8)
+    torch.testing.assert_close(mirrored["state"][:2], -window["state"][:2])
+    torch.testing.assert_close(mirrored["labels"], window["labels"])
+    torch.testing.assert_close(mirrored[2:], window[2:])
+    assert torch.equal(mirrored["window_break"], window["window_break"]) and torch.equal(mirrored_mask, mask)
+    with pytest.raises(ValueError, match="mirror"):
+        _learner(env, world_model_mirror_fraction=0.25)
+
+
+class ReferenceScalarTask(ScalarTask):
+    """Track a reference position by correcting a reference action equal to the goal."""
+
+    def reference_action(self, state: State, goal: torch.Tensor) -> torch.Tensor:
+        """Use the first goal coordinate as the reference action."""
+        return goal[..., :1]
+
+
+def test_reference_action_offsets_collection_imagination_and_exports(tmp_path: Path) -> None:
+    """Collection and exported policies add the task's reference action; imagination trains through it."""
+    from onnx.reference import ReferenceEvaluator
+
+    cfg = _cfg(task_cfg={"class_name": ReferenceScalarTask})
+    cfg["actor"]["use_reference_action"] = True
+    runner = OffPolicyRunner(ScalarEnv(goal_dim=1), cfg, str(tmp_path / "logs"))
+    actor = runner.alg.actor
+    obs = runner.env.get_observations()
+    with torch.no_grad():
+        actor.eval()
+        action = actor(obs)
+        torch.testing.assert_close(action, actor.forward_history(actor.history, obs["goal"]) + obs["goal"])
+        actor.train()
+    runner.learn(2)
+    assert math.isfinite(runner.alg.update()[1]["SuperMimic/learner_updates"])
+    runner.export_policy_to_jit(str(tmp_path))
+    runner.export_policy_to_onnx(str(tmp_path))
+    onnx_model = onnx.load(str(tmp_path / "policy.onnx"))
+    assert [value.name for value in onnx_model.graph.input] == ["obs_history", "goal", "reference_action"]
+    history, goal, reference = torch.randn(4, 2, 2), torch.randn(4, 1), torch.randn(4, 1)
+    expected = runner.get_inference_policy().forward_history(history, goal) + reference
+    torch.testing.assert_close(torch.jit.load(str(tmp_path / "policy.pt"))(history, goal, reference), expected)
+    evaluator = ReferenceEvaluator(onnx_model)
+    inputs = dict(zip(evaluator.input_names, [value[:1].numpy() for value in (history, goal, reference)]))
+    torch.testing.assert_close(torch.from_numpy(evaluator.run(None, inputs)[0]), expected[:1])
+
+
+def test_reference_action_is_ignored_unless_enabled() -> None:
+    """Without use_reference_action the policy output is the full action, even if the task has a reference."""
+    env = ScalarEnv(goal_dim=1)
+    learner = _learner(env, task_cfg={"class_name": ReferenceScalarTask})
+    obs = env.get_observations()
+    with torch.no_grad():
+        learner.actor.eval()
+        action = learner.actor(obs)
+    torch.testing.assert_close(action, learner.actor.forward_history(learner.actor.history, obs["goal"]))

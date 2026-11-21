@@ -6,6 +6,7 @@
 """Helper functions."""
 
 from .log_writer import LogWriter
+from .muon import Muon
 from .neptune_log_writer import NeptuneLogWriter
 from .utils import (
     CudaGraphCallable,
@@ -27,6 +28,7 @@ from .wandb_log_writer import WandbLogWriter
 __all__ = [
     "CudaGraphCallable",
     "LogWriter",
+    "Muon",
     "NeptuneLogWriter",
     "WandbLogWriter",
     "compile_model",

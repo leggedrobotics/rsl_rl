@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import torch
+from tensordict import TensorDict
 from typing import Protocol
 
 State = tuple[torch.Tensor, ...]
@@ -136,6 +137,24 @@ class DifferentiableTask:
     def post_dynamics(self, state: State, next_state: State, labels: torch.Tensor | None) -> State:
         """Advance task-owned analytic state after integration and successor-label prediction."""
         return next_state
+
+    def reference_action(self, state: State, goal: torch.Tensor) -> torch.Tensor:
+        """Return the action that the policy output corrects when the actor uses ``use_reference_action``.
+
+        Motion-tracking tasks can return the reference joint targets in action units, so the policy learns a
+        correction to the reference pose. Use deployable inputs only: exported policies take this action as an
+        additional ``reference_action`` input.
+        """
+        raise NotImplementedError
+
+    def mirror(self, window: TensorDict) -> TensorDict:
+        """Return the left-right mirror image of replay windows for world-model augmentation.
+
+        ``window`` holds flat ``state``, ``next_state``, ``actions``, ``context`` and ``prev_actions`` entries and
+        ``labels`` when the task has labels, each with batch and time dimensions first. The mirrored transitions must
+        be physically valid for the robot, e.g. by swapping left and right joints and negating lateral motion.
+        """
+        raise NotImplementedError
 
     def add_noise(self, observation: torch.Tensor) -> torch.Tensor:
         """Add task observation noise while retaining imagined state derivatives."""
