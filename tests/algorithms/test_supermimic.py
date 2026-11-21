@@ -334,8 +334,8 @@ def test_actor_ema_closed_form_after_optimizer_steps() -> None:
     torch.testing.assert_close(learner.actor_ema[0], expected.float(), rtol=1e-6, atol=1e-7)
 
 
-def test_actor_ema_checkpoint_full_actor_only_and_legacy_loads() -> None:
-    """Full and actor-only loads restore EMA; legacy or disabled loads keep the live policy usable."""
+def test_actor_ema_checkpoint_full_actor_only_and_no_ema_loads() -> None:
+    """Full and actor-only loads restore EMA; checkpoints without EMA or disabled EMA keep the live policy usable."""
     learner, env = _learner(actor_ema_halflife=500), ScalarEnv()
     _collect(learner, env, 4)
     learner.update()
@@ -355,14 +355,14 @@ def test_actor_ema_checkpoint_full_actor_only_and_legacy_loads() -> None:
         disabled.load(saved, {"actor": True}, strict=True)
     torch.testing.assert_close(disabled.get_policy().state_dict(), saved["actor_state_dict"], rtol=0, atol=0)
     assert "actor_ema_state_dict" not in disabled.save()
-    legacy = {key: value for key, value in saved.items() if not key.startswith("actor_ema")}
-    restored.load(legacy, {"actor": True}, strict=True)
+    without_ema = {key: value for key, value in saved.items() if not key.startswith("actor_ema")}
+    restored.load(without_ema, {"actor": True}, strict=True)
     assert restored.actor_ema_updates == 0
-    torch.testing.assert_close(restored.get_policy().state_dict(), legacy["actor_state_dict"], rtol=0, atol=0)
+    torch.testing.assert_close(restored.get_policy().state_dict(), without_ema["actor_state_dict"], rtol=0, atol=0)
     fresh = _learner(actor_ema_halflife=500)
-    fresh.load(legacy, {"actor": True}, strict=True)
+    fresh.load(without_ema, {"actor": True}, strict=True)
     assert fresh.actor_ema_updates == 0
-    torch.testing.assert_close(fresh.get_policy().state_dict(), legacy["actor_state_dict"], rtol=0, atol=0)
+    torch.testing.assert_close(fresh.get_policy().state_dict(), without_ema["actor_state_dict"], rtol=0, atol=0)
     malformed = copy.deepcopy(saved)
     name = next(iter(dict(learner.actor.named_parameters())))
     malformed["actor_ema_state_dict"][name] = torch.zeros(1, 1)
