@@ -678,6 +678,7 @@ class SuperMimic:
         losses = {key.removesuffix("_loss"): value for key, value in metrics.items() if key.endswith("_loss")}
         stats = {f"SuperMimic/{key}": value for key, value in metrics.items() if not key.endswith("_loss")}
         stats["Optimizer/learning_rate"] = self.learning_rate
+        stats["Optimizer/actor_learning_rate"] = self.actor_learning_rate
         return losses, stats
 
     def _run_iteration(self, update_policy: bool) -> dict[str, torch.Tensor]:
@@ -699,11 +700,12 @@ class SuperMimic:
             1 + math.cos(math.pi * progress)
         )
         self.learning_rate = self._base_learning_rates["world_model"] * factor
+        self.actor_learning_rate = self._base_learning_rates["actor"] * factor * self._actor_learning_rate_multiplier()
         for name, optimizer in self._all_optimizers():
             for group in optimizer.param_groups:
                 learning_rate = self._base_learning_rates[name] * factor
                 if name == "actor":
-                    learning_rate *= self._actor_learning_rate_multiplier()
+                    learning_rate = self.actor_learning_rate
                 if isinstance(group["lr"], torch.Tensor):
                     group["lr"].fill_(learning_rate)
                 else:
