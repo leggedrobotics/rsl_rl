@@ -15,6 +15,20 @@ from rsl_rl.modules.normalization import EmpiricalDiscountedVariationNormalizati
 class TestEmpiricalNormalization:
     """Tests for ``EmpiricalNormalization``."""
 
+    def test_running_statistics_do_not_retain_input_autograd_graphs(self) -> None:
+        """Independent differentiable inputs can be normalized and backpropagated repeatedly."""
+        norm = EmpiricalNormalization(shape=1)
+        inputs = [torch.tensor([[1.0], [3.0]], requires_grad=True), torch.tensor([[4.0], [8.0]], requires_grad=True)]
+        expected_gradients = []
+        for data in inputs:
+            norm.update(data)
+            expected_gradients.append(torch.ones_like(data) / (norm.std.detach() + norm.eps))
+            norm(data).sum().backward()
+
+        for data, expected in zip(inputs, expected_gradients):
+            torch.testing.assert_close(data.grad, expected)
+        assert all(not buffer.requires_grad for buffer in norm.buffers())
+
     def test_convergence_to_known_distribution(self) -> None:
         """Running mean and std should converge to the true values of the input distribution."""
         true_mean, true_std = 5.0, 2.0
