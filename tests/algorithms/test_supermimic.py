@@ -895,8 +895,9 @@ def test_actor_learning_rate_multiplier_decays_after_reward_or_iteration() -> No
 
     never = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_reward=float("inf"))
     _collect(never, env, 6)
-    never.update()
+    _, stats = never.update()
     assert never.actor_learning_rate_decay_from is None and _actor_ratio(never) == pytest.approx(4.0)
+    assert stats["Optimizer/actor_learning_rate"] == pytest.approx(4.0 * stats["Optimizer/learning_rate"])
     with pytest.raises(ValueError, match="decay"):
         _learner(env, actor_learning_rate_multiplier=4.0)
 
