@@ -63,7 +63,17 @@ class SequenceReplayBuffer:
 
     @torch.no_grad()
     def add(self, step: TensorDict) -> None:
-        """Copy one environment step, including mandatory boolean ``dones`` flags."""
+        """Copy one environment step, including mandatory boolean ``dones`` flags, and advance."""
+        self.write(step)
+        self.advance()
+
+    @torch.no_grad()
+    def write(self, step: TensorDict) -> None:
+        """Copy one environment step into the current slot without advancing.
+
+        The slot is selected on the device, so writes can be captured in CUDA graphs after the first call allocates
+        the buffer.
+        """
         if step.batch_size != torch.Size([self.num_envs]):
             raise ValueError(f"Expected one transition per environment, got batch size {step.batch_size}.")
         if "dones" not in step or step["dones"].shape != (self.num_envs,) or step["dones"].dtype != torch.bool:
@@ -91,8 +101,12 @@ class SequenceReplayBuffer:
                 self._flat_data = {key: value.flatten(0, 1) for key, value in self._data.items()}
         if set(step.keys(True, True)) != self._data.keys():
             raise ValueError("Replay transition keys changed after allocation.")
+        slot = self._step_tensor.reshape(1)
         for key, value in step.items(True, True):
-            self._data[key][self.step].copy_(value)
+            self._data[key].index_copy_(0, slot, value.to(self.device).unsqueeze(0))
+
+    def advance(self) -> None:
+        """Move to the next slot after :meth:`write`."""
         self.step = (self.step + 1) % self.num_slots
         self.num_steps = min(self.num_steps + 1, self.num_slots)
         self._step_tensor.fill_(self.step)

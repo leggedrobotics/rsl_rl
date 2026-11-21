@@ -121,11 +121,14 @@ class SuperMimicActor(nn.Module):
     ) -> None:
         """Clear observation history and seed actions from an optional simulator hold command."""
         rows = torch.ones_like(self.fresh) if dones is None else dones.reshape(-1).bool()
-        self.fresh[rows] = True
-        self.history[rows] = 0
-        self.previous_actions[rows] = 0 if reset_action is None else reset_action[rows, None]
+        self.fresh.logical_or_(rows)
+        self.history.masked_fill_(rows[:, None, None], 0)
+        reset = 0.0 if reset_action is None else reset_action[:, None]
+        self.previous_actions.copy_(torch.where(rows[:, None, None], reset, self.previous_actions))
         if previous_reset_action is not None and self.previous_actions.shape[1] > 1:
-            self.previous_actions[rows, -2] = previous_reset_action[rows]
+            self.previous_actions[:, -2].copy_(
+                torch.where(rows[:, None], previous_reset_action, self.previous_actions[:, -2])
+            )
 
     @property
     def output_std(self) -> torch.Tensor:

@@ -718,6 +718,35 @@ def test_event_labels_condition_on_the_applied_action() -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
+def test_cuda_graph_collection_matches_eager_across_resets_and_pushes() -> None:
+    """Graphed act and process_env_step store the same replay, histories and statistics as eager collection."""
+
+    def collect(use_cuda_graph: bool) -> tuple[SuperMimic, list[torch.Tensor]]:
+        torch.manual_seed(0)
+        env = ScalarEnv(device="cuda:0", reset_action=0.3, pushes=True)
+        learner = _learner(env, use_cuda_graph=use_cuda_graph, replay_buffer_capacity=64)
+        actions = []
+        obs = env.get_observations()
+        for _ in range(12):
+            actions.append(learner.act(obs))
+            obs, reward, done, extras = env.step(actions[-1])
+            learner.process_env_step(obs, reward, done, extras)
+        return learner, actions
+
+    eager, eager_actions = collect(False)
+    graphed, graphed_actions = collect(True)
+    assert all(graph.graph is not None for graph in (*graphed._act_graphs.values(), graphed._process_env_step_graph))
+    torch.testing.assert_close(graphed_actions, eager_actions, rtol=0, atol=0)
+    assert graphed.storage.num_steps == eager.storage.num_steps == 12
+    torch.testing.assert_close(graphed.storage.data[:12].to_dict(), eager.storage.data[:12].to_dict(), rtol=0, atol=0)
+    assert eager.storage.data["dones"][:12].any() and eager.storage.data["window_break"][:12].any()
+    for name in ("history", "previous_actions", "fresh"):
+        torch.testing.assert_close(getattr(graphed.actor, name), getattr(eager.actor, name), rtol=0, atol=0)
+    torch.testing.assert_close(graphed.world_model.state_dict(), eager.world_model.state_dict(), rtol=0, atol=0)
+    torch.testing.assert_close(graphed._window_break_sum, eager._window_break_sum, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
 def test_cuda_graph_matches_eager_and_resumes() -> None:
     """Graphed learner iterations match eager updates exactly and recapture after loading optimizer state."""
 
