@@ -176,6 +176,22 @@ class RolloutStorage:
         if self.step >= self.num_transitions_per_env:
             raise OverflowError("Rollout buffer overflow! You should call clear() before adding new transitions.")
 
+        if self.step == 0:
+            fields = ["actions", "rewards"]
+            if self.training_type == "distillation":
+                fields.append("privileged_actions")
+            if self.training_type == "rl":
+                fields.extend(("values", "actions_log_prob"))
+            with torch.inference_mode(False):
+                for name in fields:
+                    buffer = getattr(self, name)
+                    value = getattr(transition, name)
+                    setattr(self, name, buffer.to(dtype=torch.promote_types(buffer.dtype, value.dtype)))
+                if self.training_type == "rl":
+                    dtype = torch.promote_types(self.values.dtype, self.rewards.dtype)
+                    self.returns = self.returns.to(dtype=dtype)
+                    self.advantages = self.advantages.to(dtype=dtype)
+
         # Core
         self.observations[self.step].copy_(transition.observations)
         self.actions[self.step].copy_(transition.actions)  # type: ignore
@@ -192,7 +208,12 @@ class RolloutStorage:
             self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
             if self.distribution_params is None:  # Initialize the distribution parameters
                 self.distribution_params = tuple(
-                    torch.zeros(self.num_transitions_per_env, *p.shape, device=self.device)
+                    torch.zeros(
+                        self.num_transitions_per_env,
+                        *p.shape,
+                        dtype=torch.promote_types(self.actions.dtype, p.dtype),
+                        device=self.device,
+                    )
                     for p in transition.distribution_params  # type: ignore
                 )
             for i, p in enumerate(transition.distribution_params):  # type: ignore

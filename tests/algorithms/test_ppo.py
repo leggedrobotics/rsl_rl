@@ -547,3 +547,35 @@ class TestSharedCNNEncoders:
         assert ppo.optimizer.state[shared]["step"] == 1
         # The first Adam step moves each parameter by the learning rate
         torch.testing.assert_close((before - shared.detach()).abs().max().item(), 1e-3, atol=1e-6, rtol=0)
+
+
+def test_double_rollout_preserves_the_collected_policy_likelihood() -> None:
+    """Replaying unchanged double policies preserves their action probabilities and KL."""
+    torch.manual_seed(31)
+    obs = make_obs(NUM_ENVS, OBS_DIM).double()
+    groups = {"actor": ["policy"], "critic": ["policy"]}
+    actor = _make_actor(obs, groups, distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1e-6}).double()
+    critic = _make_critic(obs, groups).double()
+    with torch.no_grad():
+        actor.mlp.output_layer.weight.zero_()
+        actor.mlp.output_layer.bias.fill_(1.0 + 3e-8)
+    storage = RolloutStorage("rl", NUM_ENVS, NUM_STEPS, obs, [NUM_ACTIONS])
+    ppo = PPO(actor, critic, storage, learning_rate=0.0, num_learning_epochs=1, num_mini_batches=1, schedule="fixed")
+    with torch.inference_mode():
+        for _ in range(NUM_STEPS):
+            ppo.act(obs)
+            ppo.process_env_step(
+                obs, torch.full((NUM_ENVS,), 1.0 + 1e-9, dtype=torch.float64), torch.zeros(NUM_ENVS), {}
+            )
+        ppo.compute_returns(obs)
+    batch = next(storage.mini_batch_generator(1, 1))
+    actor(batch.observations, stochastic_output=True)
+    actual = actor.get_output_log_prob(batch.actions)
+    torch.testing.assert_close(actual, batch.old_actions_log_prob.squeeze(-1).to(actual.dtype), rtol=0, atol=1e-12)
+    kl = actor.get_kl_divergence(batch.old_distribution_params, actor.output_distribution_params)
+    torch.testing.assert_close(kl, torch.zeros_like(kl), rtol=0, atol=1e-12)
+    torch.testing.assert_close(storage.rewards, torch.full_like(storage.rewards, 1.0 + 1e-9), rtol=0, atol=0)
+    assert storage.values.dtype == storage.returns.dtype == torch.float64
+    assert not storage.actions.is_inference()
+    losses, _ = ppo.update()
+    assert all(torch.isfinite(torch.tensor(value)) for value in losses.values())
