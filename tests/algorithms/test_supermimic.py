@@ -214,16 +214,16 @@ def test_direct_and_standard_runner_train_all_models() -> None:
         assert any(not torch.equal(old[name], value) for name, value in module.named_parameters())
     learner, env = _learner(), ScalarEnv()
     _collect(learner, env, 4)
-    metrics = learner.update()
-    assert {"world_model_loss", "policy_loss", "critic_loss", "label_loss"} <= metrics.keys()
-    assert all(torch.isfinite(torch.tensor(value)) for value in metrics.values())
-    assert metrics["policy_grad_norm"] > 0
+    losses, stats = learner.update()
+    assert {"world_model_loss", "policy_loss", "critic_loss", "label_loss"} == losses.keys()
+    assert all(torch.isfinite(torch.tensor(value)) for value in (losses | stats).values())
+    assert stats["SuperMimic/policy_grad_norm"] > 0
     for module in (learner.actor, learner.world_model):
         assert all(not buffer.is_inference() for buffer in module.buffers())
     checkpoint = copy.deepcopy(learner.save())
     learner.load(checkpoint, None, strict=True)
     _collect(learner, env, 4, inference=False)
-    assert torch.isfinite(torch.tensor(learner.update()["world_model_loss"]))
+    assert torch.isfinite(torch.tensor(learner.update()[0]["world_model_loss"]))
 
 
 def test_replay_start_padding_repeats_the_same_noisy_reset_frame(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -415,8 +415,8 @@ def test_interval_edits_cut_only_future_world_model_targets() -> None:
     window, mask = learner._windows(64)
     assert mask[:, 0].all() and not mask[:, 1:].any()
     assert (window["next_state"][:, 0] < window["state"][:, 0] + 1).all()
-    metrics = learner.update()
-    assert metrics["window_break_fraction"] == 1.0
+    _, stats = learner.update()
+    assert stats["SuperMimic/window_break_fraction"] == 1.0
     _, history = learner._starts(64)
     assert (history[:, 0, 0] != history[:, -1, 0]).any()
 
@@ -665,10 +665,10 @@ def test_task_without_successor_event_labels(monkeypatch: pytest.MonkeyPatch) ->
     del cfg["obs_groups"]["labels"]
     learner = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, "cpu")
     _collect(learner, env, 4)
-    metrics = learner.update()
-    assert learner.world_model.label_head is None and "label_loss" not in metrics
-    assert all(torch.isfinite(torch.tensor(value)) for value in metrics.values())
-    assert metrics["policy_grad_norm"] > 0
+    losses, stats = learner.update()
+    assert learner.world_model.label_head is None and "label_loss" not in losses
+    assert all(torch.isfinite(torch.tensor(value)) for value in (losses | stats).values())
+    assert stats["SuperMimic/policy_grad_norm"] > 0
 
 
 @pytest.mark.parametrize("group", ["state", "labels"])
@@ -740,5 +740,5 @@ def test_cuda_graph_matches_eager_and_resumes() -> None:
     assert not graphed._graph_updates
     for _ in range(5):
         _collect(graphed, env, 3)
-        metrics = graphed.update()
-    assert graphed._graph_updates and math.isfinite(metrics["world_model_loss"])
+        losses, _ = graphed.update()
+    assert graphed._graph_updates and math.isfinite(losses["world_model_loss"])
