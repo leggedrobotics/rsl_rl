@@ -105,7 +105,9 @@ class OnPolicyRunner:
                         self.logger.process_env_step(dones, extras, step_dict)
 
                     # Raise if the environment returned NaN or Inf values
-                    raise_if_nonfinite(nonfinite)
+                    raise_if_nonfinite(
+                        nonfinite, synchronize=self.is_distributed and self.cfg.get("check_for_nan", True)
+                    )
 
                     stop = time.time()
                     collect_time = stop - start

@@ -20,11 +20,13 @@ from typing import Any
 import pytest
 
 from rsl_rl.algorithms.ppo import PPO
+from rsl_rl.runners import OnPolicyRunner
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import reduce_gradients_in_buckets
 from tests.algorithms.test_distillation import _fill_distillation_storage, _make_distillation_setup
 from tests.algorithms.test_ppo import NUM_ENVS, NUM_STEPS, OBS_DIM, _build_ppo
 from tests.conftest import make_obs
+from tests.runners.test_on_policy_runner import DummyEnv, _make_train_cfg
 
 _GLOO_AVAILABLE = torch.distributed.is_available() and torch.distributed.is_gloo_available()
 
@@ -210,6 +212,81 @@ def _distillation_worker(rank: int, world_size: int, store_file: str, reduce_gra
             torch.distributed.destroy_process_group()
 
 
+class _GlooRunner(OnPolicyRunner):
+    """Run the actual training loop with a CPU process group for regression coverage."""
+
+    def _configure_multi_gpu(self) -> None:
+        """Use the existing Gloo group instead of configuring CUDA devices."""
+        self.gpu_global_rank = torch.distributed.get_rank()
+        self.gpu_local_rank = self.gpu_global_rank
+        self.gpu_world_size = torch.distributed.get_world_size()
+        self.is_distributed = True
+        self.cfg["multi_gpu"] = {
+            "global_rank": self.gpu_global_rank,
+            "local_rank": self.gpu_local_rank,
+            "world_size": self.gpu_world_size,
+        }
+
+
+class _NonfiniteEnv(DummyEnv):
+    """Inject a non-finite environment output after a healthy training iteration."""
+
+    invalid_source: str | None = None
+
+    def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:
+        """Keep observations finite while optionally corrupting a reward or a final observation."""
+        observations, rewards, dones, extras = super().step(actions)
+        if self.invalid_source == "rewards":
+            rewards[0] = torch.nan
+        elif self.invalid_source == "final_obs":
+            dones[0] = 1
+            extras["final_obs"] = observations.clone()
+            extras["final_obs"]["policy"][0, 0] = torch.inf
+        return observations, rewards, dones, extras
+
+
+def _nonfinite_runner_worker(rank: int, world_size: int, store_file: str, source: str) -> None:
+    """Both ranks must stop before optimization when only one environment reports non-finite data."""
+    init_gloo(rank, world_size, store_file)
+    try:
+        cfg = _make_train_cfg()
+        cfg["num_steps_per_env"] = 1
+        cfg["algorithm"].update(num_learning_epochs=1, num_mini_batches=1)
+        env = _NonfiniteEnv()
+        runner = _GlooRunner(env, cfg)
+        runner.learn(1)
+        before = [parameter.detach().clone() for parameter in runner.alg.actor.parameters()]
+        if rank == 1:
+            env.invalid_source = source
+        entered_update = False
+        reported_nonfinite = False
+
+        def unexpected_update() -> tuple[dict[str, float], dict[str, float]]:
+            """Observe an incorrect update entry without leaving another worker stuck in a gradient collective."""
+            nonlocal entered_update
+            entered_update = True
+            raise RuntimeError("Entered policy update after a peer reported non-finite environment data")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(runner.alg, "update", unexpected_update)
+            try:
+                runner.learn(1)
+            except ValueError as error:
+                reported_nonfinite = "NaN or Inf" in str(error)
+                if rank == 1:
+                    assert ("rewards" if source == "rewards" else "final observation") in str(error)
+            except RuntimeError:
+                assert entered_update
+        result = torch.tensor([reported_nonfinite, entered_update], dtype=torch.int32)
+        results = [torch.zeros_like(result) for _ in range(world_size)]
+        torch.distributed.all_gather(results, result)
+        assert all(torch.equal(value, torch.tensor([1, 0], dtype=torch.int32)) for value in results)
+        assert all(torch.equal(old, new) for old, new in zip(before, runner.alg.actor.parameters()))
+    finally:
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+
+
 class TestReduceParametersLocal:
     """Single-process tests for ``reduce_parameters``."""
 
@@ -227,6 +304,11 @@ class TestReduceParametersLocal:
 @pytest.mark.skipif(not _GLOO_AVAILABLE, reason="torch.distributed gloo backend is required")
 class TestDistributedAlgorithms:
     """Multi-GPU tests for gradient reduction and on-policy updates."""
+
+    @pytest.mark.parametrize("source", ["rewards", "final_obs"])
+    def test_nonfinite_environment_outputs_abort_all_ranks(self, source: str) -> None:
+        """A healthy peer also reports the environment failure before entering its policy update."""
+        spawn_gloo(_nonfinite_runner_worker, source)
 
     def test_chunked_reduce_matches_full_concat(self) -> None:
         """Bucketed reduction must match the previous full-buffer average, including oversized and ``None`` grads."""
