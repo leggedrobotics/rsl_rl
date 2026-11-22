@@ -768,7 +768,7 @@ def test_cuda_graph_matches_eager_and_resumes(option: str) -> None:
     options = {
         "default": {},
         "muon": {"muon_models": ("actor", "world_model")},
-        "actor_multiplier": {"actor_learning_rate_multiplier": 4.0, "actor_learning_rate_decay_reward": 0.5},
+        "actor_multiplier": {"actor_learning_rate_multiplier": 4.0, "actor_learning_rate_decay_return": 0.5},
         "reference_action": {"task_cfg": {"class_name": ReferenceScalarTask}},
         "mirror": {"task_cfg": {"class_name": MirroredScalarTask}, "world_model_mirror_fraction": 0.5},
     }[option]
@@ -881,7 +881,7 @@ def test_actor_learning_rate_multiplier_decays_after_reward_or_iteration() -> No
     learner._update_learning_rate()
     assert _actor_ratio(learner) == pytest.approx(1.0)
 
-    learner = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_reward=float("-inf"))
+    learner = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_return=float("-inf"))
     _collect(learner, env, 6)
     learner.update()
     start = learner.actor_learning_rate_decay_from
@@ -889,17 +889,53 @@ def test_actor_learning_rate_multiplier_decays_after_reward_or_iteration() -> No
     learner.iteration = start + 1
     learner._update_learning_rate()
     assert _actor_ratio(learner) == pytest.approx(4.0 + (1.0 - 4.0) / 300)
-    restored = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_reward=float("-inf"))
+    restored = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_return=float("-inf"))
     restored.load(learner.save(), None, strict=True)
     assert restored.actor_learning_rate_decay_from == start
 
-    never = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_reward=float("inf"))
+    never = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_return=float("inf"))
     _collect(never, env, 6)
     _, stats = never.update()
     assert never.actor_learning_rate_decay_from is None and _actor_ratio(never) == pytest.approx(4.0)
     assert stats["Optimizer/actor_learning_rate"] == pytest.approx(4.0 * stats["Optimizer/learning_rate"])
     with pytest.raises(ValueError, match="decay"):
         _learner(env, actor_learning_rate_multiplier=4.0)
+
+
+class FixedEpisodeEnv(ScalarEnv):
+    """Episodes end after a fixed number of steps, with reward 1 per step, below a longer maximum length."""
+
+    def __init__(self, episode_steps: int, max_episode_length: int) -> None:
+        """Allocate the scalar system with the given episode and maximum lengths."""
+        super().__init__()
+        self.episode_steps, self.max_episode_length = episode_steps, max_episode_length
+
+    def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:
+        """End episodes after ``episode_steps`` and reward every step equally."""
+        limit, self.max_episode_length = self.max_episode_length, self.episode_steps
+        obs, rewards, dones, extras = super().step(actions)
+        self.max_episode_length = limit
+        return obs, torch.ones_like(rewards), dones, extras
+
+
+@pytest.mark.parametrize(("episode_steps", "starts"), [(2, False), (20, True)])
+def test_actor_learning_rate_decay_return_counts_short_episodes_low(episode_steps: int, starts: bool) -> None:
+    """Returns are divided by the maximum episode length, so short episodes with high reward do not start the decay."""
+    env = FixedEpisodeEnv(episode_steps, max_episode_length=20)
+    learner = _learner(
+        env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_return=0.5, replay_buffer_capacity=64
+    )
+    _collect(learner, env, 24)
+    learner.update()
+    assert (learner.actor_learning_rate_decay_from is not None) is starts
+
+
+def test_actor_learning_rate_decay_return_requires_max_episode_length() -> None:
+    """Without the environment's maximum episode length, returns cannot be normalized."""
+    env = ScalarEnv()
+    del env.max_episode_length
+    with pytest.raises(ValueError, match="max_episode_length"):
+        _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_return=0.5)
 
 
 class MirroredScalarTask(ScalarTask):

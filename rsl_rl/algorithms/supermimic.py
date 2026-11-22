@@ -83,8 +83,9 @@ class SuperMimic:
         actor_learning_rate: float | None = None,
         actor_learning_rate_multiplier: float = 1.0,
         actor_learning_rate_decay_iterations: int = 300,
-        actor_learning_rate_decay_reward: float | None = None,
+        actor_learning_rate_decay_return: float | None = None,
         actor_learning_rate_decay_start: int | None = None,
+        max_episode_length: int | None = None,
         muon_models: tuple[str, ...] = (),
         max_grad_norm: float = 1.0,
         # Learning rate schedule parameters
@@ -132,13 +133,16 @@ class SuperMimic:
             actor_learning_rate: Initial actor learning rate. None uses ``learning_rate``.
             actor_learning_rate_multiplier: Factor on the actor learning rate early in training. It decays linearly to 1
                 over ``actor_learning_rate_decay_iterations`` learner iterations, starting at the first update whose
-                episodes reach ``actor_learning_rate_decay_reward`` or at ``actor_learning_rate_decay_start``,
+                episodes reach ``actor_learning_rate_decay_return`` or at ``actor_learning_rate_decay_start``,
                 whichever comes first.
             actor_learning_rate_decay_iterations: Learner iterations over which the multiplier decays to 1.
-            actor_learning_rate_decay_reward: Mean reward per step, over episodes completed since the previous update,
-                that starts the decay. None disables this trigger.
+            actor_learning_rate_decay_return: Mean return per maximum-length step of the episodes completed since the
+                previous update that starts the decay, i.e. the episode return divided by ``max_episode_length``, so
+                short failed episodes count low. None disables this trigger.
             actor_learning_rate_decay_start: Learner iteration at which the decay starts at the latest. None disables
                 this trigger.
+            max_episode_length: Maximum episode length in environment steps, required by
+                ``actor_learning_rate_decay_return``.
             muon_models: Models among ``"actor"`` and ``"world_model"`` whose hidden weight matrices are trained with
                 :class:`~rsl_rl.utils.Muon`; their other parameters and all other models use Adam.
             max_grad_norm: Global gradient-norm limit for each model.
@@ -181,9 +185,13 @@ class SuperMimic:
             )
         if (
             actor_learning_rate_multiplier > 1
-            and actor_learning_rate_decay_reward is None is actor_learning_rate_decay_start
+            and actor_learning_rate_decay_return is None is actor_learning_rate_decay_start
         ):
-            raise ValueError("An actor learning-rate multiplier needs a decay reward or a decay start iteration.")
+            raise ValueError("An actor learning-rate multiplier needs a decay return or a decay start iteration.")
+        if actor_learning_rate_decay_return is not None and not max_episode_length:
+            raise ValueError(
+                "actor_learning_rate_decay_return needs the environment's max_episode_length to normalize returns."
+            )
         if not set(muon_models) <= {"actor", "world_model"}:
             raise ValueError("muon_models may only contain 'actor' and 'world_model'.")
         if not 0 <= world_model_mirror_fraction <= 1:
@@ -290,7 +298,8 @@ class SuperMimic:
         self.final_learning_rate_ratio = final_learning_rate_ratio
         self.actor_learning_rate_multiplier = actor_learning_rate_multiplier
         self.actor_learning_rate_decay_iterations = actor_learning_rate_decay_iterations
-        self.actor_learning_rate_decay_reward = actor_learning_rate_decay_reward
+        self.actor_learning_rate_decay_return = actor_learning_rate_decay_return
+        self.max_episode_length = max_episode_length
         self.actor_learning_rate_decay_start = actor_learning_rate_decay_start
         self.actor_learning_rate_decay_from: int | None = None if actor_learning_rate_multiplier > 1 else 0
 
@@ -303,9 +312,8 @@ class SuperMimic:
         self._collected_steps = 0
         self._window_break_sum = torch.zeros((), device=device)
         self._nonfinite_final_obs = torch.zeros(2, dtype=torch.bool, device=device)
-        # Per-step reward of running and completed episodes for the actor learning-rate decay trigger
-        self._episode_reward = torch.zeros(self.storage.num_envs, device=device)
-        self._episode_length = torch.zeros(self.storage.num_envs, device=device)
+        # Returns of running and completed episodes for the actor learning-rate decay trigger
+        self._episode_return = torch.zeros(self.storage.num_envs, device=device)
         self._completed_episodes = torch.zeros(2, device=device)
         self._update_learning_rate()
 
@@ -400,13 +408,11 @@ class SuperMimic:
         self._nonfinite_final_obs.logical_or_(
             torch.stack((~torch.isfinite(successor).all(), ~torch.isfinite(labels).all()))
         )
-        if self.actor_learning_rate_decay_reward is not None:
-            self._episode_reward.add_(rewards)
-            self._episode_length.add_(1)
-            per_step = torch.where(done, self._episode_reward / self._episode_length, 0.0)
-            self._completed_episodes.add_(torch.stack((per_step.sum(), done.sum())))
-            self._episode_reward.masked_fill_(done, 0.0)
-            self._episode_length.masked_fill_(done, 0.0)
+        if self.actor_learning_rate_decay_return is not None:
+            self._episode_return.add_(rewards)
+            normalized = torch.where(done, self._episode_return / self.max_episode_length, 0.0)
+            self._completed_episodes.add_(torch.stack((normalized.sum(), done.sum())))
+            self._episode_return.masked_fill_(done, 0.0)
         self.storage.write(transition)
         physical = self.task.representation.unflatten(state)
         self.world_model.observe(
@@ -630,16 +636,16 @@ class SuperMimic:
 
     def update(self) -> tuple[dict[str, float], dict[str, float]]:
         """Run accumulated learner updates and return mean losses and statistics."""
-        nonfinite_state, nonfinite_labels, reward_sum, episodes = torch.cat((
+        nonfinite_state, nonfinite_labels, return_sum, episodes = torch.cat((
             self._nonfinite_final_obs.float(),
             self._completed_episodes,
         )).tolist()
         self._completed_episodes.zero_()
         if (
             self.actor_learning_rate_decay_from is None
-            and self.actor_learning_rate_decay_reward is not None
+            and self.actor_learning_rate_decay_return is not None
             and episodes
-            and reward_sum / episodes >= self.actor_learning_rate_decay_reward
+            and return_sum / episodes >= self.actor_learning_rate_decay_return
         ):
             self.actor_learning_rate_decay_from = self.iteration
         if nonfinite_state or nonfinite_labels:
@@ -916,6 +922,7 @@ class SuperMimic:
             groups,
             device=device,
             multi_gpu_cfg=cfg["multi_gpu"],
+            max_episode_length=int(env.max_episode_length) if hasattr(env, "max_episode_length") else None,
             **alg_cfg,
         )
         learner.compile(cfg.get("torch_compile_mode"))
