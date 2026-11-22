@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import time
 import torch
+from typing import Callable
 
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
@@ -22,6 +23,14 @@ class OnPolicyRunner:
 
     alg: PPO
     """The actor-critic algorithm."""
+
+    iteration_callbacks: list[Callable[[OnPolicyRunner, int, dict, dict], None]]
+    """Functions called at the end of each learning iteration.
+
+    Each function is called as ``callback(runner, it, loss_dict, stats_dict)`` after the iteration has been logged and
+    the model has been saved, if due. ``loss_dict`` and ``stats_dict`` are the outputs of the algorithm update. In
+    multi-GPU training, the functions are called on every process.
+    """
 
     def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
         """Construct the runner, algorithm, and logging stack."""
@@ -52,6 +61,7 @@ class OnPolicyRunner:
         )
 
         self.current_learning_iteration = 0
+        self.iteration_callbacks = []
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         """Run the learning loop for the specified number of iterations."""
@@ -135,6 +145,9 @@ class OnPolicyRunner:
                 # Save model
                 if self.logger.writer is not None and it % self.cfg["save_interval"] == 0:
                     self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore
+
+                for callback in self.iteration_callbacks:
+                    callback(self, it, loss_dict, stats_dict)
 
             # Save the final model after training
             if self.logger.writer is not None:

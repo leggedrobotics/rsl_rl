@@ -171,6 +171,18 @@ class TestLearnLoop:
         runner.learn(num_learning_iterations=3)
         assert runner.current_learning_iteration == 2
 
+    def test_learn_calls_iteration_callbacks(self) -> None:
+        """Iteration callbacks should receive the runner, the iteration, and the update results once per iteration."""
+        runner = _build_runner()
+        calls = []
+        runner.iteration_callbacks.append(lambda *args: calls.append(args))
+        runner.learn(num_learning_iterations=3)
+        assert [it for _, it, _, _ in calls] == [0, 1, 2]
+        for callback_runner, _, loss_dict, stats_dict in calls:
+            assert callback_runner is runner
+            assert "surrogate" in loss_dict
+            assert "Optimizer/learning_rate" in stats_dict
+
 
 class TestSaveLoad:
     """Tests for checkpoint save and load."""
