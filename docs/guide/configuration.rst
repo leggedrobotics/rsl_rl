@@ -586,16 +586,18 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
      - float
      - ``1.0``
      - Factor on the actor learning rate early in training. It decays linearly to 1 over
-       ``actor_learning_rate_decay_iterations``, starting when ``actor_learning_rate_decay_reward`` or
+       ``actor_learning_rate_decay_iterations``, starting when ``actor_learning_rate_decay_return`` or
        ``actor_learning_rate_decay_start`` is reached, whichever comes first.
    * - ``actor_learning_rate_decay_iterations``
      - int
      - ``300``
      - Learner iterations over which the multiplier decays to 1.
-   * - ``actor_learning_rate_decay_reward``
+   * - ``actor_learning_rate_decay_return``
      - float | None
      - ``None``
-     - Mean reward per step of the episodes completed since the previous update that starts the decay.
+     - Mean return per maximum-length step of the episodes completed since the previous update that starts
+       the decay: each episode return is divided by the environment's ``max_episode_length``, so short
+       failed episodes count low.
    * - ``actor_learning_rate_decay_start``
      - int | None
      - ``None``
