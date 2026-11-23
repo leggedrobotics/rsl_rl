@@ -120,10 +120,12 @@ class Logger:
     ) -> None:
         """Add metrics from the environment step to the buffers."""
         if self.writer is not None:
-            if "episode" in extras:
-                self.ep_extras.append(extras["episode"])
-            elif "log" in extras:
-                self.ep_extras.append(extras["log"])
+            if "episode" in extras or "log" in extras:
+                episode = extras["episode"] if "episode" in extras else extras["log"]
+                self.ep_extras.append({
+                    key: value.detach().clone() if isinstance(value, torch.Tensor) else value
+                    for key, value in episode.items()
+                })
 
             # Update step stats and episode length
             for key, value in step_dict.items():

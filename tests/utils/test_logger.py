@@ -170,3 +170,23 @@ class TestTimeSeries:
 
         assert "Training/mean_reward" in logger.writer.tags
         assert not any(tag.endswith("/time") for tag in logger.writer.tags)
+
+
+@pytest.mark.parametrize("extras_key", ["episode", "log"])
+def test_episode_metrics_snapshot_reused_environment_buffers(tmp_path: pathlib.Path, extras_key: str) -> None:
+    """Delayed logging retains each step's values when the environment reuses its storage."""
+    logger = _make_logger(tmp_path)
+    values = torch.tensor([1.0, 3.0], requires_grad=True)
+    info = {"reward": values, "number": 2.0}
+    logger.process_env_step(torch.zeros(1), {extras_key: info}, {})
+    captured = logger.ep_extras[0]["reward"]
+    with torch.no_grad():
+        values.fill_(9.0)
+    info["number"] = 10.0
+    logger.process_env_step(torch.zeros(1), {extras_key: info}, {})
+    _log(logger, 0)
+    assert logger.writer.scalars["Episode/reward"] == 5.5
+    assert logger.writer.scalars["Episode/number"] == 6.0
+    assert not captured.requires_grad
+    torch.testing.assert_close(captured, torch.tensor([1.0, 3.0]))
+    assert info["number"] == 10.0
