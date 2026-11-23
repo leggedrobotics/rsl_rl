@@ -864,8 +864,8 @@ def _actor_ratio(learner: SuperMimic) -> float:
     return learner.optimizers["actor"].param_groups[0]["lr"] / learner.optimizers["critic"].param_groups[0]["lr"]
 
 
-def test_actor_learning_rate_multiplier_decays_after_reward_or_iteration() -> None:
-    """The multiplier holds until episodes reach the reward or the start iteration, then decays linearly to 1."""
+def test_actor_learning_rate_multiplier_decays_after_return_or_iteration() -> None:
+    """The multiplier holds until episodes reach the decay return or start iteration, then decays linearly to 1."""
     env = ScalarEnv()
     learner = _learner(
         env,
