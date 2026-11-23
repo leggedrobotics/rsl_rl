@@ -102,7 +102,19 @@ class Symmetry:
             batch.observations, _ = self.data_augmentation_func(env=self.env, obs=batch.observations, actions=None)
 
         # Action means predicted by the actor on the augmented observation batch
-        mean_actions = actor(batch.observations.detach().clone())
+        batch_norms = (
+            [module for module in actor.modules() if isinstance(module, nn.modules.batchnorm._BatchNorm)]
+            if isinstance(actor, nn.Module) and not self.use_mirror_loss
+            else []
+        )
+        tracking = [module.track_running_stats for module in batch_norms]
+        try:
+            for module in batch_norms:
+                module.track_running_stats = False
+            mean_actions = actor(batch.observations.detach().clone())
+        finally:
+            for module, track_running_stats in zip(batch_norms, tracking):
+                module.track_running_stats = track_running_stats
 
         # Mirror the original-slice action means using the augmentation function. We use the action means here rather
         # than the sampled actions in ``batch.actions``, since the symmetry loss is defined on the policy mean.

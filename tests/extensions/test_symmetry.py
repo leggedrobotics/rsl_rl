@@ -10,6 +10,8 @@ from __future__ import annotations
 import torch
 from tensordict import TensorDict
 
+import pytest
+
 from rsl_rl.extensions.symmetry import Symmetry
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
@@ -137,6 +139,44 @@ class TestAugmentBatch:
 
 class TestComputeLoss:
     """Tests for :meth:`Symmetry.compute_loss`."""
+
+    @pytest.mark.parametrize("use_mirror_loss", [False, True])
+    @pytest.mark.parametrize("use_data_augmentation", [False, True])
+    def test_metric_preserves_batch_normalization_statistics(
+        self, use_mirror_loss: bool, use_data_augmentation: bool
+    ) -> None:
+        """Only a learned mirror objective may update the actor's batch-normalization state."""
+        actor = MLPModel(
+            make_obs(NUM_ENVS, OBS_DIM),
+            {"actor": ["policy"]},
+            "actor",
+            NUM_ACTIONS,
+            network_cfg={"class_name": "ResidualMLP", "hidden_dim": 8, "num_blocks": 1},
+        )
+        actor.train()
+        batch_norms = [module for module in actor.modules() if isinstance(module, torch.nn.BatchNorm1d)]
+        before = {name: value.clone() for name, value in actor.named_buffers()}
+        batch = _make_batch()
+        symmetry = Symmetry(
+            env=None,
+            data_augmentation_func=_negate_augmentation,
+            use_mirror_loss=use_mirror_loss,
+            use_data_augmentation=use_data_augmentation,
+        )
+        symmetry.augment_batch(batch, NUM_ENVS)
+        loss = symmetry.compute_loss(actor, batch, NUM_ENVS)
+        assert torch.isfinite(loss)
+        assert loss.requires_grad == use_mirror_loss
+        assert all(module.training and module.track_running_stats for module in batch_norms)
+        if use_mirror_loss:
+            assert all(module.num_batches_tracked == 1 for module in batch_norms)
+            loss.backward()
+            assert any(
+                parameter.grad is not None and parameter.grad.abs().sum() > 0 for parameter in actor.parameters()
+            )
+        else:
+            for name, value in actor.named_buffers():
+                torch.testing.assert_close(value, before[name], rtol=0.0, atol=0.0)
 
     def test_returns_finite_scalar(self) -> None:
         """The mirror MSE should be a finite, non-negative scalar."""
