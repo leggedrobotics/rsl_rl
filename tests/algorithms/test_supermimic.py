@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 import torch
 from pathlib import Path
 from tensordict import TensorDict
@@ -519,6 +520,20 @@ def test_checkpoint_normalized_jit_and_onnx(
     evaluator = ReferenceEvaluator(onnx_model)
     actual = evaluator.run(None, dict(zip(evaluator.input_names, [value[:1].numpy() for value in inputs])))[0]
     torch.testing.assert_close(torch.from_numpy(actual), expected[:1])
+
+
+def test_documented_checkpoint_loads_run(tmp_path: Path) -> None:
+    """The runner.load calls of the SuperMimic checkpoint documentation work on a SuperMimic checkpoint."""
+    overview = Path(__file__).parents[2] / "docs" / "guide" / "overview.rst"
+    section = overview.read_text().split(".. _supermimic-contract:")[1]
+    calls = re.findall(r"``(runner\.load\(path.*?\))``", section, flags=re.DOTALL)
+    assert len(calls) >= 2
+    runner = OffPolicyRunner(ScalarEnv(), _cfg(), str(tmp_path / "logs"))
+    runner.learn(2)
+    path = str(tmp_path / "learner.pt")
+    runner.save(path)
+    for call in calls:
+        eval(call, {"runner": OffPolicyRunner(ScalarEnv(), _cfg()), "path": path})
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
