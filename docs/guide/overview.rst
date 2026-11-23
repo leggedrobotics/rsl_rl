@@ -164,7 +164,9 @@ saving, loading, and exporting checkpoints and models via :func:`~rsl_rl.runners
 :func:`~rsl_rl.runners.on_policy_runner.OnPolicyRunner.load`,
 :func:`~rsl_rl.runners.on_policy_runner.OnPolicyRunner.export_policy_to_jit`,
 and :func:`~rsl_rl.runners.on_policy_runner.OnPolicyRunner.export_policy_to_onnx`. Additionally, it coordinates the
-initialization of the multi-GPU pipeline, the **Algorithm**, and the :class:`~rsl_rl.utils.logger.Logger`.
+initialization of the multi-GPU pipeline, the **Algorithm**, and the :class:`~rsl_rl.utils.logger.Logger`. Functions
+added to :attr:`~rsl_rl.runners.on_policy_runner.OnPolicyRunner.iteration_callbacks` are called after each update,
+before logging, and can add custom metrics to the logged statistics.
 
 Algorithms
 ^^^^^^^^^^
