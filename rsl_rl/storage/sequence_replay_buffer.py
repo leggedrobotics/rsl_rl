@@ -126,10 +126,9 @@ class SequenceReplayBuffer:
         anchor = (torch.rand(batch_size, device=self.device) * num_steps).long().clamp(max=num_steps - 1)
         env_idx = torch.randint(self.num_envs, (batch_size,), device=self.device)
         ages = anchor[:, None] + torch.arange(length, device=self.device)
-        stored = ages < num_steps
+        valid = ages < num_steps
         oldest = (self._step_tensor - num_steps) % self.num_slots
         ids = ((oldest + torch.minimum(ages, num_steps - 1)) % self.num_slots) * self.num_envs + env_idx[:, None]
-        valid = stored
         if length > 1:
             dones = self._flat_data["dones"][ids]
             alive = torch.cumprod((~dones[:, :-1]).long(), dim=1).bool()
