@@ -188,15 +188,33 @@ class _ActorExport(nn.Module):
         super().__init__()
         self.obs_norm = copy.deepcopy(actor.obs_norm)
         self.decoder = copy.deepcopy(actor.decoder)
-        self.history_length, self.obs_dim, self.num_actions = actor.history_length, actor.obs_dim, actor.num_actions
+        self.goal_norm = copy.deepcopy(actor.goal_norm)
+        self.encoder = copy.deepcopy(actor.encoder)
+        self.history_length, self.obs_dim = actor.history_length, actor.obs_dim
+        self.goal_dim, self.num_actions = actor.goal_dim, actor.num_actions
 
     def forward(self, obs_history: torch.Tensor) -> torch.Tensor:
         """Return an action from an explicit deployable observation history."""
+        return self._actions(obs_history)
+
+    def _actions(self, obs_history: torch.Tensor) -> torch.Tensor:
+        """Return an action from an explicit deployable observation history."""
         return self.decoder(self.obs_norm(obs_history).flatten(-2))
 
-    def get_dummy_inputs(self) -> tuple[torch.Tensor]:
-        """Return representative history input."""
-        return (torch.zeros(1, self.history_length, self.obs_dim),)
+    def _goal_actions(self, obs_history: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
+        """Return an action from explicit history and encoded goal."""
+        history = self.obs_norm(obs_history).flatten(-2)
+        encoded = torch.tanh(self.encoder(self.goal_norm(goal)))
+        return self.decoder(torch.cat((encoded, history), dim=-1))
+
+    def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:
+        """Return representative inputs in the order of the deployment input names."""
+        shapes = {
+            "obs_history": (self.history_length, self.obs_dim),
+            "goal": (self.goal_dim,),
+            "reference_action": (self.num_actions,),
+        }
+        return tuple(torch.zeros(1, *shapes[name]) for name in self.input_names)
 
     @property
     def input_names(self) -> list[str]:
@@ -212,21 +230,9 @@ class _ActorExport(nn.Module):
 class _GoalActorExport(_ActorExport):
     """Stateless export for an actor with a separate deployable goal input."""
 
-    def __init__(self, actor: SuperMimicActor) -> None:
-        super().__init__(actor)
-        self.goal_norm = copy.deepcopy(actor.goal_norm)
-        self.encoder = copy.deepcopy(actor.encoder)
-        self.goal_dim = actor.goal_dim
-
     def forward(self, obs_history: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
         """Return an action from explicit history and encoded goal."""
-        history = self.obs_norm(obs_history).flatten(-2)
-        encoded = torch.tanh(self.encoder(self.goal_norm(goal)))
-        return self.decoder(torch.cat((encoded, history), dim=-1))
-
-    def get_dummy_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return representative history and goal inputs."""
-        return torch.zeros(1, self.history_length, self.obs_dim), torch.zeros(1, self.goal_dim)
+        return self._goal_actions(obs_history, goal)
 
     @property
     def input_names(self) -> list[str]:
@@ -239,11 +245,7 @@ class _ReferenceActorExport(_ActorExport):
 
     def forward(self, obs_history: torch.Tensor, reference_action: torch.Tensor) -> torch.Tensor:
         """Return the reference action corrected by the policy."""
-        return self.decoder(self.obs_norm(obs_history).flatten(-2)) + reference_action
-
-    def get_dummy_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return representative history and reference-action inputs."""
-        return torch.zeros(1, self.history_length, self.obs_dim), torch.zeros(1, self.num_actions)
+        return self._actions(obs_history) + reference_action
 
     @property
     def input_names(self) -> list[str]:
@@ -251,22 +253,12 @@ class _ReferenceActorExport(_ActorExport):
         return ["obs_history", "reference_action"]
 
 
-class _GoalReferenceActorExport(_GoalActorExport):
+class _GoalReferenceActorExport(_ActorExport):
     """Stateless export with a goal input that adds the policy output to a reference action."""
 
     def forward(self, obs_history: torch.Tensor, goal: torch.Tensor, reference_action: torch.Tensor) -> torch.Tensor:
         """Return the reference action corrected by the goal-conditioned policy."""
-        history = self.obs_norm(obs_history).flatten(-2)
-        encoded = torch.tanh(self.encoder(self.goal_norm(goal)))
-        return self.decoder(torch.cat((encoded, history), dim=-1)) + reference_action
-
-    def get_dummy_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return representative history, goal and reference-action inputs."""
-        return (
-            torch.zeros(1, self.history_length, self.obs_dim),
-            torch.zeros(1, self.goal_dim),
-            torch.zeros(1, self.num_actions),
-        )
+        return self._goal_actions(obs_history, goal) + reference_action
 
     @property
     def input_names(self) -> list[str]:
