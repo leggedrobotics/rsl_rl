@@ -163,7 +163,7 @@ class _ActorExport(nn.Module):
         super().__init__()
         self.obs_norm = copy.deepcopy(actor.obs_norm)
         self.decoder = copy.deepcopy(actor.decoder)
-        self.history_length, self.obs_dim = actor.history_length, actor.obs_dim
+        self.history_length, self.obs_dim, self.num_actions = actor.history_length, actor.obs_dim, actor.num_actions
 
     def forward(self, obs_history: torch.Tensor) -> torch.Tensor:
         """Return an action from an explicit deployable observation history."""
@@ -212,10 +212,6 @@ class _GoalActorExport(_ActorExport):
 class _ReferenceActorExport(_ActorExport):
     """Stateless export that adds the policy output to a reference action."""
 
-    def __init__(self, actor: SuperMimicActor) -> None:
-        super().__init__(actor)
-        self.num_actions = actor.num_actions
-
     def forward(self, obs_history: torch.Tensor, reference_action: torch.Tensor) -> torch.Tensor:
         """Return the reference action corrected by the policy."""
         return self.decoder(self.obs_norm(obs_history).flatten(-2)) + reference_action
@@ -232,10 +228,6 @@ class _ReferenceActorExport(_ActorExport):
 
 class _GoalReferenceActorExport(_GoalActorExport):
     """Stateless export with a goal input that adds the policy output to a reference action."""
-
-    def __init__(self, actor: SuperMimicActor) -> None:
-        super().__init__(actor)
-        self.num_actions = actor.num_actions
 
     def forward(self, obs_history: torch.Tensor, goal: torch.Tensor, reference_action: torch.Tensor) -> torch.Tensor:
         """Return the reference action corrected by the goal-conditioned policy."""
