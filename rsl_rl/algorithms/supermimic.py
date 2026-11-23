@@ -465,10 +465,8 @@ class SuperMimic:
             for step_terminal in terminal[1:]:
                 survival.append(survival[-1] * (1 - step_terminal))
             alive = torch.stack(survival)
-            weights = (
-                torch.cat((torch.ones_like(alive[:1]), alive[:-1]))
-                * self.gamma ** torch.arange(self.horizon, device=self.device)[:, None]
-            )
+            reach = torch.cat((torch.ones_like(alive[:1]), alive[:-1]))
+            weights = reach * self.gamma ** torch.arange(self.horizon, device=self.device)[:, None]
             value = self._value(features[-1])
             objective = (weights * reward).sum(dim=0) + self.gamma**self.horizon * alive[-1] * self._cap(value)
             policy_loss = -objective.mean()
@@ -482,8 +480,7 @@ class SuperMimic:
         }
         if self.value_cap is not None:
             metrics["terminal_saturation"] = (value.detach() > self.value_cap).float().mean()
-        reach = torch.cat((torch.ones_like(alive[:1]), alive[:-1])).detach()
-        metrics.update(self._fit_critic(features_tensor, reward.detach(), terminal.detach(), reach))
+        metrics.update(self._fit_critic(features_tensor, reward.detach(), terminal.detach(), reach.detach()))
         return metrics
 
     def _fit_critic(
