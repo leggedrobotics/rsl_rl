@@ -510,8 +510,9 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
             )
         }
         _collect(learner, env, 1)
-        torch.testing.assert_close(learner.actor.obs_norm.mean[0], torch.tensor(float(world_size - 1), device=device))
-        assert learner.actor.obs_norm.count == 4 * world_size
+        obs_norm = learner.actor.policy.obs_norm
+        torch.testing.assert_close(obs_norm.mean[0], torch.tensor(float(world_size - 1), device=device))
+        assert obs_norm.count == 4 * world_size
         _assert_not_close_across_ranks(learner.storage._data["state"][0])
         for _ in range(8):
             _collect(learner, env, 1)

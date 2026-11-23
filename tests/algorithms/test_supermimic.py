@@ -243,7 +243,7 @@ def test_direct_and_standard_runner_train_all_models() -> None:
 def test_goal_latent_ignores_the_scale_of_hidden_encoder_weights() -> None:
     """Hidden-layer growth cannot push every goal to the same saturated latent."""
     learner = _learner()
-    encoder = learner.actor.encoder
+    encoder = learner.actor.policy.encoder
     goals = torch.randn(64, learner.actor.goal_dim)
     with torch.no_grad():
         latent = torch.tanh(encoder(goals))
@@ -335,7 +335,7 @@ def test_actor_ema_matches_closed_form_and_keeps_live_buffers() -> None:
     for parameter in policy.parameters():
         torch.testing.assert_close(parameter, torch.full_like(parameter, expected))
         assert not parameter.is_inference()
-    learner.actor.obs_norm.update(torch.randn(4, 2))
+    learner.actor.policy.obs_norm.update(torch.randn(4, 2))
     learner.actor.noise_std.fill_(0.3)
     policy = learner.get_policy()
     for target, source in zip(policy.buffers(), learner.actor.buffers()):
@@ -699,7 +699,7 @@ def test_collection_can_select_actions_before_updating_moments() -> None:
         expected = actor.forward_history(frame[:, None].expand(-1, actor.history_length, -1), obs["goal"])
         actual = actor(obs)
     torch.testing.assert_close(actual, expected)
-    assert actor.obs_norm.count == env.num_envs
+    assert actor.policy.obs_norm.count == env.num_envs
 
 
 def test_task_analytic_successors_follow_labels_in_fitting_and_imagination() -> None:

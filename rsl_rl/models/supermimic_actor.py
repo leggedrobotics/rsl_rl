@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""SuperMimic actor with real-observation history and a stateless deployable network."""
+"""SuperMimic actor with real-observation history and a stateless deployable policy network."""
 
 from __future__ import annotations
 
@@ -20,8 +20,61 @@ from rsl_rl.modules.mlp import MLP
 from rsl_rl.modules.normalization import EmpiricalNormalization
 
 
+class SuperMimicPolicy(nn.Module):
+    """Stateless deployable network mapping a normalized observation history and an optional goal to actions.
+
+    The goal passes a normalizer, the encoder and a tanh into a latent that conditions the history decoder. Imagination
+    differentiates through this network and the JIT and ONNX exports wrap a copy of it.
+    """
+
+    def __init__(
+        self,
+        obs_dim: int,
+        goal_dim: int,
+        history_length: int,
+        num_actions: int,
+        latent_dim: int,
+        encoder_hidden_dims: tuple[int, ...],
+        decoder_hidden_dims: tuple[int, ...],
+        activation: str,
+        norm: str,
+        encoder_norm: str,
+        output_gain: float,
+    ) -> None:
+        """Construct the goal encoder, history decoder and input normalizers."""
+        super().__init__()
+        self.obs_dim, self.goal_dim = obs_dim, goal_dim
+        self.history_length, self.num_actions = history_length, num_actions
+        self.encoder = (
+            MLP(goal_dim, latent_dim, encoder_hidden_dims, activation=activation, norm=encoder_norm)
+            if goal_dim
+            else nn.Identity()
+        )
+        self.decoder = MLP(
+            obs_dim * history_length + (latent_dim if goal_dim else 0),
+            num_actions,
+            decoder_hidden_dims,
+            activation=activation,
+            norm=norm,
+        )
+        with torch.no_grad():
+            self.decoder.output_layer.weight.mul_(output_gain)
+            if output_gain != 1.0:
+                self.decoder.output_layer.bias.zero_()
+        self.obs_norm = EmpiricalNormalization(obs_dim)
+        self.goal_norm = EmpiricalNormalization(goal_dim) if goal_dim else nn.Identity()
+
+    def forward(self, obs_history: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
+        """Return actions from an observation history ``[..., history_length, obs_dim]`` and a goal, if any."""
+        features = self.obs_norm(obs_history).flatten(-2)
+        if self.goal_dim:
+            encoded = torch.tanh(self.encoder(self.goal_norm(goal)))
+            features = torch.cat((encoded, features), dim=-1)
+        return self.decoder(features)
+
+
 class SuperMimicActor(nn.Module):
-    """Goal encoder and observation-history decoder, with task-owned real observation conversion.
+    """Deployable policy network with task-owned real observation conversion and collection history.
 
     Real inference takes the environment TensorDict. JIT and ONNX exports take only deployable ``obs_history`` and
     optional encoded ``goal`` inputs. Deployment assembles the history and computes the same task features.
@@ -48,7 +101,7 @@ class SuperMimicActor(nn.Module):
         output_gain: float = 0.01,
         normalize_before_action: bool = True,
     ) -> None:
-        """Construct the networks and nonpersistent collection history.
+        """Construct the policy network and nonpersistent collection history.
 
         With ``use_reference_action``, the network output is a correction added to the task's
         :meth:`~rsl_rl.algorithms.supermimic_task.DifferentiableTask.reference_action`, and exported policies take the
@@ -64,24 +117,19 @@ class SuperMimicActor(nn.Module):
         self.obs_dim, self.goal_dim = obs_dim, goal_dim
         self.history_length, self.num_actions = history_length, num_actions
         self.normalize_before_action = normalize_before_action
-        self.encoder = (
-            MLP(goal_dim, latent_dim, encoder_hidden_dims, activation=activation, norm=encoder_norm)
-            if goal_dim
-            else nn.Identity()
-        )
-        self.decoder = MLP(
-            obs_dim * history_length + (latent_dim if goal_dim else 0),
+        self.policy = SuperMimicPolicy(
+            obs_dim,
+            goal_dim,
+            history_length,
             num_actions,
+            latent_dim,
+            encoder_hidden_dims,
             decoder_hidden_dims,
-            activation=activation,
-            norm=norm,
+            activation,
+            norm,
+            encoder_norm,
+            output_gain,
         )
-        with torch.no_grad():
-            self.decoder.output_layer.weight.mul_(output_gain)
-            if output_gain != 1.0:
-                self.decoder.output_layer.bias.zero_()
-        self.obs_norm = EmpiricalNormalization(obs_dim)
-        self.goal_norm = EmpiricalNormalization(goal_dim) if goal_dim else nn.Identity()
         self.register_buffer("history", torch.zeros(num_envs, history_length, obs_dim), persistent=False)
         self.register_buffer(
             "previous_actions", torch.zeros(num_envs, task.action_history_length, num_actions), persistent=False
@@ -138,17 +186,13 @@ class SuperMimicActor(nn.Module):
 
     def _update_normalization(self, frame: torch.Tensor, goal: torch.Tensor) -> None:
         """Update collection moments once, either before or after selecting the action."""
-        self.obs_norm.update(frame)
+        self.policy.obs_norm.update(frame)
         if self.goal_dim:
-            self.goal_norm.update(goal)
+            self.policy.goal_norm.update(goal)
 
     def forward_history(self, obs_history: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
-        """Evaluate the stateless differentiable policy used during imagination."""
-        history = self.obs_norm(obs_history).flatten(-2)
-        if self.goal_dim:
-            encoded = torch.tanh(self.encoder(self.goal_norm(goal)))
-            history = torch.cat((encoded, history), dim=-1)
-        return self.decoder(history).float()
+        """Evaluate the stateless differentiable policy used during imagination, in FP32 also under autocast."""
+        return self.policy(obs_history, goal).float()
 
     @torch.no_grad()
     def reset(
@@ -174,48 +218,36 @@ class SuperMimicActor(nn.Module):
         return self.noise_std
 
     def as_jit(self) -> nn.Module:
-        """Return the stateless network with explicit deployable history, optional goal and reference inputs."""
+        """Return a copy of the policy network with explicit deployable history, optional goal and reference inputs."""
         if self.use_reference_action:
-            return _GoalReferenceActorExport(self) if self.goal_dim else _ReferenceActorExport(self)
-        return _GoalActorExport(self) if self.goal_dim else _ActorExport(self)
+            return _GoalReferenceExport(self.policy) if self.goal_dim else _ReferenceExport(self.policy)
+        return _GoalExport(self.policy) if self.goal_dim else _HistoryExport(self.policy)
 
     def as_onnx(self) -> nn.Module:
         """Return the same stateless representation for ONNX export."""
         return self.as_jit()
 
 
-class _ActorExport(nn.Module):
-    """Stateless export for an actor without a separate goal input."""
+class _HistoryExport(nn.Module):
+    """Stateless export of a copied policy network taking only the observation history.
 
-    def __init__(self, actor: SuperMimicActor) -> None:
+    TorchScript needs a fixed signature per input combination, so each subclass defines ``forward`` for its inputs.
+    """
+
+    def __init__(self, policy: SuperMimicPolicy) -> None:
         super().__init__()
-        self.obs_norm = copy.deepcopy(actor.obs_norm)
-        self.decoder = copy.deepcopy(actor.decoder)
-        self.goal_norm = copy.deepcopy(actor.goal_norm)
-        self.encoder = copy.deepcopy(actor.encoder)
-        self.history_length, self.obs_dim = actor.history_length, actor.obs_dim
-        self.goal_dim, self.num_actions = actor.goal_dim, actor.num_actions
+        self.policy = copy.deepcopy(policy)
 
     def forward(self, obs_history: torch.Tensor) -> torch.Tensor:
-        """Return an action from an explicit deployable observation history."""
-        return self._actions(obs_history)
-
-    def _actions(self, obs_history: torch.Tensor) -> torch.Tensor:
-        """Return an action from an explicit deployable observation history."""
-        return self.decoder(self.obs_norm(obs_history).flatten(-2))
-
-    def _goal_actions(self, obs_history: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
-        """Return an action from explicit history and encoded goal."""
-        history = self.obs_norm(obs_history).flatten(-2)
-        encoded = torch.tanh(self.encoder(self.goal_norm(goal)))
-        return self.decoder(torch.cat((encoded, history), dim=-1))
+        """Return an action from an explicit deployable observation history; the policy has no goal input."""
+        return self.policy(obs_history, obs_history[..., 0, :0])
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:
         """Return representative inputs in the order of the deployment input names."""
         shapes = {
-            "obs_history": (self.history_length, self.obs_dim),
-            "goal": (self.goal_dim,),
-            "reference_action": (self.num_actions,),
+            "obs_history": (self.policy.history_length, self.policy.obs_dim),
+            "goal": (self.policy.goal_dim,),
+            "reference_action": (self.policy.num_actions,),
         }
         return tuple(torch.zeros(1, *shapes[name]) for name in self.input_names)
 
@@ -230,12 +262,12 @@ class _ActorExport(nn.Module):
         return ["actions"]
 
 
-class _GoalActorExport(_ActorExport):
-    """Stateless export for an actor with a separate deployable goal input."""
+class _GoalExport(_HistoryExport):
+    """Stateless export with a separate deployable goal input."""
 
     def forward(self, obs_history: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
         """Return an action from explicit history and encoded goal."""
-        return self._goal_actions(obs_history, goal)
+        return self.policy(obs_history, goal)
 
     @property
     def input_names(self) -> list[str]:
@@ -243,12 +275,12 @@ class _GoalActorExport(_ActorExport):
         return ["obs_history", "goal"]
 
 
-class _ReferenceActorExport(_ActorExport):
+class _ReferenceExport(_HistoryExport):
     """Stateless export that adds the policy output to a reference action."""
 
     def forward(self, obs_history: torch.Tensor, reference_action: torch.Tensor) -> torch.Tensor:
         """Return the reference action corrected by the policy."""
-        return self._actions(obs_history) + reference_action
+        return self.policy(obs_history, obs_history[..., 0, :0]) + reference_action
 
     @property
     def input_names(self) -> list[str]:
@@ -256,12 +288,12 @@ class _ReferenceActorExport(_ActorExport):
         return ["obs_history", "reference_action"]
 
 
-class _GoalReferenceActorExport(_ActorExport):
+class _GoalReferenceExport(_HistoryExport):
     """Stateless export with a goal input that adds the policy output to a reference action."""
 
     def forward(self, obs_history: torch.Tensor, goal: torch.Tensor, reference_action: torch.Tensor) -> torch.Tensor:
         """Return the reference action corrected by the goal-conditioned policy."""
-        return self._goal_actions(obs_history, goal) + reference_action
+        return self.policy(obs_history, goal) + reference_action
 
     @property
     def input_names(self) -> list[str]:

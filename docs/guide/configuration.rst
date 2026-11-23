@@ -929,7 +929,8 @@ SuperMimicActor
 ^^^^^^^^^^^^^^^
 
 The actor consumes deployable features from the task and exports explicit ``obs_history`` and optional ``goal`` inputs.
-Feature widths are inferred at construction.
+Feature widths are inferred at construction. Imagination and the exports evaluate the same stateless network,
+:class:`~rsl_rl.models.supermimic_actor.SuperMimicPolicy`, which actor checkpoints store under ``policy``.
 
 .. list-table::
    :header-rows: 1
