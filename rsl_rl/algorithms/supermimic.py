@@ -171,7 +171,9 @@ class SuperMimic:
             learning_rate_schedule_unit: Measure schedule progress in learner updates or collected env steps.
             use_mixed_precision: Enable BF16 matrix operations while integrating physical states in FP32.
             use_cuda_graph: Capture each learner iteration and the collection calls in CUDA graphs. Requires a CUDA
-                device and task heads without host synchronization.
+                device and task heads without host synchronization. Python values read inside the captured calls,
+                for example task parameters such as reward weights read from the environment, are fixed at capture
+                time; only tensors updated in place stay live.
             device: Device for models and learning tensors.
             multi_gpu_cfg: Distributed rank and world size; replay and batch sizes are per rank.
         """

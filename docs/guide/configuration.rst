@@ -627,7 +627,9 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
      - bool
      - ``False``
      - Capture each learner iteration and the collection calls ``act`` and ``process_env_step`` in CUDA
-       graphs. Requires a CUDA device and task heads without host synchronization.
+       graphs. Requires a CUDA device and task heads without host synchronization. Python values read
+       inside the captured calls, for example task parameters such as reward weights read from the
+       environment, are fixed at capture time; only tensors updated in place stay live.
    * - ``update_schedule``
      - str
      - ``"after_warmup"``
