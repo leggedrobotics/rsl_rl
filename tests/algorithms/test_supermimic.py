@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 import copy
+import gc
 import math
 import re
 import torch
+from collections.abc import Iterator
 from pathlib import Path
 from tensordict import TensorDict
 
@@ -141,6 +143,16 @@ class ScalarEnv(VecEnv):
             dones,
             {"final_obs": final, "final_obs_every_step": True, "time_outs": dones.clone()},
         )
+
+
+@pytest.fixture(autouse=True)
+def _destroy_finished_cuda_graphs() -> Iterator[None]:
+    """Collect learners of finished tests, whose CUDA graphs would invalidate a later capture if destroyed during it.
+
+    Graph-holding learners form reference cycles, and torch.cuda.graph no longer collects garbage before a capture.
+    """
+    yield
+    gc.collect()
 
 
 def _cfg(**options: object) -> dict:
