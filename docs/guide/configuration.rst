@@ -886,7 +886,7 @@ Feature widths are inferred at construction.
    * - ``encoder_hidden_dims``
      - tuple[int]
      - ``(2048, 1024, 512, 256)``
-     - Goal encoder layers.
+     - Goal encoder layers, each followed by LayerNorm.
    * - ``decoder_hidden_dims``
      - tuple[int]
      - ``(2048, 1024, 512, 256)``
