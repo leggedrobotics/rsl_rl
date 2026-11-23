@@ -595,7 +595,7 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
      - Capture each learner iteration and the collection calls ``act`` and ``process_env_step`` in CUDA
        graphs. Requires a CUDA device and task heads without host synchronization.
 
-When enabled, inference and JIT/ONNX exports use EMA parameters with live normalization buffers.
+With ``actor_ema_halflife`` set, inference and JIT/ONNX exports use EMA parameters with live normalization buffers.
 Collection and policy optimization keep using the live actor.
 After each successful actor step ``n``, the averaging decay is
 ``min(0.5 ** (1 / h), (1 + n) / (10 + n))``, where ``h`` is the half-life and ``n`` starts at one.
