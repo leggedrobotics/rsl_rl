@@ -232,6 +232,9 @@ class SuperMimic:
         self.device = device
         self.use_mixed_precision = use_mixed_precision
         self.use_cuda_graph = use_cuda_graph
+        self._autocast = functools.partial(
+            torch.autocast, torch.device(device).type, dtype=torch.bfloat16, enabled=use_mixed_precision
+        )
 
         # SuperMimic components
         self.actor = actor.to(device)
@@ -320,7 +323,6 @@ class SuperMimic:
         self.num_critic_mini_batches = num_critic_mini_batches
 
         # Learning rate schedule parameters
-        self.learning_rate = learning_rate
         self.num_schedule_updates = num_schedule_updates
         self.final_learning_rate_ratio = final_learning_rate_ratio
         self.actor_learning_rate_multiplier = ActorLearningRateMultiplier(
@@ -492,7 +494,7 @@ class SuperMimic:
         self, state: State, actions: torch.Tensor, context: torch.Tensor, previous_actions: torch.Tensor
     ) -> tuple[State, torch.Tensor | None, torch.Tensor | None]:
         """Apply learned dynamics, event probabilities and task-owned analytic state."""
-        with torch.autocast(torch.device(self.device).type, dtype=torch.bfloat16, enabled=self.use_mixed_precision):
+        with self._autocast():
             raw_next = self._world_model_forward(
                 state, self.task.dynamics_actions(actions), self.task.dynamics_context(state, context, previous_actions)
             )
@@ -560,9 +562,7 @@ class SuperMimic:
         with _frozen(self.world_model, self.critic):
             for _ in range(self.horizon):
                 features.append(self.task.critic_obs(state, goal, context, previous))
-                with torch.autocast(
-                    torch.device(self.device).type, dtype=torch.bfloat16, enabled=self.use_mixed_precision
-                ):
+                with self._autocast():
                     action = self._actor_forward(history, self.task.actor_goal(state, goal))
                 if self.actor.use_reference_action:
                     action = action + self.task.reference_action(state, goal)
@@ -626,9 +626,7 @@ class SuperMimic:
                 size = features.shape[0] // self.num_critic_mini_batches * self.num_critic_mini_batches
                 permutation = torch.randperm(size, device=self.device)
             for indices in permutation.chunk(self.num_critic_mini_batches):
-                with torch.autocast(
-                    torch.device(self.device).type, dtype=torch.bfloat16, enabled=self.use_mixed_precision
-                ):
+                with self._autocast():
                     squared_errors = (self._value(features[indices]) - targets[indices]).square()
                     loss = self._weighted_mean((reach[indices] * squared_errors).sum(), reach[indices].sum(), 1e-6)
                 self._apply(loss, "critic", self.critic)
@@ -938,12 +936,11 @@ class SuperMimic:
         ).to(device)
         critic_obs = TensorDict({"critic": critic_features}, batch_size=[env.num_envs])
         critic = critic_class(critic_obs, {"critic": ["critic"]}, "critic", 1, **critic_cfg).to(device)
-        warmup = alg_cfg.get("num_warmup_steps", 64)
         storage = SequenceReplayBuffer(
             env.num_envs,
             alg_cfg.pop("replay_buffer_capacity", 1_000_000),
             device,
-            min_steps=max(warmup, actor.history_length),
+            min_steps=max(alg_cfg.get("num_warmup_steps", 64), actor.history_length),
             max_memory_fraction=alg_cfg.pop("max_replay_memory_fraction", None),
         )
         learner = alg_class(
