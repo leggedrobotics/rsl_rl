@@ -953,7 +953,7 @@ Feature widths are inferred at construction.
    * - ``encoder_hidden_dims``
      - tuple[int]
      - ``(2048, 1024, 512, 256)``
-     - Goal encoder layers, each followed by LayerNorm.
+     - Goal encoder layers.
    * - ``decoder_hidden_dims``
      - tuple[int]
      - ``(2048, 1024, 512, 256)``
@@ -970,7 +970,12 @@ Feature widths are inferred at construction.
    * - ``norm``
      - str
      - ``"none"``
-     - Normalization of the decoder layers, ``"none"`` or ``"layer"``. The encoder always uses LayerNorm.
+     - Normalization of the decoder layers, ``"none"`` or ``"layer"``.
+   * - ``encoder_norm``
+     - str
+     - ``"layer"``
+     - Normalization of the goal encoder layers. LayerNorm keeps the hidden layers from growing a component shared
+       by all goals, which would saturate the tanh latent so the policy stops seeing its goal.
    * - ``output_gain``
      - float
      - ``0.01``

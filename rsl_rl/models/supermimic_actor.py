@@ -44,6 +44,7 @@ class SuperMimicActor(nn.Module):
         use_reference_action: bool = False,
         activation: str = "elu",
         norm: str = "none",
+        encoder_norm: str = "layer",
         output_gain: float = 0.01,
         normalize_before_action: bool = True,
     ) -> None:
@@ -61,9 +62,8 @@ class SuperMimicActor(nn.Module):
         self.obs_dim, self.goal_dim = obs_dim, goal_dim
         self.history_length, self.num_actions = history_length, num_actions
         self.normalize_before_action = normalize_before_action
-        # LayerNorm keeps hidden activations from growing a goal-independent component that saturates the tanh latent
         self.encoder = (
-            MLP(goal_dim, latent_dim, encoder_hidden_dims, activation=activation, norm="layer")
+            MLP(goal_dim, latent_dim, encoder_hidden_dims, activation=activation, norm=encoder_norm)
             if goal_dim
             else nn.Identity()
         )

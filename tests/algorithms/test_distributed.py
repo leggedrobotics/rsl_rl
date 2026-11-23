@@ -547,7 +547,7 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
 
         value = torch.tensor(2.0, device=device, requires_grad=True)
         weight = torch.tensor(float(rank), device=device)
-        restored._weighted_mean((value - rank).square() * weight, weight).backward()
+        restored._globally_normalized_loss((value - rank).square() * weight, weight).backward()
         torch.distributed.all_reduce(value.grad)
         value.grad /= world_size
         ranks = torch.arange(world_size, device=device, dtype=torch.float32)

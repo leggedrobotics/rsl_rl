@@ -259,7 +259,7 @@ class SuperMimic:
         self._graph_updates: dict[bool, CudaGraphCallable] = {}
         self.error_floor = error_floor
 
-        # Handles to the uncompiled modules for state_dict operations and export
+        # The uncompiled critic for state_dict operations, and the forwards that compile() replaces
         self._raw_critic = self.critic
         self._world_model_forward = self.world_model
         self._actor_forward = self.actor.forward_history
@@ -529,14 +529,14 @@ class SuperMimic:
         errors = self.task.world_model_loss(prediction, target, scale)
         masked_errors = errors * mask
         valid_count = mask.sum()
-        mean_error = self._weighted_mean(masked_errors.sum(), valid_count)
+        mean_error = self._globally_normalized_loss(masked_errors.sum(), valid_count)
         loss = mean_error if self.world_model_loss_reduction == "mean" else masked_errors.sum(dim=1).mean()
         metrics = {"world_model_error": mean_error.detach()}
         if self.task.num_labels:
             bce = nn.functional.binary_cross_entropy_with_logits(
                 torch.stack(logits, 1).float(), window["labels"].float(), reduction="none"
             )
-            label_loss = self._weighted_mean((bce.mean(dim=-1) * mask).sum(), valid_count)
+            label_loss = self._globally_normalized_loss((bce.mean(dim=-1) * mask).sum(), valid_count)
             loss = loss + label_loss
             metrics["label_loss"] = label_loss.detach()
         self._apply(loss, "world_model", self.world_model)
@@ -609,7 +609,10 @@ class SuperMimic:
         termination influence neither.
         """
         with torch.no_grad():
-            self.critic.update_normalization(TensorDict({"critic": features[0]}, batch_size=features.shape[1:2]))
+            replay_start_features = features[0]
+            self.critic.update_normalization(
+                TensorDict({"critic": replay_start_features}, batch_size=replay_start_features.shape[:1])
+            )
             values = self._value(features)
             if self.critic_bootstrap_clipping:
                 values = self._cap(values)
@@ -629,13 +632,20 @@ class SuperMimic:
             for indices in permutation.chunk(self.num_critic_mini_batches):
                 with self._autocast():
                     squared_errors = (self._value(features[indices]) - targets[indices]).square()
-                    loss = self._weighted_mean((reach[indices] * squared_errors).sum(), reach[indices].sum(), 1e-6)
+                    loss = self._globally_normalized_loss(
+                        (reach[indices] * squared_errors).sum(), reach[indices].sum(), 1e-6
+                    )
                 self._apply(loss, "critic", self.critic)
                 losses.append(loss.detach())
         return {"critic_loss": torch.stack(losses).mean()}
 
-    def _weighted_mean(self, total: torch.Tensor, weight: torch.Tensor, minimum: float = 1.0) -> torch.Tensor:
-        """Scale local loss sums so averaged gradients use the global valid weight."""
+    def _globally_normalized_loss(
+        self, total: torch.Tensor, weight: torch.Tensor, minimum: float = 1.0
+    ) -> torch.Tensor:
+        """Divide a local loss sum by its weight summed over all ranks, pre-multiplied by the world size.
+
+        Gradient averaging across ranks then yields the loss normalized by the global weight.
+        """
         if self.is_multi_gpu:
             weight = weight.detach().clone()
             dist.all_reduce(weight)
@@ -729,13 +739,16 @@ class SuperMimic:
         return count
 
     def _reset_update_debt(self) -> None:
-        """Restore the fractional update credit that collection would have accrued over ``env_steps``."""
+        """Restore the fractional update credit that collection would have accrued over ``env_steps``.
+
+        The from-start schedule begins with ``1 - updates_per_step`` credit, so the first collected step yields one
+        update; whole updates already ran, so only the fraction of the accrued credit remains.
+        """
         if self.update_schedule == "after_warmup":
             self._update_debt = 0.0
-        elif self.env_steps:
-            self._update_debt = (self.env_steps - 1) * self.updates_per_step % 1
-        else:
-            self._update_debt = 1.0 - self.updates_per_step
+            return
+        accrued = 1.0 - self.updates_per_step + self.env_steps * self.updates_per_step
+        self._update_debt = accrued % 1 if self.env_steps else accrued
 
     def _run_iteration(self, update_policy: bool) -> dict[str, torch.Tensor]:
         """Run one learner iteration and return the mean of each metric over its updates."""

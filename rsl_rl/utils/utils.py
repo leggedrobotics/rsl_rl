@@ -303,7 +303,7 @@ def find_nonfinite(
     final_obs = extras.get("final_obs") if extras is not None else None
     if final_obs is not None:
         done_mask = dones.reshape(-1).bool()
-        if extras.get("final_obs_every_step") is True:  # type: ignore
+        if extras.get("final_obs_every_step") is True:
             done_mask = torch.ones_like(done_mask)
         for key, tensor in final_obs.items():
             mask = done_mask.to(tensor.device).reshape(-1, *([1] * (tensor.ndim - 1)))

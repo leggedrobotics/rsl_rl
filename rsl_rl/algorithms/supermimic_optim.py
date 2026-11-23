@@ -60,7 +60,6 @@ class ActorLearningRateMultiplier:
         self.decay_start = decay_start
         self.max_episode_length = max_episode_length
         self.decay_from: int | None = None if multiplier > 1 else 0
-        # Returns of running and completed episodes for the actor learning-rate decay trigger
         self.episode_return = torch.zeros(num_envs, device=device)
         self.completed_episodes = torch.zeros(2, device=device)
 

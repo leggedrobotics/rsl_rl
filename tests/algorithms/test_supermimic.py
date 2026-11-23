@@ -795,8 +795,7 @@ def test_cuda_graph_collection_matches_eager_across_resets_and_pushes() -> None:
     def collect(use_cuda_graph: bool) -> tuple[SuperMimic, list[torch.Tensor]]:
         torch.manual_seed(0)
         env = ScalarEnv(device="cuda:0", reset_action=0.3, pushes=True)
-        # collection noise is drawn from a different random stream once act() is captured
-        learner = _learner(env, use_cuda_graph=use_cuda_graph, replay_buffer_capacity=64, action_noise=0.0)
+        learner = _learner(env, use_cuda_graph=use_cuda_graph, replay_buffer_capacity=64)
         actions = []
         obs = env.get_observations()
         for _ in range(12):
