@@ -126,16 +126,23 @@ def resolve_callable(callable_or_name: type | Callable | str) -> Callable:
     if not isinstance(callable_or_name, str):
         raise TypeError(f"Expected callable or string, got {type(callable_or_name)}")
 
+    def require_callable(obj: Any) -> Callable:
+        if not callable(obj):
+            raise TypeError(f"Resolved '{callable_or_name}' to a non-callable {type(obj).__name__}")
+        return obj
+
     # Handle qualified name with colon separator (e.g., "module.path:Attr.Nested")
     if ":" in callable_or_name:
         module_path, attr_path = callable_or_name.rsplit(":", 1)
+        if not module_path or not all(attr_path.split(".")):
+            raise ValueError(f"Invalid qualified callable name '{callable_or_name}'")
         # Try to import the module
         module = importlib.import_module(module_path)
         # Try to get the attribute
         obj = module
         for attr in attr_path.split("."):
             obj = getattr(obj, attr)
-        return obj  # type: ignore
+        return require_callable(obj)
 
     # Handle qualified name with dot separator (e.g., "module.path.ClassName")
     if "." in callable_or_name:
@@ -147,7 +154,9 @@ def resolve_callable(callable_or_name: type | Callable | str) -> Callable:
             attr_parts = parts[i:]
             try:
                 module = importlib.import_module(module_path)
-            except ModuleNotFoundError:
+            except ModuleNotFoundError as error:
+                if error.name != module_path and not module_path.startswith(f"{error.name}."):
+                    raise
                 continue
             module_found = True
             # Once a module is found, try to get the attribute
@@ -155,7 +164,7 @@ def resolve_callable(callable_or_name: type | Callable | str) -> Callable:
             try:
                 for attr in attr_parts:
                     obj = getattr(obj, attr)
-                return obj  # type: ignore
+                return require_callable(obj)
             except AttributeError:
                 continue
         if module_found:
@@ -167,7 +176,7 @@ def resolve_callable(callable_or_name: type | Callable | str) -> Callable:
     for _, module_name, _ in pkgutil.iter_modules(rsl_rl.__path__, "rsl_rl."):
         module = importlib.import_module(module_name)
         if hasattr(module, callable_or_name):
-            return getattr(module, callable_or_name)
+            return require_callable(getattr(module, callable_or_name))
 
     # Raise error if no approach worked
     raise ValueError(
