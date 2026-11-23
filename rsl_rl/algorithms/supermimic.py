@@ -426,12 +426,15 @@ class SuperMimic:
         state, successor = self._set(start, "state"), self._set(final, "state")
         context, goal = self._set(start, "context"), self._set(start, "goal")
         window_break = (self._set(obs, "state") != successor).any(dim=-1) & ~done
+        # Tasks without event labels store an empty label set
+        labels = self._set(final, "labels")
         transition = TensorDict(
             {
                 "state": state,
                 "next_state": successor,
                 "goal": goal,
                 "context": context,
+                "labels": labels,
                 "actions": actions,
                 "prev_actions": previous_actions,
                 "dones": done,
@@ -440,9 +443,6 @@ class SuperMimic:
             batch_size=[self.storage.num_envs],
             device=self.device,
         )
-        labels = self._set(final, "labels")
-        if self.task.num_labels:
-            transition["labels"] = labels
         # Record nonfinite consumed final observations without synchronizing; update() rejects them before training
         self._nonfinite_final_obs.logical_or_(
             torch.stack((~torch.isfinite(successor).all(), ~torch.isfinite(labels).all()))
@@ -473,9 +473,7 @@ class SuperMimic:
             index.ids, index.valid = index.ids[:, :-1], index.valid[:, :-1]
         else:
             index = self.storage.sample(batch_size, length=self.world_model_window)
-        keys = ["state", "next_state", "actions", "context", "prev_actions", "window_break"]
-        if self.task.num_labels:
-            keys.append("labels")
+        keys = ["state", "next_state", "actions", "context", "labels", "prev_actions", "window_break"]
         window = self.storage.gather(keys, index.ids)
         if self.num_mirrored_windows:
             head, task = window[: self.num_mirrored_windows], self.task
@@ -486,12 +484,11 @@ class SuperMimic:
                     "actions": task.mirror_actions(head["actions"]),
                     "prev_actions": task.mirror_actions(head["prev_actions"]),
                     "context": task.mirror_context(head["context"]),
+                    "labels": task.mirror_labels(head["labels"]) if task.num_labels else head["labels"],
                     "window_break": head["window_break"],
                 },
                 batch_size=head.batch_size,
             )
-            if task.num_labels:
-                mirrored["labels"] = task.mirror_labels(head["labels"])
             window = torch.cat((mirrored, window[self.num_mirrored_windows :]))
         mask = index.valid.float()
         if not self.world_model_full_windows and self.world_model_window > 1:
