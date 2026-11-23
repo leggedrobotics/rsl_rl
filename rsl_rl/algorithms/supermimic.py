@@ -226,6 +226,8 @@ class SuperMimic:
         missing_hooks = [name for name in mirror_hooks if not _overrides(task, name)]
         if world_model_mirror_fraction and missing_hooks:
             raise ValueError(f"Mirror augmentation requires a task that implements {', '.join(missing_hooks)}.")
+        if actor.use_reference_action and not _overrides(task, "reference_action"):
+            raise ValueError("use_reference_action requires a task that implements reference_action.")
         if action_noise < 0:
             raise ValueError("Action noise must be nonnegative.")
         if use_cuda_graph and torch.device(device).type != "cuda":

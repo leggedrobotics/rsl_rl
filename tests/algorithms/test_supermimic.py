@@ -1222,6 +1222,15 @@ def test_reference_action_is_ignored_unless_enabled() -> None:
     torch.testing.assert_close(action, learner.actor.forward_history(learner.actor.history, obs["goal"]))
 
 
+def test_reference_action_requires_a_task_reference_at_construction() -> None:
+    """A learner that corrects a reference action fails to build when the task has no reference action."""
+    cfg = _cfg()
+    cfg["actor"]["use_reference_action"] = True
+    env = ScalarEnv()
+    with pytest.raises(ValueError, match="reference_action"):
+        SuperMimic.construct_algorithm(env.get_observations(), env, cfg, env.device)
+
+
 def test_task_model_loss_uses_integrated_coordinates_and_valid_mean(monkeypatch: pytest.MonkeyPatch) -> None:
     """A task may supervise coordinates beyond the predicted increment without window-length scaling."""
     env, learner = ScalarEnv(), _learner(world_model_loss_reduction="mean")

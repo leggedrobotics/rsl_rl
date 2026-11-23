@@ -962,8 +962,8 @@ Feature widths are inferred at construction.
    * - ``use_reference_action``
      - bool
      - ``False``
-     - Add the network output to the task's ``reference_action``; exported policies take the reference
-       action as an additional input.
+     - Add the network output to the task's ``reference_action``, which the task must implement; exported
+       policies take the reference action as an additional input.
    * - ``activation``
      - str
      - ``"elu"``
