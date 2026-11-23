@@ -360,6 +360,9 @@ class SquashedGaussianDistribution(Distribution):
                 f"Each action bound must be a scalar or a vector of length {output_dim}; got shape {tuple(low.shape)}."
             )
 
+        if not torch.all(torch.isfinite(low) & torch.isfinite(high) & (low < high)):
+            raise ValueError("Action bounds must be finite with min < max in every dimension.")
+
         # Compute scaling and offset for rescaling samples
         self.register_buffer("range_scale", (high - low) / 2.0)
         self.register_buffer("range_offset", (high + low) / 2.0)
@@ -498,6 +501,10 @@ class BetaDistribution(Distribution):
                 Defaults to ``(-1.0, 1.0)``.
         """
         super().__init__(output_dim)
+
+        low, high = action_range
+        if not (math.isfinite(low) and math.isfinite(high) and low < high):
+            raise ValueError("Action bounds must be finite with min < max.")
 
         # Compute scaling and offset for rescaling samples
         self.action_range = action_range
