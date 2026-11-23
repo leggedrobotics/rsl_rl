@@ -817,7 +817,9 @@ def test_cuda_graph_collection_matches_eager_across_resets_and_pushes() -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
-@pytest.mark.parametrize("option", ["default", "muon", "actor_multiplier", "reference_action", "mirror", "full_windows"])
+@pytest.mark.parametrize(
+    "option", ["default", "muon", "actor_multiplier", "reference_action", "mirror", "full_windows"]
+)
 def test_cuda_graph_matches_eager_and_resumes(option: str) -> None:
     """Graphed learner iterations match eager updates exactly with each optional training feature."""
     options = {
@@ -1070,8 +1072,6 @@ def test_reference_action_is_ignored_unless_enabled() -> None:
         learner.actor.eval()
         action = learner.actor(obs)
     torch.testing.assert_close(action, learner.actor.forward_history(learner.actor.history, obs["goal"]))
-
-
 
 
 def test_task_model_loss_uses_integrated_coordinates_and_valid_mean(monkeypatch: pytest.MonkeyPatch) -> None:
