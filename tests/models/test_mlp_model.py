@@ -139,6 +139,24 @@ class TestObsGroupConcatenation:
 class TestMLPModelExport:
     """Tests for JIT export fidelity."""
 
+    def test_half_beta_policy_preserves_large_finite_head_outputs(self) -> None:
+        """Native and scripted policies retain the interior mean of concentrated half-precision actions."""
+        model, obs = _make_mlp_model(stochastic=True, distribution_cfg={"class_name": "BetaDistribution"})
+        model = model.half().eval()
+        obs = obs.to(dtype=torch.float16)
+        with torch.no_grad():
+            model.mlp.output_layer.weight.zero_()
+            model.mlp.output_layer.bias[:NUM_ACTIONS].fill_(40000.0)
+            model.mlp.output_layer.bias[NUM_ACTIONS:].fill_(30000.0)
+        expected = torch.full((NUM_ENVS, NUM_ACTIONS), 2.0 * 40001.0 / 70002.0 - 1.0, dtype=torch.float16)
+        actual = model(obs)
+        torch.testing.assert_close(actual, expected, rtol=5e-3, atol=5e-4)
+        scripted = torch.jit.script(model.as_jit())
+        torch.testing.assert_close(scripted(obs["policy"]), expected, rtol=5e-3, atol=5e-4)
+        actual.sum().backward()
+        assert torch.isfinite(model.mlp.output_layer.bias.grad).all()
+        assert torch.count_nonzero(model.mlp.output_layer.bias.grad) == 2 * NUM_ACTIONS
+
     def test_jit_export_model(self) -> None:
         """JIT-exported model should produce deterministic outputs matching the original."""
         actor, obs = _make_mlp_model(stochastic=True)

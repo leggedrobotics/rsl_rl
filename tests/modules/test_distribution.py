@@ -257,6 +257,39 @@ class TestHeteroscedasticGaussianDistribution:
 class TestBetaDistribution:
     """Tests for ``BetaDistribution``."""
 
+    @pytest.mark.parametrize(
+        "dtype,concentrations",
+        [
+            (torch.float16, (40000.0, 30000.0)),
+            (torch.float32, (3e38, 2e38)),
+            (torch.float64, (3e38, 2e38)),
+            (torch.float16, (0.0, 60000.0)),
+            (torch.float16, (60000.0, 0.0)),
+            (torch.float32, (0.0, 3e38)),
+            (torch.float32, (3e38, 0.0)),
+        ],
+    )
+    def test_finite_concentrations_preserve_mean(self, dtype: torch.dtype, concentrations: tuple[float, float]) -> None:
+        """A representable bounded mean does not require a representable concentration sum."""
+        raw = torch.tensor([[concentrations]], dtype=dtype).transpose(-1, -2).requires_grad_()
+        distribution = BetaDistribution(1, action_range=(0.0, 1.0))
+        reference_raw = raw.detach().double().requires_grad_()
+        reference_alpha, reference_beta = torch.nn.functional.softplus(reference_raw).unbind(-2)
+        reference_alpha, reference_beta = reference_alpha + 1.0, reference_beta + 1.0
+        reference = reference_alpha / (reference_alpha + reference_beta)
+        actual = distribution.deterministic_output(raw)
+        torch.testing.assert_close(actual, reference.to(dtype), rtol=5e-3, atol=5e-4)
+        actual.sum().backward()
+        reference.sum().backward()
+        torch.testing.assert_close(
+            raw.grad, reference_raw.grad.to(dtype), rtol=5e-3, atol=1e-7 if dtype == torch.float16 else 0
+        )
+        assert torch.equal(raw.grad != 0, reference_raw.grad.to(dtype) != 0)
+        distribution.update(raw.detach())
+        torch.testing.assert_close(distribution.mean, reference.detach().to(dtype), rtol=5e-3, atol=5e-4)
+        exported = torch.jit.script(distribution.as_deterministic_output_module())
+        torch.testing.assert_close(exported(raw), actual, rtol=0.0, atol=0.0)
+
     def test_alpha_beta_greater_than_one(self) -> None:
         """After update(), alpha and beta should both be strictly greater than 1."""
         dist = BetaDistribution(output_dim=4)
