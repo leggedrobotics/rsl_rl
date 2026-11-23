@@ -114,7 +114,7 @@ class EmpiricalDiscountedVariationNormalization(nn.Module):
 
         # Normalize rewards with the empirical std
         if self.emp_norm._std > 0:  # type: ignore
-            return rew / self.emp_norm._std  # type: ignore
+            return rew / self.emp_norm._std.clamp_min(self.emp_norm.eps)  # type: ignore
         else:
             return rew
 
