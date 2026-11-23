@@ -727,6 +727,22 @@ def test_task_analytic_successors_follow_labels_in_fitting_and_imagination() -> 
     assert len(post_calls) == learner.horizon
 
 
+def test_task_curriculum_sees_each_collected_step_with_its_pre_step_goal() -> None:
+    """The curriculum hook receives the goal the actor acted on, the step's rewards and dones, and the extras."""
+    learner, env = _learner(), ScalarEnv()
+    calls = []
+    learner.task.update_curriculum = lambda *args: calls.append(args)
+    obs = env.get_observations()
+    actions = learner.act(obs)
+    env.goal.fill_(3.0)
+    successor, rewards, dones, extras = env.step(actions)
+    learner.process_env_step(successor, rewards, dones, extras)
+    ((goal, step_rewards, step_dones, step_extras),) = calls
+    torch.testing.assert_close(goal, obs["goal"])
+    torch.testing.assert_close(step_rewards, rewards)
+    assert step_dones.dtype == torch.bool and step_extras is extras
+
+
 def test_collection_owns_start_observations() -> None:
     """Replay starts survive an environment reusing its observation tensors during stepping."""
     learner, env = _learner(), ScalarEnv()

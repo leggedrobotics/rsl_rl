@@ -406,7 +406,7 @@ class SuperMimic:
         self._collected_steps += 1
         self.env_steps += 1
         self._update_debt += self.updates_per_step
-        self.task.process_env_step(self._set(self._last_obs, "goal"), step_rewards, step_dones, extras)
+        self.task.update_curriculum(self._set(self._last_obs, "goal"), step_rewards, step_dones, extras)
         self._last_obs = self._last_actions = self._last_previous_actions = None
         return {"Training/mean_reward": rewards}
 

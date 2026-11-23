@@ -178,6 +178,6 @@ class DifferentiableTask:
         """Add task observation noise while retaining imagined state derivatives."""
         return observation
 
-    def process_env_step(self, goal: torch.Tensor, rewards: torch.Tensor, dones: torch.Tensor, extras: dict) -> None:
+    def update_curriculum(self, goal: torch.Tensor, rewards: torch.Tensor, dones: torch.Tensor, extras: dict) -> None:
         """Update task-owned curricula from a completed physical step and its pre-step goal."""
         pass

@@ -344,7 +344,7 @@ With the actor option ``use_reference_action``, the policy output is added to th
 collection and imagination, e.g. the reference joint targets of motion tracking; exported policies then take an
 additional ``reference_action`` input.
 Tasks can also override ``dynamics_actions`` to map policy outputs to physical commands before the world model,
-``world_model_loss`` to supervise further coordinates, such as integrated joint positions, and ``process_env_step`` to
+``world_model_loss`` to supervise further coordinates, such as integrated joint positions, and ``update_curriculum`` to
 update task curricula from each collected step. Checkpoints also contain ``env_steps``, the number of collected steps.
 
 Full checkpoints contain ``actor_state_dict``, ``critic_state_dict``, ``world_model_state_dict``, each model's
