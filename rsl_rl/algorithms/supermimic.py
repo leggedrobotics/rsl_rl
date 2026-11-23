@@ -206,6 +206,8 @@ class SuperMimic:
             raise ValueError("num_warmup_steps must cover the model window; world-model warmup must be nonnegative.")
         if world_model_full_windows and num_warmup_steps <= world_model_window:
             raise ValueError("Complete replay windows need world_model_window + 1 stored states before learning.")
+        if world_model_loss_reduction not in ("sum", "mean"):
+            raise ValueError("world_model_loss_reduction must be 'sum' or 'mean'.")
         if update_schedule not in ("after_warmup", "from_start"):
             raise ValueError("update_schedule must be 'after_warmup' or 'from_start'.")
         if learning_rate_schedule_unit not in ("learner_updates", "env_steps"):
@@ -254,6 +256,7 @@ class SuperMimic:
         self._final_keys = groups("state", "labels")
         self._act_graphs: dict[bool, CudaGraphCallable] = {}
         self._process_env_step_graph: CudaGraphCallable | None = None
+        self._graph_updates: dict[bool, CudaGraphCallable] = {}
         self.error_floor = error_floor
 
         # Handles to the uncompiled modules for state_dict operations and export
@@ -298,8 +301,6 @@ class SuperMimic:
         self.world_model_window = world_model_window
         self.world_model_batch_size = world_model_batch_size
         self.num_mirrored_windows = round(world_model_mirror_fraction * world_model_batch_size)
-        if world_model_loss_reduction not in ("sum", "mean"):
-            raise ValueError("world_model_loss_reduction must be 'sum' or 'mean'.")
         self.world_model_loss_reduction = world_model_loss_reduction
         self.world_model_full_windows = world_model_full_windows
         self.critic_survival_weighting = critic_survival_weighting
@@ -776,7 +777,7 @@ class SuperMimic:
                 lr = float(group["lr"])
                 group["lr"] = torch.tensor(lr, device=self.device) if self.use_cuda_graph else lr
                 group["capturable"] = self.use_cuda_graph
-        self._graph_updates: dict[bool, CudaGraphCallable] = {}
+        self._graph_updates.clear()
 
     @torch.no_grad()
     def broadcast_parameters(self) -> None:
