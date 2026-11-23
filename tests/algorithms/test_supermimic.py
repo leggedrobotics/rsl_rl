@@ -1059,7 +1059,7 @@ def test_actor_learning_rate_multiplier_decays_after_return_or_iteration() -> No
 class FixedEpisodeEnv(ScalarEnv):
     """Episodes end after a fixed number of steps, with reward 1 per step, below a longer maximum length."""
 
-    def __init__(self, episode_steps: int, max_episode_length: int) -> None:
+    def __init__(self, episode_steps: int, max_episode_length: int | torch.Tensor) -> None:
         """Allocate the scalar system with the given episode and maximum lengths."""
         super().__init__()
         self.episode_steps, self.max_episode_length = episode_steps, max_episode_length
@@ -1072,16 +1072,28 @@ class FixedEpisodeEnv(ScalarEnv):
         return obs, torch.ones_like(rewards), dones, extras
 
 
+@pytest.mark.parametrize("per_env", [False, True])
 @pytest.mark.parametrize(("episode_steps", "starts"), [(2, False), (20, True)])
-def test_actor_learning_rate_decay_return_counts_short_episodes_low(episode_steps: int, starts: bool) -> None:
+def test_actor_learning_rate_decay_return_counts_short_episodes_low(
+    episode_steps: int, starts: bool, per_env: bool
+) -> None:
     """Returns are divided by the maximum episode length, so short episodes with high reward do not start the decay."""
-    env = FixedEpisodeEnv(episode_steps, max_episode_length=20)
+    env = FixedEpisodeEnv(episode_steps, max_episode_length=torch.full((4,), 20) if per_env else 20)
     learner = _learner(
         env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_return=0.5, replay_buffer_capacity=64
     )
     _collect(learner, env, 24)
     learner.update()
     assert (learner.actor_learning_rate_multiplier.decay_from is not None) is starts
+
+
+def test_per_environment_episode_lengths_are_only_read_for_the_decay_return() -> None:
+    """VecEnv allows one maximum episode length per environment; the default recipe does not read it."""
+    env = ScalarEnv()
+    env.max_episode_length = torch.full((4,), 5)
+    learner = _learner(env)
+    _collect(learner, env, 4)
+    assert math.isfinite(learner.update()[0]["world_model"])
 
 
 def test_actor_learning_rate_decay_return_requires_max_episode_length() -> None:

@@ -98,7 +98,7 @@ class SuperMimic:
         actor_learning_rate_decay_iterations: int = 300,
         actor_learning_rate_decay_return: float | None = None,
         actor_learning_rate_decay_start: int | None = None,
-        max_episode_length: int | None = None,
+        max_episode_length: int | torch.Tensor | None = None,
         muon_models: tuple[str, ...] = (),
         max_grad_norm: float = 1.0,
         # Learning rate schedule parameters
@@ -161,8 +161,8 @@ class SuperMimic:
                 count low; the decay starts once their mean reaches this value. None disables this trigger.
             actor_learning_rate_decay_start: Learner iteration at which the decay starts at the latest. None disables
                 this trigger.
-            max_episode_length: Maximum episode length in environment steps, required by
-                ``actor_learning_rate_decay_return``.
+            max_episode_length: Maximum episode length in environment steps, a scalar or one value per environment,
+                required by ``actor_learning_rate_decay_return``.
             muon_models: Models among ``"actor"`` and ``"world_model"`` whose hidden weight matrices are trained with
                 :class:`~rsl_rl.utils.Muon`; their other parameters and all other models use Adam.
             max_grad_norm: Global gradient-norm limit for each model.
@@ -980,7 +980,11 @@ class SuperMimic:
             groups,
             device=device,
             multi_gpu_cfg=cfg["multi_gpu"],
-            max_episode_length=int(env.max_episode_length) if hasattr(env, "max_episode_length") else None,
+            max_episode_length=(
+                getattr(env, "max_episode_length", None)
+                if alg_cfg.get("actor_learning_rate_decay_return") is not None
+                else None
+            ),
             **alg_cfg,
         )
         learner.broadcast_parameters()

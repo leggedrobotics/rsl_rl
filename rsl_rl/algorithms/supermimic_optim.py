@@ -39,7 +39,7 @@ class ActorLearningRateMultiplier:
         decay_iterations: int,
         decay_return: float | None,
         decay_start: int | None,
-        max_episode_length: int | None,
+        max_episode_length: int | torch.Tensor | None,
         num_envs: int,
         device: str,
     ) -> None:
@@ -50,7 +50,7 @@ class ActorLearningRateMultiplier:
             )
         if multiplier > 1 and decay_return is None and decay_start is None:
             raise ValueError("An actor learning-rate multiplier needs a decay return or a decay start iteration.")
-        if decay_return is not None and not max_episode_length:
+        if decay_return is not None and max_episode_length is None:
             raise ValueError(
                 "actor_learning_rate_decay_return needs the environment's max_episode_length to normalize returns."
             )
@@ -58,7 +58,9 @@ class ActorLearningRateMultiplier:
         self.decay_iterations = decay_iterations
         self.decay_return = decay_return
         self.decay_start = decay_start
-        self.max_episode_length = max_episode_length
+        self.max_episode_length = (
+            max_episode_length.to(device) if isinstance(max_episode_length, torch.Tensor) else max_episode_length
+        )
         self.decay_from: int | None = None if multiplier > 1 else 0
         self.episode_return = torch.zeros(num_envs, device=device)
         self.completed_episodes = torch.zeros(2, device=device)
