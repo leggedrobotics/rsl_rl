@@ -573,7 +573,7 @@ def test_failed_policy_update_restores_frozen_parameters() -> None:
 
 
 def test_fractional_cadence_and_algorithm_level_multi_gpu_rejection() -> None:
-    """Direct per-step updates retain the 2/3-step learner cadence without a custom runner hook."""
+    """Fractional cadence runs a learner iteration every 2-3 steps; missing state and multi-GPU configs fail."""
     learner, env = _learner(updates_per_step=0.4, num_warmup_steps=1, world_model_window=1), ScalarEnv()
     counts = []
     for _ in range(5):

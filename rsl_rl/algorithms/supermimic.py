@@ -550,10 +550,7 @@ class SuperMimic:
         self._actor_ema_updates.fill_(value)
 
     def update(self) -> tuple[dict[str, float], dict[str, float]]:
-        """Run accumulated learner updates and return mean losses and statistics.
-
-        The runner's collection cadence remains external.
-        """
+        """Run accumulated learner updates and return mean losses and statistics."""
         nonfinite_state, nonfinite_labels = self._nonfinite_final_obs.tolist()
         if nonfinite_state or nonfinite_labels:
             sets = [name for name, flag in (("state", nonfinite_state), ("labels", nonfinite_labels)) if flag]
