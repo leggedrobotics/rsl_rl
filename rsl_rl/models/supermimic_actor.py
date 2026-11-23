@@ -58,6 +58,8 @@ class SuperMimicActor(nn.Module):
         if min(history_length, num_envs, num_actions, obs_dim, task.action_history_length) < 1 or goal_dim < 0:
             raise ValueError("Actor/history dimensions must be positive and goal_dim nonnegative.")
         self.task, self.obs_groups = task, obs_groups
+        # Deployment copies that share the training actor's task leave it on the training device when moved
+        self.owns_task = True
         self.use_reference_action = use_reference_action
         self.obs_dim, self.goal_dim = obs_dim, goal_dim
         self.history_length, self.num_actions = history_length, num_actions
@@ -88,9 +90,10 @@ class SuperMimicActor(nn.Module):
         self.register_buffer("noise_std", torch.zeros(num_actions), persistent=False)
 
     def _apply(self, fn: Callable, recurse: bool = True) -> SuperMimicActor:
-        """Keep task observation tensors on the actor device."""
+        """Keep the observation tensors of an owned task on the actor device."""
         super()._apply(fn, recurse=recurse)
-        self.task.to(self.history.device)
+        if self.owns_task:
+            self.task.to(self.history.device)
         return self
 
     def observation_set(self, obs: TensorDict, name: str) -> torch.Tensor:

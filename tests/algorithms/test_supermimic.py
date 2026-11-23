@@ -536,6 +536,32 @@ def test_actor_ema_cpu_inference_survives_exports_from_cuda_runner(tmp_path: Pat
     assert runner.alg.actor.history.device.type == "cuda"
 
 
+class OffsetScalarTask(ScalarTask):
+    """Offset actor observations by a task-owned tensor constant."""
+
+    def __init__(self, env: VecEnv, device: str) -> None:
+        """Allocate the offset on the training device."""
+        super().__init__(env, device)
+        self.offset = torch.zeros(1, device=device)
+
+    def actor_obs(
+        self, state: State, goal: torch.Tensor, context: torch.Tensor, prev_actions: torch.Tensor
+    ) -> torch.Tensor:
+        """Offset the scalar observation."""
+        return super().actor_obs(state, goal, context, prev_actions) + self.offset
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_moving_the_actor_ema_policy_leaves_the_training_task_in_place(tmp_path: Path) -> None:
+    """A CPU copy of the EMA deployment actor does not move the task of the CUDA learner."""
+    cfg = _cfg(actor_ema_halflife=500, task_cfg={"class_name": OffsetScalarTask})
+    runner = OffPolicyRunner(ScalarEnv(device="cuda:0"), cfg, str(tmp_path), device="cuda:0")
+    runner.learn(2)
+    runner.get_inference_policy(device="cpu")
+    assert runner.alg.task.offset.device.type == "cuda"
+    runner.learn(2)
+
+
 def test_checkpoint_selection_dimensions_and_strictness() -> None:
     """Actor-only and full model selections validate tensor shapes through state-dict loading."""
     learner = _learner()

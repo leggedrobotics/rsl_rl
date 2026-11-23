@@ -662,7 +662,8 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
      - Draw new critic minibatches every epoch instead of reusing one permutation.
 
 With ``actor_ema_halflife`` set, inference and JIT/ONNX exports use EMA parameters with live normalization buffers.
-Collection and policy optimization keep using the live actor.
+Collection and policy optimization keep using the live actor. The EMA inference actor shares the task of the live
+actor, so moving it to another device leaves the task tensors on the training device.
 After each successful actor step ``n``, the averaging decay is
 ``min(0.5 ** (1 / h), (1 + n) / (10 + n))``, where ``h`` is the half-life and ``n`` starts at one.
 ``None`` disables averaging. Use the same ``actor_ema_halflife`` setting for training and play/export.

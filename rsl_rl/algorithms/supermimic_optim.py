@@ -130,10 +130,14 @@ class ActorEMA:
 
     @torch.no_grad()
     def policy(self) -> SuperMimicActor:
-        """Return a deployment actor with the averaged parameters and the live normalization and noise buffers."""
+        """Return a deployment actor with the averaged parameters and the live normalization and noise buffers.
+
+        The deployment actor shares the training task; moving it to another device leaves the task in place.
+        """
         if self._policy is None:
             with torch.inference_mode(False):
                 self._policy = copy.deepcopy(self.actor, {id(self.actor.task): self.actor.task}).requires_grad_(False)
+            self._policy.owns_task = False
         policy = self._policy.eval()
         for parameter, average in zip(policy.parameters(), self.params):
             parameter.copy_(average)
