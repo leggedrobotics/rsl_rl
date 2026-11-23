@@ -344,3 +344,7 @@ Full and actor-only loads restore the averaged parameters and successful actor-s
 Checkpoints without these keys initialize the average from the loaded live actor and reset its count to zero.
 Enable the same half-life for play/export to deploy the EMA with live normalization buffers.
 Loading an EMA checkpoint with averaging disabled warns and uses the live actor.
+
+With ``muon_models`` set, checkpoints also contain ``<model>_muon_optimizer_state_dict`` for each listed model.
+With ``actor_learning_rate_multiplier`` above 1, they contain ``actor_learning_rate_decay_from``, the learner
+iteration where the actor learning rate started to decay, or ``None`` before that.
