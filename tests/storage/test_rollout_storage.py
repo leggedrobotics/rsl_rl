@@ -25,6 +25,25 @@ OBS_DIM = 4
 NUM_ACTIONS = 3
 
 
+@pytest.mark.parametrize("rnn_type", ["gru", "lstm"])
+def test_saved_hidden_states_retain_recurrent_model_dtype(rnn_type: str) -> None:
+    """Double-precision recurrent states must remain usable after rollout storage."""
+    obs = make_obs(2, 3).to(dtype=torch.float64)
+    storage = RolloutStorage("rl", 2, 2, obs, [1])
+    model = RNN(3, hidden_dim=4, type=rnn_type).double()
+    model(obs["policy"])
+    hidden = model.hidden_state
+
+    storage._save_hidden_states((hidden, hidden))
+    stored_actor = tuple(state[0] for state in storage.saved_hidden_state_a)
+    stored_critic = tuple(state[0] for state in storage.saved_hidden_state_c)
+    for states in (stored_actor, stored_critic):
+        restored = states[0] if rnn_type == "gru" else states
+        actual, _ = model.rnn(obs["policy"].unsqueeze(0), restored)
+        expected, _ = model.rnn(obs["policy"].unsqueeze(0), hidden)
+        torch.testing.assert_close(actual, expected)
+
+
 def _make_storage_and_obs() -> tuple:
     """Create a storage and observations for testing."""
     obs = make_obs(NUM_ENVS, OBS_DIM)

@@ -342,12 +342,22 @@ class RolloutStorage:
         # Initialize hidden states if needed
         if self.saved_hidden_state_a is None and hidden_states[0] is not None:
             self.saved_hidden_state_a = [
-                torch.zeros(self.observations.shape[0], *hidden_state_a[i].shape, device=self.device)
+                torch.zeros(
+                    self.observations.shape[0],
+                    *hidden_state_a[i].shape,
+                    dtype=hidden_state_a[i].dtype,
+                    device=self.device,
+                )
                 for i in range(len(hidden_state_a))
             ]
         if self.saved_hidden_state_c is None and hidden_states[1] is not None:
             self.saved_hidden_state_c = [
-                torch.zeros(self.observations.shape[0], *hidden_state_c[i].shape, device=self.device)
+                torch.zeros(
+                    self.observations.shape[0],
+                    *hidden_state_c[i].shape,
+                    dtype=hidden_state_c[i].dtype,
+                    device=self.device,
+                )
                 for i in range(len(hidden_state_c))
             ]
         # Copy the states
