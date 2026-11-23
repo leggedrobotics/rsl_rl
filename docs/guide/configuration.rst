@@ -595,9 +595,9 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
    * - ``actor_learning_rate_decay_return``
      - float | None
      - ``None``
-     - Mean return per maximum-length step of the episodes completed since the previous update that starts
-       the decay: each episode return is divided by the environment's ``max_episode_length``, so short
-       failed episodes count low.
+     - Return threshold that starts the decay. Each episode completed since the previous update contributes
+       its return divided by the environment's ``max_episode_length``, so short failed episodes count low;
+       the decay starts once their mean reaches this value.
    * - ``actor_learning_rate_decay_start``
      - int | None
      - ``None``

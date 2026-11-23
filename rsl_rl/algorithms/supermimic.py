@@ -136,9 +136,9 @@ class SuperMimic:
                 episodes reach ``actor_learning_rate_decay_return`` or at ``actor_learning_rate_decay_start``,
                 whichever comes first.
             actor_learning_rate_decay_iterations: Learner iterations over which the multiplier decays to 1.
-            actor_learning_rate_decay_return: Mean return per maximum-length step of the episodes completed since the
-                previous update that starts the decay, i.e. the episode return divided by ``max_episode_length``, so
-                short failed episodes count low. None disables this trigger.
+            actor_learning_rate_decay_return: Return threshold that starts the decay. Each episode completed since the
+                previous update contributes its return divided by ``max_episode_length``, so short failed episodes
+                count low; the decay starts once their mean reaches this value. None disables this trigger.
             actor_learning_rate_decay_start: Learner iteration at which the decay starts at the latest. None disables
                 this trigger.
             max_episode_length: Maximum episode length in environment steps, required by
