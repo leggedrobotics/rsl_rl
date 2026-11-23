@@ -1,0 +1,166 @@
+# Copyright (c) 2021-2026, ETH Zurich and NVIDIA CORPORATION
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""SuperMimic optimizer parameter selection, actor learning-rate multiplier and deployment actor EMA."""
+
+from __future__ import annotations
+
+import copy
+import torch
+import torch.distributed as dist
+from torch import nn
+
+from rsl_rl.models.supermimic_actor import SuperMimicActor
+from rsl_rl.modules.mlp import MLP
+
+
+def hidden_matrices(module: nn.Module) -> list[nn.Parameter]:
+    """Return the weights of the linear layers between the first and last layer of each MLP in a module."""
+    matrices = []
+    for mlp in module.modules():
+        if isinstance(mlp, MLP):
+            linears = [layer for layer in mlp if isinstance(layer, nn.Linear)]
+            matrices += [layer.weight for layer in linears[1:-1]]
+    return matrices
+
+
+class ActorLearningRateMultiplier:
+    """Factor on the actor learning rate that decays linearly to 1 once triggered.
+
+    The decay starts at the first update whose completed episodes reach a mean normalized return, or at a fixed learner
+    iteration, whichever comes first.
+    """
+
+    def __init__(
+        self,
+        multiplier: float,
+        decay_iterations: int,
+        decay_return: float | None,
+        decay_start: int | None,
+        max_episode_length: int | None,
+        num_envs: int,
+        device: str,
+    ) -> None:
+        """Validate the triggers and allocate device accumulators for episode returns."""
+        if multiplier < 1 or decay_iterations < 1:
+            raise ValueError(
+                "The actor learning-rate multiplier must be at least 1 and decay over at least 1 iteration."
+            )
+        if multiplier > 1 and decay_return is None and decay_start is None:
+            raise ValueError("An actor learning-rate multiplier needs a decay return or a decay start iteration.")
+        if decay_return is not None and not max_episode_length:
+            raise ValueError(
+                "actor_learning_rate_decay_return needs the environment's max_episode_length to normalize returns."
+            )
+        self.multiplier = multiplier
+        self.decay_iterations = decay_iterations
+        self.decay_return = decay_return
+        self.decay_start = decay_start
+        self.max_episode_length = max_episode_length
+        self.decay_from: int | None = None if multiplier > 1 else 0
+        # Returns of running and completed episodes for the actor learning-rate decay trigger
+        self.episode_return = torch.zeros(num_envs, device=device)
+        self.completed_episodes = torch.zeros(2, device=device)
+
+    def record(self, rewards: torch.Tensor, dones: torch.Tensor) -> None:
+        """Accumulate the normalized returns of completed episodes using only device operations."""
+        if self.decay_return is None:
+            return
+        self.episode_return.add_(rewards)
+        normalized = torch.where(dones, self.episode_return / self.max_episode_length, 0.0)
+        self.completed_episodes.add_(torch.stack((normalized.sum(), dones.sum())))
+        self.episode_return.masked_fill_(dones, 0.0)
+
+    def observe(self, return_sum: float, episodes: float, iteration: int) -> None:
+        """Start the decay once the reduced episodes completed since the previous update reach the return threshold."""
+        self.completed_episodes.zero_()
+        if (
+            self.decay_from is None
+            and self.decay_return is not None
+            and episodes
+            and return_sum / episodes >= self.decay_return
+        ):
+            self.decay_from = iteration
+
+    def __call__(self, iteration: int) -> float:
+        """Return the multiplier, starting its decay at the latest scheduled iteration."""
+        if self.decay_from is None and self.decay_start is not None and iteration >= self.decay_start:
+            self.decay_from = self.decay_start
+        if self.decay_from is None:
+            return self.multiplier
+        progress = min((iteration - self.decay_from) / self.decay_iterations, 1.0)
+        return self.multiplier + (1 - self.multiplier) * progress
+
+    def state_dict(self) -> dict:
+        """Return the decay start under its checkpoint key while a multiplier is active."""
+        return {"actor_learning_rate_decay_from": self.decay_from} if self.multiplier > 1 else {}
+
+    def load_state_dict(self, loaded_dict: dict) -> None:
+        """Restore the decay start of an active multiplier."""
+        if self.multiplier > 1:
+            self.decay_from = loaded_dict.get("actor_learning_rate_decay_from")
+
+
+class ActorEMA:
+    """Deployment-only exponential moving average (EMA) of the actor parameters.
+
+    After actor step n, the decay is ``min(0.5 ** (1 / halflife), (1 + n) / (10 + n))``. Buffers such as normalization
+    moments and collection noise are not averaged; the deployment actor copies them from the live actor.
+    """
+
+    def __init__(self, actor: SuperMimicActor, halflife: int) -> None:
+        """Start the average at the current actor parameters."""
+        if halflife < 1:
+            raise ValueError("actor_ema_halflife must be positive or None.")
+        self.actor = actor
+        self.halflife = halflife
+        self.params = [parameter.detach().clone() for parameter in actor.parameters()]
+        self.num_updates = torch.zeros((), dtype=torch.long, device=self.params[0].device)
+        self._policy: SuperMimicActor | None = None
+
+    @torch.no_grad()
+    def update(self, finite: torch.Tensor) -> None:
+        """Average the live actor only after a successful optimizer step."""
+        self.num_updates += finite.long()
+        updates = self.num_updates.float()
+        decay = torch.clamp((1 + updates) / (10 + updates), max=0.5 ** (1 / self.halflife))
+        weight = (1 - decay) * finite.float()
+        torch._foreach_lerp_(self.params, list(self.actor.parameters()), [weight] * len(self.params))
+
+    @torch.no_grad()
+    def policy(self) -> SuperMimicActor:
+        """Return a deployment actor with the averaged parameters and the live normalization and noise buffers."""
+        if self._policy is None:
+            with torch.inference_mode(False):
+                self._policy = copy.deepcopy(self.actor, {id(self.actor.task): self.actor.task}).requires_grad_(False)
+        policy = self._policy.eval()
+        for parameter, average in zip(policy.parameters(), self.params):
+            parameter.copy_(average)
+        for target, source in zip(policy.buffers(), self.actor.buffers()):
+            target.copy_(source)
+        return policy
+
+    def state_dict(self) -> dict:
+        """Return the deployment actor state and the number of averaged steps under their checkpoint keys."""
+        averages = dict(zip(dict(self.actor.named_parameters()), self.params))
+        return {
+            "actor_ema_state_dict": {**self.actor.state_dict(), **averages},
+            "actor_ema_updates": int(self.num_updates),
+        }
+
+    def load_state_dict(self, loaded_dict: dict, strict: bool) -> None:
+        """Restore the average, or restart it from the loaded live actor when the checkpoint has none."""
+        policy = self.policy()
+        policy.load_state_dict(loaded_dict.get("actor_ema_state_dict", self.actor.state_dict()), strict=strict)
+        with torch.no_grad():
+            for parameter, average in zip(policy.parameters(), self.params):
+                average.copy_(parameter)
+        self.num_updates.fill_(loaded_dict.get("actor_ema_updates", 0) if "actor_ema_state_dict" in loaded_dict else 0)
+
+    @torch.no_grad()
+    def broadcast(self) -> None:
+        """Synchronize the average and its step count from rank 0."""
+        for tensor in (*self.params, self.num_updates):
+            dist.broadcast(tensor, src=0)

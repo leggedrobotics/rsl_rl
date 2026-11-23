@@ -478,9 +478,9 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
                 for value in model.state_dict().values():
                     assert torch.isfinite(value).all()
                     _assert_close_across_ranks(value)
-            for value in alg.actor_ema:
+            for value in alg.actor_ema.params:
                 _assert_close_across_ranks(value)
-            _assert_close_across_ranks(alg._actor_ema_updates)
+            _assert_close_across_ranks(alg.actor_ema.num_updates)
             for _, optimizer in alg._all_optimizers():
                 for state in optimizer.state.values():
                     for value in state.values():
@@ -527,16 +527,18 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
             assert learner._process_env_step_graph.graph is not None
             assert learner._graph_updates[True].graph is not None
 
-        learner._completed_episodes.copy_(torch.tensor([20.0, 1.0] if rank == 0 else [0.0, 0.0], device=device))
+        learner.actor_learning_rate_multiplier.completed_episodes.copy_(
+            torch.tensor([20.0, 1.0] if rank == 0 else [0.0, 0.0], device=device)
+        )
         expected = learner.iteration
         learner.update()
-        assert learner.actor_learning_rate_decay_from == expected
+        assert learner.actor_learning_rate_multiplier.decay_from == expected
         checkpoint = copy.deepcopy(learner.save())
         restored = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, device)
         restored.load(checkpoint, None, True)
         restored.broadcast_parameters()
         assert restored.iteration == learner.iteration and restored.env_steps == learner.env_steps
-        assert restored.actor_learning_rate_decay_from == expected
+        assert restored.actor_learning_rate_multiplier.decay_from == expected
         assert_synchronized(restored)
         _collect(restored, env, 8)
         restored.update()
@@ -564,7 +566,7 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
         restored._apply(loss * (float("nan") if rank == 0 else 1.0), "actor", restored.actor)
         for key, value in restored.actor.state_dict().items():
             torch.testing.assert_close(value, before["actor_state_dict"][key])
-        assert restored.actor_ema_updates == before["actor_ema_updates"]
+        assert int(restored.actor_ema.num_updates) == before["actor_ema_updates"]
         assert_synchronized(restored)
         if rank == 0:
             restored._nonfinite_final_obs[0] = True

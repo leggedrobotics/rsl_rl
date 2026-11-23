@@ -290,9 +290,11 @@ def test_actor_ema_is_passive_over_five_updates(device: str) -> None:
             result.append((saved, metrics, action, torch.get_rng_state(), torch.cuda.get_rng_state_all()))
         assert learner.iteration == 5
         if halflife is not None:
-            assert learner.actor_ema_updates == 5
-            assert any(not torch.equal(p, average) for p, average in zip(learner.actor.parameters(), learner.actor_ema))
-            for parameter, average in zip(learner.get_policy().parameters(), learner.actor_ema):
+            assert int(learner.actor_ema.num_updates) == 5
+            assert any(
+                not torch.equal(p, average) for p, average in zip(learner.actor.parameters(), learner.actor_ema.params)
+            )
+            for parameter, average in zip(learner.get_policy().parameters(), learner.actor_ema.params):
                 torch.testing.assert_close(parameter, average, rtol=0, atol=0)
         return result
 
@@ -306,12 +308,12 @@ def test_actor_ema_matches_closed_form_and_keeps_live_buffers() -> None:
     learner = _learner(actor_ema_halflife=1)
     learner.task.handle = Lock()
     with torch.no_grad():
-        for average in learner.actor_ema:
+        for average in learner.actor_ema.params:
             average.zero_()
         for value in range(1, 13):
             for parameter in learner.actor.parameters():
                 parameter.fill_(value)
-            learner._update_actor_ema(torch.tensor(True))
+            learner.actor_ema.update(torch.tensor(True))
     decays = [min(0.5, (1 + n) / (10 + n)) for n in range(1, 13)]
     expected = sum((i + 1) * (1 - decay) * math.prod(decays[i + 1 :]) for i, decay in enumerate(decays))
     with torch.inference_mode():
@@ -344,8 +346,8 @@ def test_actor_ema_closed_form_after_optimizer_steps() -> None:
     expected = initial * math.prod(decays) + sum(
         value * (1 - decay) * math.prod(decays[i + 1 :]) for i, (value, decay) in enumerate(zip(steps, decays))
     )
-    assert learner.actor_ema_updates == 30
-    torch.testing.assert_close(learner.actor_ema[0], expected.float(), rtol=1e-6, atol=1e-7)
+    assert int(learner.actor_ema.num_updates) == 30
+    torch.testing.assert_close(learner.actor_ema.params[0], expected.float(), rtol=1e-6, atol=1e-7)
 
 
 def test_actor_ema_checkpoint_full_actor_only_and_no_ema_loads() -> None:
@@ -357,7 +359,7 @@ def test_actor_ema_checkpoint_full_actor_only_and_no_ema_loads() -> None:
     for selection in (None, {"actor": True}):
         restored = _learner(actor_ema_halflife=500)
         restored.load(saved, selection, strict=True)
-        assert restored.actor_ema_updates == learner.actor_ema_updates
+        assert int(restored.actor_ema.num_updates) == int(learner.actor_ema.num_updates)
         torch.testing.assert_close(restored.get_policy().state_dict(), saved["actor_ema_state_dict"], rtol=0, atol=0)
         if selection is None:
             torch.testing.assert_close(restored.save(), saved, rtol=0, atol=0)
@@ -371,11 +373,11 @@ def test_actor_ema_checkpoint_full_actor_only_and_no_ema_loads() -> None:
     assert "actor_ema_state_dict" not in disabled.save()
     without_ema = {key: value for key, value in saved.items() if not key.startswith("actor_ema")}
     restored.load(without_ema, {"actor": True}, strict=True)
-    assert restored.actor_ema_updates == 0
+    assert int(restored.actor_ema.num_updates) == 0
     torch.testing.assert_close(restored.get_policy().state_dict(), without_ema["actor_state_dict"], rtol=0, atol=0)
     fresh = _learner(actor_ema_halflife=500)
     fresh.load(without_ema, {"actor": True}, strict=True)
-    assert fresh.actor_ema_updates == 0
+    assert int(fresh.actor_ema.num_updates) == 0
     torch.testing.assert_close(fresh.get_policy().state_dict(), without_ema["actor_state_dict"], rtol=0, atol=0)
     malformed = copy.deepcopy(saved)
     name = next(iter(dict(learner.actor.named_parameters())))
@@ -935,7 +937,7 @@ def test_actor_learning_rate_multiplier_decays_after_return_or_iteration() -> No
     assert _actor_ratio(learner) == pytest.approx(4.0)
     learner.iteration = 51
     learner._update_learning_rate()
-    assert learner.actor_learning_rate_decay_from == 50 and _actor_ratio(learner) == pytest.approx(2.5)
+    assert learner.actor_learning_rate_multiplier.decay_from == 50 and _actor_ratio(learner) == pytest.approx(2.5)
     learner.iteration = 60
     learner._update_learning_rate()
     assert _actor_ratio(learner) == pytest.approx(1.0)
@@ -943,19 +945,19 @@ def test_actor_learning_rate_multiplier_decays_after_return_or_iteration() -> No
     learner = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_return=float("-inf"))
     _collect(learner, env, 6)
     learner.update()
-    start = learner.actor_learning_rate_decay_from
+    start = learner.actor_learning_rate_multiplier.decay_from
     assert start is not None and start <= learner.iteration
     learner.iteration = start + 1
     learner._update_learning_rate()
     assert _actor_ratio(learner) == pytest.approx(4.0 + (1.0 - 4.0) / 300)
     restored = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_return=float("-inf"))
     restored.load(learner.save(), None, strict=True)
-    assert restored.actor_learning_rate_decay_from == start
+    assert restored.actor_learning_rate_multiplier.decay_from == start
 
     never = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_return=float("inf"))
     _collect(never, env, 6)
     _, stats = never.update()
-    assert never.actor_learning_rate_decay_from is None and _actor_ratio(never) == pytest.approx(4.0)
+    assert never.actor_learning_rate_multiplier.decay_from is None and _actor_ratio(never) == pytest.approx(4.0)
     assert stats["Optimizer/actor_learning_rate"] == pytest.approx(4.0 * stats["Optimizer/learning_rate"])
     with pytest.raises(ValueError, match="decay"):
         _learner(env, actor_learning_rate_multiplier=4.0)
@@ -986,7 +988,7 @@ def test_actor_learning_rate_decay_return_counts_short_episodes_low(episode_step
     )
     _collect(learner, env, 24)
     learner.update()
-    assert (learner.actor_learning_rate_decay_from is not None) is starts
+    assert (learner.actor_learning_rate_multiplier.decay_from is not None) is starts
 
 
 def test_actor_learning_rate_decay_return_requires_max_episode_length() -> None:
