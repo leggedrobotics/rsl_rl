@@ -232,6 +232,11 @@ PPO
      - ``False``
      - Whether to run the forward pass and loss computation in bfloat16 autocast. Backward, gradient clipping, and
        the optimizer step always stay in fp32.
+   * - ``use_cuda_graph``
+     - bool
+     - ``False``
+     - Whether to capture all optimization epochs of an update in a CUDA graph. Not yet supported with recurrent
+       models, RND, or multi-GPU training.
    * - ``share_cnn_encoders``
      - bool
      - ``False``
