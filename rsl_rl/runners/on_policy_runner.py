@@ -25,11 +25,12 @@ class OnPolicyRunner:
     """The actor-critic algorithm."""
 
     iteration_callbacks: list[Callable[[OnPolicyRunner, int, dict, dict], None]]
-    """Functions called at the end of each learning iteration.
+    """Functions called once per learning iteration, between the algorithm update and logging.
 
-    Each function is called as ``callback(runner, it, loss_dict, stats_dict)`` after the iteration has been logged and
-    the model has been saved, if due. ``loss_dict`` and ``stats_dict`` are the outputs of the algorithm update. In
-    multi-GPU training, the functions are called on every process.
+    Each function is called as ``callback(runner, it, loss_dict, stats_dict)`` after the algorithm update and before the
+    iteration is logged. ``loss_dict`` and ``stats_dict`` are the outputs of the algorithm update. Scalars that a
+    function adds to ``stats_dict`` are logged under their key, e.g., ``Custom/success_rate``. In multi-GPU training,
+    the functions are called on every process.
     """
 
     def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
@@ -131,6 +132,9 @@ class OnPolicyRunner:
                 learn_time = stop - start
                 self.current_learning_iteration = it
 
+                for callback in self.iteration_callbacks:
+                    callback(self, it, loss_dict, stats_dict)
+
                 # Log information
                 self.logger.log(
                     it=it,
@@ -145,9 +149,6 @@ class OnPolicyRunner:
                 # Save model
                 if self.logger.writer is not None and it % self.cfg["save_interval"] == 0:
                     self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore
-
-                for callback in self.iteration_callbacks:
-                    callback(self, it, loss_dict, stats_dict)
 
             # Save the final model after training
             if self.logger.writer is not None:

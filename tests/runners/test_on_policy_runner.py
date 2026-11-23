@@ -171,17 +171,22 @@ class TestLearnLoop:
         runner.learn(num_learning_iterations=3)
         assert runner.current_learning_iteration == 2
 
-    def test_learn_calls_iteration_callbacks(self) -> None:
-        """Iteration callbacks should receive the runner, the iteration, and the update results once per iteration."""
-        runner = _build_runner()
+    def test_learn_calls_iteration_callbacks(self, tmp_path: pathlib.Path) -> None:
+        """Iteration callbacks should run once per iteration and the statistics they add should be logged."""
+        cfg = _make_train_cfg()
+        cfg["logger"] = {"class_name": ScalarRecordingWriter}
+        runner = OnPolicyRunner(DummyEnv(), cfg, log_dir=str(tmp_path), device="cpu")
         calls = []
-        runner.iteration_callbacks.append(lambda *args: calls.append(args))
+
+        def callback(callback_runner: OnPolicyRunner, it: int, loss_dict: dict, stats_dict: dict) -> None:
+            calls.append((callback_runner, it, loss_dict))
+            stats_dict["Custom/iteration"] = it
+
+        runner.iteration_callbacks.append(callback)
         runner.learn(num_learning_iterations=3)
-        assert [it for _, it, _, _ in calls] == [0, 1, 2]
-        for callback_runner, _, loss_dict, stats_dict in calls:
-            assert callback_runner is runner
-            assert "surrogate" in loss_dict
-            assert "Optimizer/learning_rate" in stats_dict
+        assert [it for _, it, _ in calls] == [0, 1, 2]
+        assert all(callback_runner is runner and "surrogate" in loss_dict for callback_runner, _, loss_dict in calls)
+        assert runner.logger.writer.scalars["Custom/iteration"] == [(0, 0), (1, 1), (2, 2)]
 
 
 class TestSaveLoad:
@@ -319,6 +324,16 @@ class LifecycleRecordingWriter(LogWriter):
 
     def abort(self) -> None:  # noqa: D102
         self.calls.append("abort")
+
+
+class ScalarRecordingWriter(LogWriter):
+    """LogWriter that records logged scalars by tag."""
+
+    def __init__(self, log_dir: str) -> None:  # noqa: D107
+        self.scalars: dict[str, list[tuple[int, float]]] = {}
+
+    def add_scalar(self, tag: str, scalar_value: float, global_step: int) -> None:  # noqa: D102
+        self.scalars.setdefault(tag, []).append((global_step, scalar_value))
 
 
 class InterruptedEnv(DummyEnv):
