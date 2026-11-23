@@ -109,8 +109,8 @@ class SuperMimicActor(nn.Module):
             self.previous_actions[:, -2].copy_(self.observation_set(obs, "prev_prev_action"))
 
     @torch.no_grad()
-    def forward(self, obs: TensorDict) -> torch.Tensor:
-        """Build a real actor frame, update history and return a deterministic action."""
+    def forward(self, obs: TensorDict, stochastic_output: bool = False) -> torch.Tensor:
+        """Build a real actor frame, update history and return an action, with collection noise if requested."""
         self.sync_actions(obs)
         state = self.task.representation.unflatten(self.observation_set(obs, "state"))
         goal, context = self.observation_set(obs, "goal"), self.observation_set(obs, "context")
@@ -126,6 +126,8 @@ class SuperMimicActor(nn.Module):
         action = self.forward_history(self.history, policy_goal)
         if self.use_reference_action:
             action = action + self.task.reference_action(state, goal)
+        if stochastic_output:
+            action = action + torch.randn_like(action) * self.noise_std
         if self.training and not self.normalize_before_action:
             self._update_normalization(frame, policy_goal)
         self.previous_actions.copy_(torch.cat((self.previous_actions[:, 1:], action[:, None]), dim=1))

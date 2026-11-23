@@ -366,10 +366,7 @@ class SuperMimic:
         """Choose a noisy action and record it as the latest action using only device operations."""
         self.actor.sync_actions(obs)
         previous_actions = self.actor.previous_actions.clone()
-        action = self.actor(obs)
-        action = action + torch.randn_like(action) * self.actor.noise_std
-        self.actor.previous_actions[:, -1].copy_(action)
-        return {"actions": action, "previous_actions": previous_actions}
+        return {"actions": self.actor(obs, stochastic_output=True), "previous_actions": previous_actions}
 
     @torch.no_grad()
     def process_env_step(
