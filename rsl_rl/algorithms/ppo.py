@@ -16,6 +16,7 @@ from rsl_rl.extensions import RandomNetworkDistillation, Symmetry, resolve_rnd_c
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import (
+    CudaGraphCallable,
     compile_model,
     reduce_gradients_in_buckets,
     resolve_class,
@@ -57,6 +58,7 @@ class PPO:
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
         use_mixed_precision: bool = False,
+        use_cuda_graph: bool = False,
         device: str = "cpu",
         # RND parameters
         rnd_cfg: dict | None = None,
@@ -72,9 +74,18 @@ class PPO:
             raise ValueError("PPO requires an actor with an output distribution.")
         if schedule not in ("fixed", "adaptive"):
             raise ValueError(f"Unsupported learning rate schedule: {schedule}. Expected 'fixed' or 'adaptive'.")
+        if use_cuda_graph and torch.device(device).type != "cuda":
+            raise ValueError("CUDA graph capture requires a CUDA device.")
+        if use_cuda_graph and (actor.is_recurrent or critic.is_recurrent):
+            raise ValueError("CUDA graph capture does not yet support recurrent models.")
+        if use_cuda_graph and rnd_cfg:
+            raise ValueError("CUDA graph capture does not yet support RND.")
+        if use_cuda_graph and multi_gpu_cfg is not None:
+            raise ValueError("CUDA graph capture does not yet support multi-GPU training.")
 
         # Device-related parameters
         self.device = device
+        self.use_cuda_graph = use_cuda_graph
         self.is_multi_gpu = multi_gpu_cfg is not None
 
         # Multi-GPU parameters
@@ -126,6 +137,9 @@ class PPO:
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
         self.use_mixed_precision = use_mixed_precision
+
+        self._update_graph: CudaGraphCallable | None = None
+        self._configure_optimizer_capture()
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Sample actions and store transition data."""
@@ -193,20 +207,62 @@ class PPO:
             # Return: R_t = A(s_t, a_t) + V(s_t)
             st.returns[step] = advantage + st.values[step]
         # Compute the advantages
-        st.advantages = st.returns - st.values
+        torch.sub(st.returns, st.values, out=st.advantages)
         # Normalize the advantages if per minibatch normalization is not used
         if not self.normalize_advantage_per_mini_batch and st.advantages.numel() > 1:
-            st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
+            mean, std = st.advantages.mean(), st.advantages.std()
+            st.advantages.sub_(mean).div_(std + 1e-8)
 
     def update(self) -> tuple[dict[str, float], dict[str, float]]:
         """Run optimization epochs over stored batches and return mean losses and statistics."""
-        mean_value_loss = 0
-        mean_surrogate_loss = 0
-        mean_entropy_loss = 0
+        if self.use_cuda_graph:
+            if self._update_graph is None:
+                self._update_graph = CudaGraphCallable(self._update_mini_batches, self.device)
+            totals = self._update_graph()
+        else:
+            totals = self._update_mini_batches()
+
+        # Update the normalizers
+        obs = self.storage.observations.flatten(0, 1)
+        self.actor.update_normalization(obs)  # type: ignore
+        self.critic.update_normalization(obs)  # type: ignore
+        if self.rnd:
+            self.rnd.update_normalization(obs)  # type: ignore
+
+        device_stats = {"Model/mean_policy_std": self.actor.output_std.mean()}
+        if self.use_cuda_graph:
+            device_stats["Optimizer/learning_rate"] = self.optimizer.param_groups[0]["lr"]
+        metrics = {**totals, **device_stats}
+        metrics = dict(zip(metrics, torch.stack([value.float() for value in metrics.values()]).tolist()))
+        if self.use_cuda_graph:
+            self.learning_rate = metrics["Optimizer/learning_rate"]
+
+        # Divide the losses by the number of updates
+        num_updates = self.num_learning_epochs * self.num_mini_batches
+        loss_dict = {key: metrics[key] / num_updates for key in totals}
+
+        # Construct the stats dictionary
+        stats_dict = {
+            "Optimizer/learning_rate": self.learning_rate,
+            "Model/mean_policy_std": metrics["Model/mean_policy_std"],
+        }
+        if self.rnd:
+            stats_dict["Rnd/rnd_weight"] = self.rnd.weight
+
+        # Clear the storage
+        self.storage.clear()
+
+        return loss_dict, stats_dict
+
+    def _update_mini_batches(self) -> dict[str, torch.Tensor]:
+        """Run the optimization epochs and return the summed losses as device scalars."""
+        totals = {key: torch.zeros((), device=self.device) for key in ("value", "surrogate", "entropy")}
         # RND loss
-        mean_rnd_loss = 0 if self.rnd else None
+        if self.rnd:
+            totals["rnd"] = torch.zeros((), device=self.device)
         # Symmetry loss
-        mean_symmetry_loss = 0 if self.symmetry else None
+        if self.symmetry:
+            totals["symmetry"] = torch.zeros((), device=self.device)
 
         # Get mini-batch generator
         if self.actor.is_recurrent or self.critic.is_recurrent:
@@ -257,7 +313,9 @@ class PPO:
                             kl_mean /= self.gpu_world_size
 
                         # Update the learning rate only on the main process
-                        if self.gpu_global_rank == 0:
+                        if self.use_cuda_graph:
+                            self._adapt_learning_rate_on_device(kl_mean)
+                        elif self.gpu_global_rank == 0:
                             if kl_mean > self.desired_kl * 2.0:
                                 self.learning_rate = max(1e-5, self.learning_rate / 1.5)
                             elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
@@ -270,8 +328,9 @@ class PPO:
                             self.learning_rate = lr_tensor.item()
 
                         # Update the learning rate for all parameter groups
-                        for param_group in self.optimizer.param_groups:
-                            param_group["lr"] = self.learning_rate
+                        if not self.use_cuda_graph:
+                            for param_group in self.optimizer.param_groups:
+                                param_group["lr"] = self.learning_rate
 
                 # Surrogate loss
                 ratio = torch.exp(actions_log_prob - batch.old_actions_log_prob.squeeze(-1))  # type: ignore
@@ -305,7 +364,7 @@ class PPO:
                         loss = loss + self.symmetry.mirror_loss_coeff * symmetry_loss
 
             # Compute the gradients for PPO
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=not self.use_cuda_graph)
             loss.backward()
             # Compute the gradients for RND
             if self.rnd:
@@ -325,56 +384,29 @@ class PPO:
                 self.rnd.optimizer.step()
 
             # Store the losses
-            mean_value_loss += value_loss.item()
-            mean_surrogate_loss += surrogate_loss.item()
-            mean_entropy_loss += entropy_loss.item()
+            totals["value"] += value_loss.detach()
+            totals["surrogate"] += surrogate_loss.detach()
+            totals["entropy"] += entropy_loss.detach()
             # RND loss
-            if mean_rnd_loss is not None:
-                mean_rnd_loss += rnd_loss.item()
+            if self.rnd:
+                totals["rnd"] += rnd_loss.detach()  # type: ignore
             # Symmetry loss
-            if mean_symmetry_loss is not None:
-                mean_symmetry_loss += symmetry_loss.item()
+            if self.symmetry:
+                totals["symmetry"] += symmetry_loss.detach()
 
-        # Update the normalizers
-        obs = self.storage.observations.flatten(0, 1)
-        self.actor.update_normalization(obs)  # type: ignore
-        self.critic.update_normalization(obs)  # type: ignore
-        if self.rnd:
-            self.rnd.update_normalization(obs)  # type: ignore
+        return totals
 
-        # Divide the losses by the number of updates
-        num_updates = self.num_learning_epochs * self.num_mini_batches
-        mean_value_loss /= num_updates
-        mean_surrogate_loss /= num_updates
-        mean_entropy_loss /= num_updates
-        if mean_rnd_loss is not None:
-            mean_rnd_loss /= num_updates
-        if mean_symmetry_loss is not None:
-            mean_symmetry_loss /= num_updates
-
-        # Construct the loss dictionary
-        loss_dict = {
-            "value": mean_value_loss,
-            "surrogate": mean_surrogate_loss,
-            "entropy": mean_entropy_loss,
-        }
-        if self.rnd:
-            loss_dict["rnd"] = mean_rnd_loss
-        if self.symmetry:
-            loss_dict["symmetry"] = mean_symmetry_loss
-
-        # Construct the stats dictionary
-        stats_dict = {
-            "Optimizer/learning_rate": self.learning_rate,
-            "Model/mean_policy_std": self.actor.output_std.mean().item(),
-        }
-        if self.rnd:
-            stats_dict["Rnd/rnd_weight"] = self.rnd.weight
-
-        # Clear the storage
-        self.storage.clear()
-
-        return loss_dict, stats_dict
+    def _adapt_learning_rate_on_device(self, kl_mean: torch.Tensor) -> None:
+        """Apply the adaptive learning rate rule to the optimizer's device learning rate without synchronizing."""
+        learning_rate = self.optimizer.param_groups[0]["lr"]
+        increase = (kl_mean < self.desired_kl / 2.0) & (kl_mean > 0.0)
+        new_learning_rate = torch.where(
+            kl_mean > self.desired_kl * 2.0,
+            torch.clamp(learning_rate / 1.5, min=1e-5),
+            torch.where(increase, torch.clamp(learning_rate * 1.5, max=1e-2), learning_rate),
+        )
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"].copy_(new_learning_rate)
 
     def train_mode(self) -> None:
         """Set train mode for learnable models."""
@@ -419,7 +451,8 @@ class PPO:
             self._raw_critic.load_state_dict(loaded_dict["critic_state_dict"], strict=strict)
         if load_cfg.get("optimizer"):
             self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
-            self.learning_rate = self.optimizer.param_groups[0]["lr"]
+            self._configure_optimizer_capture()
+            self.learning_rate = float(self.optimizer.param_groups[0]["lr"])
         if load_cfg.get("rnd") and self.rnd:
             self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
             self.rnd.optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
@@ -500,3 +533,19 @@ class PPO:
             params = chain(params, self.rnd.parameters())
         # Average the gradients across all GPUs in bounded buckets
         reduce_gradients_in_buckets(params, self.gpu_world_size, self.grad_reduce_bucket_mb)
+
+    def _configure_optimizer_capture(self) -> None:
+        """Configure the optimizer's learning rate and step counters for CUDA graph capture."""
+        for param_group in self.optimizer.param_groups:
+            if self.use_cuda_graph and "capturable" not in param_group:
+                raise ValueError("CUDA graphs require a capturable optimizer such as Adam or AdamW.")
+            if "capturable" in param_group:
+                param_group["capturable"] = self.use_cuda_graph
+            if self.use_cuda_graph:
+                param_group["lr"] = torch.as_tensor(param_group["lr"], device=self.device)
+            else:
+                param_group["lr"] = float(param_group["lr"])
+        for state in self.optimizer.state.values():
+            if "step" in state:
+                state["step"] = state["step"].to(self.device if self.use_cuda_graph else "cpu")
+        self._update_graph = None

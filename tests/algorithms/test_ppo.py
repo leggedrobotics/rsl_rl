@@ -547,3 +547,77 @@ class TestSharedCNNEncoders:
         assert ppo.optimizer.state[shared]["step"] == 1
         # The first Adam step moves each parameter by the learning rate
         torch.testing.assert_close((before - shared.detach()).abs().max().item(), 1e-3, atol=1e-6, rtol=0)
+
+
+def _build_cuda_ppo(use_cuda_graph: bool, schedule: str) -> tuple[PPO, TensorDict]:
+    """Build a CUDA PPO instance with deterministic initial parameters."""
+    torch.manual_seed(0)
+    obs = make_obs(NUM_ENVS, OBS_DIM, device="cuda")
+    obs_groups = {"actor": ["policy"], "critic": ["policy"]}
+    actor = _make_actor(obs, obs_groups, NUM_ACTIONS)
+    critic = _make_critic(obs, obs_groups)
+    storage = RolloutStorage("rl", NUM_ENVS, NUM_STEPS, obs, [NUM_ACTIONS], device="cuda")
+    ppo = PPO(
+        actor,
+        critic,
+        storage,
+        num_learning_epochs=3,
+        num_mini_batches=1,
+        schedule=schedule,
+        device="cuda",
+        use_cuda_graph=use_cuda_graph,
+    )
+    return ppo, obs
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
+class TestCudaGraph:
+    """Tests for capturing PPO updates in a CUDA graph."""
+
+    @pytest.mark.parametrize("schedule", ["fixed", "adaptive"])
+    def test_captured_updates_match_eager_updates(self, schedule: str) -> None:
+        """Warm-up, capture, and replay produce the same losses, learning rates, and parameters as eager updates."""
+        eager, obs = _build_cuda_ppo(use_cuda_graph=False, schedule=schedule)
+        graph, _ = _build_cuda_ppo(use_cuda_graph=True, schedule=schedule)
+        for iteration in range(6):
+            rewards = torch.randn(NUM_ENVS, device="cuda")
+            results = []
+            for ppo in (eager, graph):
+                torch.manual_seed(iteration)
+                with torch.no_grad():
+                    for _ in range(NUM_STEPS):
+                        ppo.act(obs)
+                        ppo.process_env_step(obs, rewards, torch.zeros(NUM_ENVS, device="cuda"), {})
+                ppo.compute_returns(obs)
+                results.append(ppo.update())
+            (eager_losses, eager_stats), (graph_losses, graph_stats) = results
+            assert graph_losses == pytest.approx(eager_losses, rel=1e-4, abs=1e-6)
+            assert graph_stats["Optimizer/learning_rate"] == pytest.approx(eager_stats["Optimizer/learning_rate"])
+        assert graph._update_graph is not None and graph._update_graph.graph is not None
+        for eager_param, graph_param in zip(eager.actor.parameters(), graph.actor.parameters()):
+            torch.testing.assert_close(graph_param, eager_param, rtol=1e-4, atol=1e-5)
+        for eager_param, graph_param in zip(eager.critic.parameters(), graph.critic.parameters()):
+            torch.testing.assert_close(graph_param, eager_param, rtol=1e-4, atol=1e-5)
+
+    def test_captured_update_does_not_synchronize(self) -> None:
+        """Replaying the captured update does not synchronize the host with the device."""
+        ppo, obs = _build_cuda_ppo(use_cuda_graph=True, schedule="adaptive")
+        for _ in range(5):
+            _fill_rollout(ppo, obs)
+            ppo.compute_returns(obs)
+            if ppo._update_graph is not None and ppo._update_graph.graph is not None:
+                torch.cuda.set_sync_debug_mode("error")
+                try:
+                    ppo._update_graph()
+                finally:
+                    torch.cuda.set_sync_debug_mode("default")
+                ppo.storage.clear()
+            else:
+                ppo.update()
+        assert ppo._update_graph is not None and ppo._update_graph.graph is not None
+
+
+def test_cuda_graph_requires_cuda_device() -> None:
+    """Requesting CUDA graph capture on a CPU device raises a clear error."""
+    with pytest.raises(ValueError, match="CUDA device"):
+        _build_ppo(use_cuda_graph=True)
