@@ -628,6 +628,38 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
      - ``False``
      - Capture each learner iteration and the collection calls ``act`` and ``process_env_step`` in CUDA
        graphs. Requires a CUDA device and task heads without host synchronization.
+   * - ``update_schedule``
+     - str
+     - ``"after_warmup"``
+     - Accrue learner-update credit after warm-up (``"after_warmup"``) or from the first
+       collected step (``"from_start"``).
+   * - ``learning_rate_schedule_unit``
+     - str
+     - ``"learner_updates"``
+     - Measure cosine-schedule progress in learner updates or in collected environment steps
+       (``"env_steps"``).
+   * - ``world_model_loss_reduction``
+     - str
+     - ``"sum"``
+     - Sum the dynamics loss over each replay window, or average it over all valid positions
+       (``"mean"``).
+   * - ``world_model_full_windows``
+     - bool
+     - ``False``
+     - Sample only complete windows inside an episode for dynamics fitting; needs
+       ``num_warmup_steps`` greater than ``world_model_window``.
+   * - ``critic_survival_weighting``
+     - bool
+     - ``True``
+     - Weight value regression by imagined survival probabilities.
+   * - ``critic_bootstrap_clipping``
+     - bool
+     - ``True``
+     - Cap values with ``max_step_reward`` before computing critic return targets.
+   * - ``critic_shuffle_each_epoch``
+     - bool
+     - ``True``
+     - Draw new critic minibatches every epoch instead of reusing one permutation.
 
 With ``actor_ema_halflife`` set, inference and JIT/ONNX exports use EMA parameters with live normalization buffers.
 Collection and policy optimization keep using the live actor.
@@ -931,6 +963,23 @@ Feature widths are inferred at construction.
      - ``False``
      - Add the network output to the task's ``reference_action``; exported policies take the reference
        action as an additional input.
+   * - ``activation``
+     - str
+     - ``"elu"``
+     - Activation of the encoder and decoder layers.
+   * - ``norm``
+     - str
+     - ``"none"``
+     - Normalization of the decoder layers, ``"none"`` or ``"layer"``. The encoder always uses LayerNorm.
+   * - ``output_gain``
+     - float
+     - ``0.01``
+     - Scale of the initial decoder output weights; values other than 1 also zero the output bias.
+   * - ``normalize_before_action``
+     - bool
+     - ``True``
+     - Update the observation and goal normalizers before choosing each collection action instead of
+       after it.
 
 WorldModel
 ^^^^^^^^^^
@@ -958,6 +1007,22 @@ coordinates and feature widths.
      - tuple[int]
      - ``(512, 512)``
      - Optional event-head layers.
+   * - ``activation``
+     - str
+     - ``"swish"``
+     - Activation of the dynamics network.
+   * - ``normalize_output``
+     - bool
+     - ``True``
+     - Predict normalized increments and rescale them with running output statistics.
+   * - ``normalize_context``
+     - bool
+     - ``True``
+     - Normalize the dynamics context with running statistics; disable for context already in a fixed range.
+   * - ``zero_initialize_output``
+     - bool
+     - ``True``
+     - Start the dynamics output layer at zero.
 
 EquivariantMLPModel
 ^^^^^^^^^^^^^^^^^^^
