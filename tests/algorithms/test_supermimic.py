@@ -729,6 +729,30 @@ def test_cuda_learning_and_checkpoint_roundtrip(mixed_precision: bool, compile_m
     )
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA.")
+@pytest.mark.parametrize("use_cuda_graph", [False, True])
+def test_optimizer_state_resumes_across_devices(use_cuda_graph: bool) -> None:
+    """Checkpoints of CPU learners keep training on CUDA with fused Adam, and the reverse."""
+    cpu, cpu_env = _learner(), ScalarEnv()
+    _collect(cpu, cpu_env, 4)
+    cpu.update()
+    env = ScalarEnv(device="cuda:0")
+    cuda = _learner(env, use_cuda_graph=use_cuda_graph)
+    cuda.load(copy.deepcopy(cpu.save()), None, strict=True)
+    before = copy.deepcopy(cuda.save())
+    for _ in range(5):
+        _collect(cuda, env, 3)
+        losses, _ = cuda.update()
+    assert all(math.isfinite(value) for value in losses.values())
+    for name in ("actor_state_dict", "world_model_state_dict"):
+        assert any(not torch.equal(before[name][key], value) for key, value in cuda.save()[name].items())
+    restored = _learner()
+    restored.load(copy.deepcopy(cuda.save()), None, strict=True)
+    assert not any(group["fused"] for optimizer in restored.optimizers.values() for group in optimizer.param_groups)
+    _collect(restored, cpu_env, 4)
+    assert math.isfinite(restored.update()[0]["world_model"])
+
+
 def test_task_without_successor_event_labels(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tasks without event heads train through the same physical replay and imagination paths."""
     env, cfg = ScalarEnv(), _cfg()

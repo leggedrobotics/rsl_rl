@@ -784,12 +784,23 @@ class SuperMimic:
         return [*self.optimizers.items(), *self.muon_optimizers.items()]
 
     def _configure_optimizer_capture(self) -> None:
-        """Configure capturable optimizers with device learning rates for CUDA graphs and discard stale graphs."""
+        """Configure optimizers for the learner device and CUDA graphs, and discard stale graphs.
+
+        Loaded optimizer states may come from another device, so their fused flags and Adam step counters are reset to
+        this learner's configuration. Graphs need capturable optimizers with device learning rates.
+        """
         for _, optimizer in self._all_optimizers():
+            fused = bool(optimizer.defaults.get("fused"))
             for group in optimizer.param_groups:
                 lr = float(group["lr"])
                 group["lr"] = torch.tensor(lr, device=self.device) if self.use_cuda_graph else lr
                 group["capturable"] = self.use_cuda_graph
+                if "fused" in group:
+                    group["fused"] = fused
+                for param in group["params"]:
+                    state = optimizer.state.get(param, {})
+                    if "step" in state:
+                        state["step"] = state["step"].to(param.device if fused or self.use_cuda_graph else "cpu")
         self._graph_updates.clear()
 
     @torch.no_grad()
