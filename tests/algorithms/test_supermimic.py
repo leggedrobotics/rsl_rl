@@ -798,6 +798,7 @@ def test_cuda_graph_matches_eager_and_resumes(option: str) -> None:
     assert graphed._graph_updates and math.isfinite(losses["world_model"])
 
 
+@pytest.mark.skipif(not hasattr(torch.optim, "Muon"), reason="torch.optim.Muon needs torch 2.9 or newer")
 def test_muon_matches_torch_and_skips_nonfinite_steps() -> None:
     """The capturable Muon matches PyTorch's Adam-matched Muon and leaves state unchanged on skipped steps."""
     torch.manual_seed(0)

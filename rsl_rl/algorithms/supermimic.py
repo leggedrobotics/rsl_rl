@@ -185,7 +185,8 @@ class SuperMimic:
             )
         if (
             actor_learning_rate_multiplier > 1
-            and actor_learning_rate_decay_return is None is actor_learning_rate_decay_start
+            and actor_learning_rate_decay_return is None
+            and actor_learning_rate_decay_start is None
         ):
             raise ValueError("An actor learning-rate multiplier needs a decay return or a decay start iteration.")
         if actor_learning_rate_decay_return is not None and not max_episode_length:
