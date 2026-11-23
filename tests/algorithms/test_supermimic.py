@@ -573,7 +573,7 @@ def test_failed_policy_update_restores_frozen_parameters() -> None:
     )
 
 
-def test_fractional_cadence_and_algorithm_level_multi_gpu_rejection() -> None:
+def test_fractional_cadence_and_distributed_initialization_validation() -> None:
     """Fractional cadence runs a learner iteration every 2-3 steps; missing state and multi-GPU configs fail."""
     learner, env = _learner(updates_per_step=0.4, num_warmup_steps=1, world_model_window=1), ScalarEnv()
     counts = []
@@ -587,8 +587,8 @@ def test_fractional_cadence_and_algorithm_level_multi_gpu_rejection() -> None:
     missing_state_cfg["obs_groups"] = {}
     with pytest.raises(ValueError, match="state"):
         SuperMimic.construct_algorithm(TensorDict({"policy": torch.zeros(4, 1)}, [4]), env, missing_state_cfg, "cpu")
-    cfg["multi_gpu"] = {"world_size": 2}
-    with pytest.raises(NotImplementedError, match="Multi-GPU"):
+    cfg["multi_gpu"] = {"global_rank": 0, "world_size": 2}
+    with pytest.raises(ValueError, match="initialized process group"):
         SuperMimic.construct_algorithm(env.get_observations(), env, cfg, "cpu")
 
 

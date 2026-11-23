@@ -362,3 +362,21 @@ Loading an EMA checkpoint with averaging disabled warns and uses the live actor.
 With ``muon_models`` set, checkpoints also contain ``<model>_muon_optimizer_state_dict`` for each listed model.
 With ``actor_learning_rate_multiplier`` above 1, they contain ``actor_learning_rate_decay_from``, the learner
 iteration where the actor learning rate started to decay, or ``None`` before that.
+
+SuperMimic distributed training
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+SuperMimic uses the runner's existing ``torchrun``/NCCL setup, with one process per GPU. Each rank keeps its own
+simulation, observation history and replay buffer. Actor, world-model and critic gradients are averaged before
+clipping and optimizer updates; observation statistics use samples from all ranks. Adam, Muon and actor EMA stay
+synchronized. Learning-rate return thresholds use globally accumulated completed episodes.
+
+Use the same model configuration, collection cadence and batch sizes on every rank. ``replay_buffer_capacity``,
+``world_model_batch_size`` and ``policy_batch_size`` are per-rank values: four ranks with a policy batch of 2048
+use 8192 imagined starts per synchronized actor update. ``updates_per_step`` and schedule counters retain their
+per-environment-step meaning; they are not multiplied by the number of ranks. Masked world-model and critic means
+use the total valid weight across ranks.
+
+The standard runner writes one checkpoint from rank zero. All ranks load that same checkpoint when resuming,
+including optimizer state and counters, then refill their local replay buffers. CUDA graph capture requires NCCL;
+the runner releases collection and learner graphs before process-group teardown.

@@ -11,6 +11,7 @@ import copy
 import functools
 import math
 import torch
+import torch.distributed as dist
 import warnings
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -24,7 +25,14 @@ from rsl_rl.models.supermimic_actor import SuperMimicActor
 from rsl_rl.modules.mlp import MLP
 from rsl_rl.modules.world_model import WorldModel
 from rsl_rl.storage import SequenceReplayBuffer
-from rsl_rl.utils import CudaGraphCallable, Muon, compile_model, resolve_class, resolve_obs_groups
+from rsl_rl.utils import (
+    CudaGraphCallable,
+    Muon,
+    compile_model,
+    reduce_gradients_in_buckets,
+    resolve_class,
+    resolve_obs_groups,
+)
 
 
 def lambda_returns(
@@ -166,11 +174,19 @@ class SuperMimic:
             use_cuda_graph: Capture each learner iteration and the collection calls in CUDA graphs. Requires a CUDA
                 device and task heads without host synchronization.
             device: Device for models and learning tensors.
-            multi_gpu_cfg: Unsupported distributed configuration; supplying one raises.
+            multi_gpu_cfg: Distributed rank and world size; replay and batch sizes are per rank.
         """
         # Validate configuration
-        if multi_gpu_cfg is not None:
-            raise NotImplementedError("Multi-GPU training is not supported for SuperMimic.")
+        self.is_multi_gpu = multi_gpu_cfg is not None
+        self.gpu_global_rank = multi_gpu_cfg["global_rank"] if multi_gpu_cfg is not None else 0
+        self.gpu_world_size = multi_gpu_cfg["world_size"] if multi_gpu_cfg is not None else 1
+        if self.is_multi_gpu:
+            if not dist.is_initialized():
+                raise ValueError("Distributed SuperMimic requires an initialized process group.")
+            if dist.get_world_size() != self.gpu_world_size or dist.get_rank() != self.gpu_global_rank:
+                raise ValueError("SuperMimic multi_gpu_cfg does not match the initialized process group.")
+            if use_cuda_graph and dist.get_backend() != "nccl":
+                raise ValueError("Distributed SuperMimic can only capture CUDA graphs with the NCCL backend.")
         if critic.is_recurrent:
             raise ValueError("SuperMimic requires a feed-forward critic.")
         positive = (
@@ -540,15 +556,15 @@ class SuperMimic:
         scale = torch.maximum(self.world_model.out_norm.std, self.error_floor)
         errors = self.task.world_model_loss(prediction, target, scale)
         masked_errors = errors * mask
-        valid_count = mask.sum().clamp(min=1)
-        mean_error = masked_errors.sum() / valid_count
+        valid_count = mask.sum()
+        mean_error = self._weighted_mean(masked_errors.sum(), valid_count)
         loss = mean_error if self.world_model_loss_reduction == "mean" else masked_errors.sum(dim=1).mean()
         metrics = {"world_model_error": mean_error.detach()}
         if self.task.num_labels:
             bce = nn.functional.binary_cross_entropy_with_logits(
                 torch.stack(logits, 1).float(), window["labels"].float(), reduction="none"
             )
-            label_loss = (bce.mean(dim=-1) * mask).sum() / valid_count
+            label_loss = self._weighted_mean((bce.mean(dim=-1) * mask).sum(), valid_count)
             loss = loss + label_loss
             metrics["label_loss"] = label_loss.detach()
         self._apply(loss, "world_model", self.world_model)
@@ -645,10 +661,17 @@ class SuperMimic:
                     torch.device(self.device).type, dtype=torch.bfloat16, enabled=self.use_mixed_precision
                 ):
                     squared_errors = (self._value(features[indices]) - targets[indices]).square()
-                    loss = (reach[indices] * squared_errors).sum() / reach[indices].sum().clamp(min=1e-6)
+                    loss = self._weighted_mean((reach[indices] * squared_errors).sum(), reach[indices].sum(), 1e-6)
                 self._apply(loss, "critic", self.critic)
                 losses.append(loss.detach())
         return {"critic_loss": torch.stack(losses).mean()}
+
+    def _weighted_mean(self, total: torch.Tensor, weight: torch.Tensor, minimum: float = 1.0) -> torch.Tensor:
+        """Scale local loss sums so averaged gradients use the global valid weight."""
+        if self.is_multi_gpu:
+            weight = weight.detach().clone()
+            dist.all_reduce(weight)
+        return total * self.gpu_world_size / weight.clamp(min=minimum)
 
     def _apply(self, loss: torch.Tensor, name: str, module: nn.Module, clip_value: float | None = None) -> torch.Tensor:
         """Apply finite gradients with optional value clipping.
@@ -658,6 +681,8 @@ class SuperMimic:
         optimizers = [self.optimizers[name], *([self.muon_optimizers[name]] if name in self.muon_optimizers else [])]
         module.zero_grad(set_to_none=True)
         loss.backward()
+        if self.is_multi_gpu:
+            reduce_gradients_in_buckets(module.parameters(), self.gpu_world_size, bucket_mb=25.0)
         norm = nn.utils.clip_grad_norm_(module.parameters(), self.max_grad_norm)
         if clip_value is not None:
             nn.utils.clip_grad_value_(module.parameters(), clip_value)
@@ -693,10 +718,10 @@ class SuperMimic:
 
     def update(self) -> tuple[dict[str, float], dict[str, float]]:
         """Run accumulated learner updates and return mean losses and statistics."""
-        nonfinite_state, nonfinite_labels, return_sum, episodes = torch.cat((
-            self._nonfinite_final_obs.float(),
-            self._completed_episodes,
-        )).tolist()
+        collected = torch.cat((self._nonfinite_final_obs.float(), self._completed_episodes))
+        if self.is_multi_gpu:
+            dist.all_reduce(collected)
+        nonfinite_state, nonfinite_labels, return_sum, episodes = collected.tolist()
         self._completed_episodes.zero_()
         if (
             self.actor_learning_rate_decay_from is None
@@ -719,6 +744,10 @@ class SuperMimic:
             count = 0
             if self.update_schedule == "after_warmup":
                 self._update_debt = 0.0
+        if self.is_multi_gpu:
+            ready_count = torch.tensor(count, device=self.device)
+            dist.all_reduce(ready_count, op=dist.ReduceOp.MIN)
+            count = int(ready_count)
         for _ in range(count):
             if self.learning_rate_schedule_unit == "env_steps":
                 self._update_learning_rate()
@@ -737,8 +766,11 @@ class SuperMimic:
             if self.learning_rate_schedule_unit == "learner_updates":
                 self._update_learning_rate()
         if totals:
-            means = torch.stack([torch.stack(values).float().mean() for values in totals.values()]).tolist()
-            metrics.update(zip(totals, means))
+            means = torch.stack([torch.stack(values).float().mean() for values in totals.values()])
+            if self.is_multi_gpu:
+                dist.all_reduce(means)
+                means /= self.gpu_world_size
+            metrics.update(zip(totals, means.tolist()))
             self._window_break_sum.zero_()
         metrics["learner_updates"] = float(self.iteration)
         losses = {key.removesuffix("_loss"): value for key, value in metrics.items() if key.endswith("_loss")}
@@ -800,6 +832,27 @@ class SuperMimic:
                 group["lr"] = torch.tensor(lr, device=self.device) if self.use_cuda_graph else lr
                 group["capturable"] = self.use_cuda_graph
         self._graph_updates: dict[bool, CudaGraphCallable] = {}
+
+    @torch.no_grad()
+    def broadcast_parameters(self) -> None:
+        """Synchronize learned model state while preserving each rank's local collection histories."""
+        if not self.is_multi_gpu:
+            return
+        for model in (self.actor, self.world_model, self._raw_critic):
+            for tensor in model.state_dict().values():
+                dist.broadcast(tensor, src=0)
+        if self.actor_ema is not None:
+            for tensor in self.actor_ema:
+                dist.broadcast(tensor, src=0)
+            dist.broadcast(self._actor_ema_updates, src=0)
+
+    def release_cuda_graphs(self) -> None:
+        """Release graphs containing NCCL collectives before process-group teardown."""
+        self._act_graphs.clear()
+        self._process_env_step_graph = None
+        self._graph_updates.clear()
+        if self.use_cuda_graph:
+            torch.cuda.synchronize(self.device)
 
     def train_mode(self) -> None:
         """Enable training models; real collection moments update in actor/process calls."""
@@ -990,6 +1043,7 @@ class SuperMimic:
             max_episode_length=int(env.max_episode_length) if hasattr(env, "max_episode_length") else None,
             **alg_cfg,
         )
+        learner.broadcast_parameters()
         learner.compile(cfg.get("torch_compile_mode"))
         return learner
 
