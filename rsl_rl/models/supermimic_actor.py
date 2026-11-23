@@ -49,7 +49,8 @@ class SuperMimicActor(nn.Module):
         self.task, self.obs_groups = task, obs_groups
         self.obs_dim, self.goal_dim = obs_dim, goal_dim
         self.history_length, self.num_actions = history_length, num_actions
-        self.encoder = MLP(goal_dim, latent_dim, encoder_hidden_dims) if goal_dim else nn.Identity()
+        # LayerNorm keeps hidden activations from growing a goal-independent component that saturates the tanh latent
+        self.encoder = MLP(goal_dim, latent_dim, encoder_hidden_dims, norm="layer") if goal_dim else nn.Identity()
         self.decoder = MLP(obs_dim * history_length + (latent_dim if goal_dim else 0), num_actions, decoder_hidden_dims)
         with torch.no_grad():
             self.decoder.output_layer.weight.mul_(0.01)

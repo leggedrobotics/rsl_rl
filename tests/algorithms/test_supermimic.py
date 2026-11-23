@@ -226,6 +226,19 @@ def test_direct_and_standard_runner_train_all_models() -> None:
     assert torch.isfinite(torch.tensor(learner.update()[0]["world_model"]))
 
 
+def test_goal_latent_ignores_the_scale_of_hidden_encoder_weights() -> None:
+    """Hidden-layer growth cannot push every goal to the same saturated latent."""
+    learner = _learner()
+    encoder = learner.actor.encoder
+    goals = torch.randn(64, learner.actor.goal_dim)
+    with torch.no_grad():
+        latent = torch.tanh(encoder(goals))
+        for layer in [module for module in encoder if isinstance(module, torch.nn.Linear)][:-1]:
+            layer.weight.mul_(100.0)
+            layer.bias.mul_(100.0)
+        torch.testing.assert_close(torch.tanh(encoder(goals)), latent, atol=1e-4, rtol=0)
+
+
 def test_replay_start_padding_repeats_the_same_noisy_reset_frame(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unavailable history repeats one corrupted frame, as during collection."""
     torch.manual_seed(0)
