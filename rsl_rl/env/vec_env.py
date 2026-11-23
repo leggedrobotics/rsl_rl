@@ -106,5 +106,8 @@ class VecEnv(ABC):
             - "log" (dict[str, float | torch.Tensor]): Additional information for logging and debugging purposes.
                The key should be a string and start with "/" for namespacing. The value can be a scalar or a
                tensor. If it is a tensor, the mean of the tensor is used for logging.
+
+            - "images" (dict[str, torch.Tensor]): Images to log, keyed by tag, with shape ``(H, W, C)`` and values in
+              ``[0, 255]`` (uint8) or ``[0, 1]`` (float). The latest image of each tag is logged once per iteration.
         """
         raise NotImplementedError
