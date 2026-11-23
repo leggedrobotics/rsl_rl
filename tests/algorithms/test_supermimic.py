@@ -906,6 +906,10 @@ def test_cuda_graph_matches_eager_and_resumes(option: str) -> None:
         env = ScalarEnv(goal_dim=1, device="cuda:0") if option == "reference_action" else ScalarEnv(device="cuda:0")
         cfg = _cfg(use_cuda_graph=use_cuda_graph, actor_ema_halflife=3, action_noise=0.0, **options)
         cfg["actor"]["use_reference_action"] = option == "reference_action"
+        if option == "muon":
+            # Muon trains the hidden matrices between the first and last layer of each network
+            cfg["actor"].update(encoder_hidden_dims=(8, 8, 8), decoder_hidden_dims=(8, 8, 8))
+            cfg["world_model"].update(hidden_dims=(8, 8, 8), label_hidden_dims=(8, 8, 8))
         learner = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, env.device)
         metrics = []
         for _ in range(6):
@@ -915,6 +919,7 @@ def test_cuda_graph_matches_eager_and_resumes(option: str) -> None:
 
     eager, _, eager_metrics = train(False)
     graphed, env, graphed_metrics = train(True)
+    assert set(graphed.muon_optimizers) == ({"actor", "world_model"} if option == "muon" else set())
     assert graphed._graph_updates and graphed_metrics == eager_metrics
     for key in ("actor_state_dict", "critic_state_dict", "world_model_state_dict", "actor_ema_state_dict"):
         torch.testing.assert_close(graphed.save()[key], eager.save()[key], rtol=0, atol=0)
@@ -944,6 +949,26 @@ def test_muon_matches_torch_and_skips_nonfinite_steps() -> None:
     muon.found_inf, ours.grad = torch.tensor(1.0), torch.full((16, 8), float("nan"))
     muon.step()
     assert torch.equal(ours.detach(), before) and torch.equal(muon.state[ours]["momentum_buffer"], momentum)
+
+
+@pytest.mark.parametrize(
+    "device",
+    ["cpu", pytest.param("cuda:0", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable"))],
+)
+@pytest.mark.parametrize("skip_flag", [False, True])
+def test_muon_updates_do_not_depend_on_the_learning_rate_type(device: str, skip_flag: bool) -> None:
+    """CUDA graphs hold learning rates as float32 tensors, which must update exactly like eager float rates."""
+    torch.manual_seed(0)
+    grad = torch.randn(8, 8, device=device)
+    updated = []
+    for lr in (2e-4, torch.tensor(2e-4, device=device)):
+        param = torch.nn.Parameter(torch.zeros(8, 8, device=device))
+        muon = Muon([param], lr=lr, weight_decay=0.1)
+        muon.found_inf = torch.zeros((), device=device) if skip_flag else None
+        param.grad = grad.clone()
+        muon.step()
+        updated.append(param.detach())
+    assert torch.equal(*updated)
 
 
 def test_muon_trains_hidden_matrices_and_resumes() -> None:

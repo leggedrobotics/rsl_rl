@@ -31,8 +31,9 @@ class Muon(torch.optim.Optimizer):
     """Muon for 2D weight matrices, with update magnitudes matched to Adam and CUDA graph support.
 
     The momentum is orthogonalized with :func:`orthogonalize` and scaled by ``0.2 * sqrt(max(rows, cols))`` so the
-    update RMS matches Adam's, which lets Muon reuse Adam learning rates. The learning rate may be a tensor. Setting
-    ``found_inf`` to a tensor that is nonzero skips the step on the device, like fused Adam.
+    update RMS matches Adam's, which lets Muon reuse Adam learning rates. The learning rate may be a tensor; float
+    learning rates are rounded to float32 tensors as well, so CUDA graphs with tensor learning rates reproduce eager
+    updates exactly. Setting ``found_inf`` to a tensor that is nonzero skips the step on the device, like fused Adam.
 
     Reference:
         Jordan et al. "Muon: An optimizer for hidden layers in neural networks." (2024).
@@ -68,7 +69,8 @@ class Muon(torch.optim.Optimizer):
                 loss = closure()
         skip = None if self.found_inf is None else self.found_inf.bool()
         for group in self.param_groups:
-            lr, momentum = group["lr"], group["momentum"]
+            momentum = group["momentum"]
+            lr = torch.as_tensor(group["lr"], dtype=torch.float32, device=group["params"][0].device)
             for param in group["params"]:
                 if param.grad is None:
                     continue
@@ -80,7 +82,7 @@ class Muon(torch.optim.Optimizer):
                 updated = buffer.lerp(grad, 1 - momentum)
                 buffer.copy_(updated if skip is None else torch.where(skip, buffer, updated))
                 direction = grad.lerp(buffer, momentum) if group["nesterov"] else buffer
-                scale = lr * 0.2 * math.sqrt(max(param.shape))
+                scale = lr * (0.2 * math.sqrt(max(param.shape)))
                 if skip is not None:
                     scale = scale * (~skip)
                 update = orthogonalize(direction, self.ns_steps).to(param.dtype)
