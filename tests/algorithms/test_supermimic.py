@@ -974,6 +974,19 @@ def test_cuda_graph_matches_eager_and_resumes(option: str) -> None:
     assert graphed._graph_updates and math.isfinite(losses["world_model"])
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
+def test_cuda_graph_of_world_model_warmup_is_released_at_the_first_policy_update() -> None:
+    """The captured world-model-only iteration is dropped once policy updates begin."""
+    env = ScalarEnv(device="cuda:0")
+    learner = _learner(env, use_cuda_graph=True, num_world_model_warmup_iterations=5)
+    captured = []
+    for _ in range(14):
+        _collect(learner, env, 1)
+        learner.update()
+        captured.append({key: graph.graph is not None for key, graph in learner._graph_updates.items()})
+    assert {False: True} in captured and captured[-1] == {True: True}
+
+
 @pytest.mark.skipif(not hasattr(torch.optim, "Muon"), reason="torch.optim.Muon needs torch 2.9 or newer")
 def test_muon_matches_torch_and_skips_nonfinite_steps() -> None:
     """The capturable Muon matches PyTorch's Adam-matched Muon and leaves state unchanged on skipped steps."""

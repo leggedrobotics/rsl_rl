@@ -716,6 +716,9 @@ class SuperMimic:
                 self._update_learning_rate()
             update_policy = self.iteration >= self.num_world_model_warmup_iterations
             if self.use_cuda_graph:
+                if update_policy:
+                    # Policy updates continue once they begin, so release the warmup graph and its memory pool
+                    self._graph_updates.pop(False, None)
                 if update_policy not in self._graph_updates:
                     self._graph_updates[update_policy] = CudaGraphCallable(
                         functools.partial(self._run_iteration, update_policy), self.device
