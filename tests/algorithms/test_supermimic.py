@@ -1122,12 +1122,21 @@ def test_actor_learning_rate_decay_return_requires_max_episode_length() -> None:
 class MirroredScalarTask(ScalarTask):
     """The scalar system is symmetric under negation of all physical quantities."""
 
-    def mirror(self, window: TensorDict) -> TensorDict:
-        """Negate states, actions and context and keep event labels."""
-        mirrored = window.clone()
-        for key in ("state", "next_state", "actions", "context", "prev_actions"):
-            mirrored[key] = -window[key]
-        return mirrored
+    def mirror_state(self, state: torch.Tensor) -> torch.Tensor:
+        """Negate the position."""
+        return -state
+
+    def mirror_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        """Negate the actions."""
+        return -actions
+
+    def mirror_context(self, context: torch.Tensor) -> torch.Tensor:
+        """Negate the context."""
+        return -context
+
+    def mirror_labels(self, labels: torch.Tensor) -> torch.Tensor:
+        """Keep the event labels."""
+        return labels
 
 
 def test_world_model_mirror_augmentation_replaces_a_fixed_share_of_windows() -> None:
@@ -1141,11 +1150,12 @@ def test_world_model_mirror_augmentation_replaces_a_fixed_share_of_windows() -> 
     learner.num_mirrored_windows = 0
     torch.manual_seed(0)
     window, mask = learner._windows(8)
-    torch.testing.assert_close(mirrored["state"][:2], -window["state"][:2])
+    for key in ("state", "next_state", "actions", "prev_actions", "context"):
+        torch.testing.assert_close(mirrored[key][:2], -window[key][:2])
     torch.testing.assert_close(mirrored["labels"], window["labels"])
     torch.testing.assert_close(mirrored[2:], window[2:])
     assert torch.equal(mirrored["window_break"], window["window_break"]) and torch.equal(mirrored_mask, mask)
-    with pytest.raises(ValueError, match="mirror"):
+    with pytest.raises(ValueError, match="mirror_state, mirror_actions, mirror_context, mirror_labels"):
         _learner(env, world_model_mirror_fraction=0.25)
 
 

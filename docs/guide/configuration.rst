@@ -533,7 +533,7 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
      - float
      - ``0.0``
      - Fraction of each dynamics batch replaced by its left-right mirror image; requires a task that
-       implements ``mirror``.
+       implements ``mirror_state``, ``mirror_actions``, ``mirror_context`` and, with labels, ``mirror_labels``.
    * - ``num_policy_updates``
      - int
      - ``1``

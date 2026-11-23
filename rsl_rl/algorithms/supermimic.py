@@ -132,7 +132,7 @@ class SuperMimic:
             world_model_window: Maximum autoregressive dynamics fitting horizon.
             world_model_batch_size: Replay anchors per dynamics optimizer step.
             world_model_mirror_fraction: Fraction of each dynamics batch replaced by its left-right mirror image from
-                :meth:`DifferentiableTask.mirror`.
+                the task's mirror hooks, such as :meth:`DifferentiableTask.mirror_state`.
             world_model_loss_reduction: Sum over a replay window or mean over all valid positions.
             world_model_full_windows: Sample complete sequences of stored states, excluding reset boundaries.
             num_policy_updates: Actor updates and associated critic fits per learner iteration.
@@ -220,8 +220,12 @@ class SuperMimic:
             raise ValueError("muon_models may only contain 'actor' and 'world_model'.")
         if not 0 <= world_model_mirror_fraction <= 1:
             raise ValueError("world_model_mirror_fraction must lie in [0, 1].")
-        if world_model_mirror_fraction and type(task).mirror is DifferentiableTask.mirror:
-            raise ValueError("Mirror augmentation requires a task that implements mirror().")
+        mirror_hooks = ["mirror_state", "mirror_actions", "mirror_context"]
+        if task.num_labels:
+            mirror_hooks.append("mirror_labels")
+        missing_hooks = [name for name in mirror_hooks if not _overrides(task, name)]
+        if world_model_mirror_fraction and missing_hooks:
+            raise ValueError(f"Mirror augmentation requires a task that implements {', '.join(missing_hooks)}.")
         if action_noise < 0:
             raise ValueError("Action noise must be nonnegative.")
         if use_cuda_graph and torch.device(device).type != "cuda":
@@ -472,10 +476,21 @@ class SuperMimic:
             keys.append("labels")
         window = self.storage.gather(keys, index.ids)
         if self.num_mirrored_windows:
-            count = self.num_mirrored_windows
-            mirrored = self.task.mirror(window[:count].exclude("window_break"))
-            mirrored.set("window_break", window["window_break"][:count])
-            window = torch.cat((mirrored, window[count:]))
+            head, task = window[: self.num_mirrored_windows], self.task
+            mirrored = TensorDict(
+                {
+                    "state": task.mirror_state(head["state"]),
+                    "next_state": task.mirror_state(head["next_state"]),
+                    "actions": task.mirror_actions(head["actions"]),
+                    "prev_actions": task.mirror_actions(head["prev_actions"]),
+                    "context": task.mirror_context(head["context"]),
+                    "window_break": head["window_break"],
+                },
+                batch_size=head.batch_size,
+            )
+            if task.num_labels:
+                mirrored["labels"] = task.mirror_labels(head["labels"])
+            window = torch.cat((mirrored, window[self.num_mirrored_windows :]))
         mask = index.valid.float()
         if not self.world_model_full_windows and self.world_model_window > 1:
             mask[:, 1:] *= torch.cumprod((~window["window_break"][:, :-1]).long(), dim=1)
@@ -990,6 +1005,11 @@ class SuperMimic:
         learner.broadcast_parameters()
         learner.compile(cfg.get("torch_compile_mode"))
         return learner
+
+
+def _overrides(task: DifferentiableTask, name: str) -> bool:
+    """Return whether a task implements an optional hook of :class:`DifferentiableTask`."""
+    return getattr(type(task), name) is not getattr(DifferentiableTask, name)
 
 
 @contextmanager

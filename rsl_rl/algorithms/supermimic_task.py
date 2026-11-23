@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import torch
-from tensordict import TensorDict
 from typing import Protocol
 
 State = tuple[torch.Tensor, ...]
@@ -151,13 +150,24 @@ class DifferentiableTask:
         """
         raise NotImplementedError
 
-    def mirror(self, window: TensorDict) -> TensorDict:
-        """Return the left-right mirror image of replay windows for world-model augmentation.
+    def mirror_state(self, state: torch.Tensor) -> torch.Tensor:
+        """Return the left-right mirror image of flat physical states for world-model mirror augmentation.
 
-        ``window`` holds flat ``state``, ``next_state``, ``actions``, ``context`` and ``prev_actions`` entries and
-        ``labels`` when the task has labels, each with batch and time dimensions first. The mirrored transitions must
-        be physically valid for the robot, e.g. by swapping left and right joints and negating lateral motion.
+        The mirror hooks map each replayed quantity with arbitrary leading dimensions. Together they must yield
+        physically valid transitions for the robot, e.g. by swapping left and right joints and negating lateral motion.
         """
+        raise NotImplementedError
+
+    def mirror_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        """Return the mirror image of policy actions, also applied to each previous action."""
+        raise NotImplementedError
+
+    def mirror_context(self, context: torch.Tensor) -> torch.Tensor:
+        """Return the mirror image of flat privileged context, e.g. by swapping left and right body masses."""
+        raise NotImplementedError
+
+    def mirror_labels(self, labels: torch.Tensor) -> torch.Tensor:
+        """Return the mirror image of successor event labels; required only for tasks with labels."""
         raise NotImplementedError
 
     def world_model_loss(self, prediction: State, target: State, scale: torch.Tensor) -> torch.Tensor:
