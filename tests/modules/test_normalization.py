@@ -10,10 +10,76 @@ import torch
 import pytest
 
 from rsl_rl.modules.normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
+from tests.algorithms.test_distributed import init_gloo, spawn_gloo
+
+
+def _double_moments_worker(rank: int, world_size: int, store_file: str) -> None:
+    """Compare unequal distributed batches and repeated updates with pooled double-precision samples."""
+    init_gloo(rank, world_size, store_file)
+    try:
+        normalizer = EmpiricalNormalization(1).double()
+        pooled = []
+        for step in range(3):
+            batches = [
+                (torch.arange(worker + step + 1, dtype=torch.float64) + worker * 7 + step * 2).unsqueeze(-1)
+                for worker in range(world_size)
+            ]
+            normalizer.update(batches[rank])
+            pooled.extend(batches)
+            reference = torch.cat(pooled)
+            torch.testing.assert_close(normalizer.mean, reference.mean(0), rtol=1e-13, atol=1e-13)
+            torch.testing.assert_close(normalizer.std, reference.std(0, unbiased=False), rtol=1e-13, atol=1e-13)
+            expected = (batches[rank] - reference.mean(0)) / (reference.std(0, unbiased=False) + normalizer.eps)
+            torch.testing.assert_close(normalizer(batches[rank]), expected, rtol=1e-13, atol=1e-13)
+    finally:
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
 
 
 class TestEmpiricalNormalization:
     """Tests for ``EmpiricalNormalization``."""
+
+    @pytest.mark.parametrize("dtype,value", [(torch.float32, 2e38), (torch.float64, 1e308)])
+    def test_large_finite_constant_batches_remain_normalizable(self, dtype: torch.dtype, value: float) -> None:
+        """Finite constant observations retain zero variance from the first batch through later updates."""
+        normalizer = EmpiricalNormalization(2).to(dtype=dtype)
+        for batch_size in (8, 3, 1):
+            observations = torch.full((batch_size, 2), value, dtype=dtype)
+            normalizer.update(observations)
+            torch.testing.assert_close(normalizer.mean, observations[0], rtol=0.0, atol=0.0)
+            torch.testing.assert_close(normalizer.std, torch.zeros(2, dtype=dtype), rtol=0.0, atol=0.0)
+            torch.testing.assert_close(normalizer(observations), torch.zeros_like(observations), rtol=0.0, atol=0.0)
+        assert normalizer.count == 12
+
+    @pytest.mark.parametrize("dtype,value", [(torch.float32, 3e19), (torch.float64, 2e154)])
+    def test_large_batch_mean_changes_preserve_representable_variance(self, dtype: torch.dtype, value: float) -> None:
+        """Weighting the between-batch correction must precede an otherwise overflowing product."""
+        normalizer = EmpiricalNormalization(1).to(dtype=dtype)
+        observations = torch.tensor([[0.0], [value]], dtype=dtype)
+        normalizer.update(observations[:1])
+        normalizer.update(observations[1:])
+        expected = torch.tensor([value / 2], dtype=dtype)
+        torch.testing.assert_close(normalizer.mean, expected)
+        torch.testing.assert_close(normalizer.std, expected)
+        torch.testing.assert_close(normalizer(observations), torch.tensor([[-1.0], [1.0]], dtype=dtype))
+
+    def test_double_precision_unequal_batch_weights(self) -> None:
+        """Integer sample counts must not round a double-precision running update through float32."""
+        normalizer = EmpiricalNormalization(1).double()
+        normalizer.update(torch.zeros(1, 1, dtype=torch.float64))
+        normalizer.update(torch.ones(2, 1, dtype=torch.float64))
+        torch.testing.assert_close(normalizer.mean, torch.tensor([2.0 / 3.0], dtype=torch.float64), rtol=1e-14, atol=0)
+        torch.testing.assert_close(
+            normalizer.std, torch.tensor([(2.0 / 9.0) ** 0.5], dtype=torch.float64), rtol=1e-14, atol=0
+        )
+
+    @pytest.mark.skipif(
+        not torch.distributed.is_available() or not torch.distributed.is_gloo_available(),
+        reason="Gloo is required for distributed normalization",
+    )
+    def test_distributed_weighted_batches_preserve_double_precision(self) -> None:
+        """Two real Gloo ranks agree with the pooled moments through non-power-of-two update weights."""
+        spawn_gloo(_double_moments_worker)
 
     def test_convergence_to_known_distribution(self) -> None:
         """Running mean and std should converge to the true values of the input distribution."""

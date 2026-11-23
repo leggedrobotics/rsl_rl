@@ -56,8 +56,7 @@ class EmpiricalNormalization(nn.Module):
             return
 
         count_x = torch.full_like(self.count, x.shape[0])  # type: ignore
-        var_x = torch.var(x, dim=0, unbiased=False, keepdim=True)
-        mean_x = torch.mean(x, dim=0, keepdim=True)
+        var_x, mean_x = torch.var_mean(x, dim=0, unbiased=False, keepdim=True)
 
         if torch.distributed.is_initialized():
             # Compute the global mean first, then combine the local variances around that mean
@@ -71,10 +70,11 @@ class EmpiricalNormalization(nn.Module):
             var_x = var_sum_x / count_x
 
         self.count += count_x
-        rate = count_x / self.count
+        rate = count_x.to(dtype=torch.promote_types(self._mean.dtype, torch.float32)) / self.count
         delta_mean = mean_x - self._mean
         self._mean += rate * delta_mean
-        self._var += rate * (var_x - self._var + delta_mean * (mean_x - self._mean))
+        self._var += rate * (var_x - self._var)
+        self._var += (rate * delta_mean) * (mean_x - self._mean)
         self._std.copy_(torch.sqrt(self._var))  # type: ignore
 
     @torch.jit.unused
