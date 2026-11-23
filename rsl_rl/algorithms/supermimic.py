@@ -708,10 +708,8 @@ class SuperMimic:
         self.learning_rate = self._base_learning_rates["world_model"] * factor
         self.actor_learning_rate = self._base_learning_rates["actor"] * factor * self._actor_learning_rate_multiplier()
         for name, optimizer in self._all_optimizers():
+            learning_rate = self.actor_learning_rate if name == "actor" else self._base_learning_rates[name] * factor
             for group in optimizer.param_groups:
-                learning_rate = self._base_learning_rates[name] * factor
-                if name == "actor":
-                    learning_rate = self.actor_learning_rate
                 if isinstance(group["lr"], torch.Tensor):
                     group["lr"].fill_(learning_rate)
                 else:
