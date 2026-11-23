@@ -20,6 +20,14 @@ from rsl_rl.modules.mlp import MLP
 from rsl_rl.modules.normalization import EmpiricalNormalization
 
 
+def observation_set(obs: TensorDict, obs_groups: dict[str, list[str]], name: str) -> torch.Tensor:
+    """Concatenate one explicitly mapped observation set, using an empty tensor for absent optional sets."""
+    groups = obs_groups.get(name)
+    if groups:
+        return torch.cat([obs[key] for key in groups], dim=-1)
+    return obs[obs_groups["state"][0]].new_empty((*obs.batch_size, 0))
+
+
 class SuperMimicPolicy(nn.Module):
     """Stateless deployable network mapping a normalized observation history and an optional goal to actions.
 
@@ -144,27 +152,20 @@ class SuperMimicActor(nn.Module):
             self.task.to(self.history.device)
         return self
 
-    def observation_set(self, obs: TensorDict, name: str) -> torch.Tensor:
-        """Concatenate one explicitly mapped set, using an empty tensor for absent optional sets."""
-        groups = self.obs_groups.get(name)
-        if groups:
-            return torch.cat([obs[key] for key in groups], dim=-1)
-        return self.history.new_empty((*obs.batch_size, 0))
-
     @torch.no_grad()
     def sync_actions(self, obs: TensorDict) -> None:
         """Read task-reported action history, including nonzero reset hold actions."""
         if "prev_action" in self.obs_groups:
-            self.previous_actions[:, -1].copy_(self.observation_set(obs, "prev_action"))
+            self.previous_actions[:, -1].copy_(observation_set(obs, self.obs_groups, "prev_action"))
         if "prev_prev_action" in self.obs_groups and self.previous_actions.shape[1] > 1:
-            self.previous_actions[:, -2].copy_(self.observation_set(obs, "prev_prev_action"))
+            self.previous_actions[:, -2].copy_(observation_set(obs, self.obs_groups, "prev_prev_action"))
 
     @torch.no_grad()
     def forward(self, obs: TensorDict, stochastic_output: bool = False) -> torch.Tensor:
         """Build a real actor frame, update history and return an action, with collection noise if requested."""
         self.sync_actions(obs)
-        state = self.task.representation.unflatten(self.observation_set(obs, "state"))
-        goal, context = self.observation_set(obs, "goal"), self.observation_set(obs, "context")
+        state = self.task.representation.unflatten(observation_set(obs, self.obs_groups, "state"))
+        goal, context = observation_set(obs, self.obs_groups, "goal"), observation_set(obs, self.obs_groups, "context")
         frame = self.task.actor_obs(state, goal, context, self.previous_actions)
         policy_goal = self.task.actor_goal(state, goal)
         if self.training:

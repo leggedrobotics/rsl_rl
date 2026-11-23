@@ -21,7 +21,7 @@ from rsl_rl.algorithms.supermimic_optim import ActorEMA, ActorLearningRateMultip
 from rsl_rl.algorithms.supermimic_task import DifferentiableTask, State
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
-from rsl_rl.models.supermimic_actor import SuperMimicActor
+from rsl_rl.models.supermimic_actor import SuperMimicActor, observation_set
 from rsl_rl.modules.world_model import WorldModel
 from rsl_rl.storage import SequenceReplayBuffer
 from rsl_rl.utils import (
@@ -355,7 +355,7 @@ class SuperMimic:
 
     def _set(self, obs: TensorDict, name: str) -> torch.Tensor:
         """Read an explicit observation set with no policy-group fallback."""
-        return self.actor.observation_set(obs, name)
+        return observation_set(obs, self.obs_groups, name)
 
     @torch.no_grad()
     def act(self, obs: TensorDict) -> torch.Tensor:
@@ -938,32 +938,25 @@ class SuperMimic:
         cfg["obs_groups"] = groups
         task = task_class(env=env, device=device, **task_cfg)
         example = obs.to(device)
-
-        def observation_set(name: str) -> torch.Tensor:
-            return (
-                torch.cat([example[key] for key in groups[name]], dim=-1)
-                if name in groups
-                else example[groups["state"][0]].new_empty(env.num_envs, 0)
-            )
-
+        example_set = functools.partial(observation_set, example, groups)
         for name in groups:
             if any(example[key].ndim != 2 for key in groups[name]):
                 raise ValueError("SuperMimic observation groups must be flat noise-free vectors.")
         previous = torch.zeros(env.num_envs, task.action_history_length, env.num_actions, device=device)
         for name, offset in (("prev_action", -1), ("prev_prev_action", -2)):
             if name in groups:
-                if observation_set(name).shape[-1] != env.num_actions or task.action_history_length < -offset:
+                if example_set(name).shape[-1] != env.num_actions or task.action_history_length < -offset:
                     raise ValueError("Previous-action observation width/history is incompatible.")
-                previous[:, offset] = observation_set(name)
+                previous[:, offset] = example_set(name)
         state, goal, context = (
-            task.representation.unflatten(observation_set("state")),
-            observation_set("goal"),
-            observation_set("context"),
+            task.representation.unflatten(example_set("state")),
+            example_set("goal"),
+            example_set("context"),
         )
         actor_obs, actor_goal = task.actor_obs(state, goal, context, previous), task.actor_goal(state, goal)
         critic_features = task.critic_obs(state, goal, context, previous)
         dynamics_context = task.dynamics_context(state, context, previous)
-        if observation_set("labels").shape[-1] != task.num_labels:
+        if example_set("labels").shape[-1] != task.num_labels:
             raise ValueError("Label observation width must equal task.num_labels.")
         actor_class, actor_cfg = resolve_class(cfg["actor"])
         model_class, model_cfg = resolve_class(cfg["world_model"])
