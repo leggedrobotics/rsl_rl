@@ -335,7 +335,7 @@ class SuperMimic:
 
         # Initialize update counters and collection state
         self.iteration = 0
-        self._update_debt = 1.0 - updates_per_step if update_schedule == "from_start" else 0.0
+        self._reset_update_debt()
         self._last_obs: TensorDict | None = None
         self._last_actions: torch.Tensor | None = None
         self._last_previous_actions: torch.Tensor | None = None
@@ -380,6 +380,7 @@ class SuperMimic:
             raise RuntimeError("act() must precede process_env_step().")
         if extras.get("final_obs") is None or extras.get("final_obs_every_step") is not True:
             raise ValueError("SuperMimic requires every-step extras['final_obs'] with final_obs_every_step=True.")
+        step_rewards, step_dones = rewards.reshape(-1).to(self.device), dones.reshape(-1).to(self.device).bool()
         process = self._process_env_step
         if self.use_cuda_graph:
             if self._process_env_step_graph is None:
@@ -391,19 +392,14 @@ class SuperMimic:
             self._last_previous_actions,
             obs.select(*self._successor_keys).to(self.device),
             extras["final_obs"].select(*self._final_keys).to(self.device),
-            dones.reshape(-1).to(self.device).bool(),
-            rewards.reshape(-1).to(self.device),
+            step_dones,
+            step_rewards,
         )
         self.storage.advance()
         self._collected_steps += 1
         self.env_steps += 1
         self._update_debt += self.updates_per_step
-        self.task.process_env_step(
-            self._set(self._last_obs, "goal"),
-            rewards.reshape(-1).to(self.device),
-            dones.reshape(-1).to(self.device).bool(),
-            extras,
-        )
+        self.task.process_env_step(self._set(self._last_obs, "goal"), step_rewards, step_dones, extras)
         self._last_obs = self._last_actions = self._last_previous_actions = None
         return {"Training/mean_reward": rewards}
 
@@ -435,10 +431,10 @@ class SuperMimic:
             batch_size=[self.storage.num_envs],
             device=self.device,
         )
+        labels = self._set(final, "labels")
         if self.task.num_labels:
-            transition["labels"] = self._set(final, "labels")
+            transition["labels"] = labels
         # Record nonfinite consumed final observations without synchronizing; update() rejects them before training
-        labels = transition["labels"] if self.task.num_labels else successor[:, :0]
         self._nonfinite_final_obs.logical_or_(
             torch.stack((~torch.isfinite(successor).all(), ~torch.isfinite(labels).all()))
         )
@@ -687,22 +683,12 @@ class SuperMimic:
         if nonfinite_state or nonfinite_labels:
             sets = [name for name, flag in (("state", nonfinite_state), ("labels", nonfinite_labels)) if flag]
             raise ValueError(f"SuperMimic received nonfinite final_obs in the observation sets {sets}.")
-        metrics = {"learner_updates": float(self.iteration)}
         totals: dict[str, list[torch.Tensor]] = {}
         if self._collected_steps:
             totals["window_break_fraction"] = [self._window_break_sum / self._collected_steps]
+            self._window_break_sum.zero_()
             self._collected_steps = 0
-        count = max(int(self._update_debt + 1e-9), 0)
-        self._update_debt -= count
-        if self.storage.num_steps < self.num_warmup_steps:
-            count = 0
-            if self.update_schedule == "after_warmup":
-                self._update_debt = 0.0
-        if self.is_multi_gpu:
-            ready_count = torch.tensor(count, device=self.device)
-            dist.all_reduce(ready_count, op=dist.ReduceOp.MIN)
-            count = int(ready_count)
-        for _ in range(count):
+        for _ in range(self._take_updates()):
             if self.learning_rate_schedule_unit == "env_steps":
                 self._update_learning_rate()
             update_policy = self.iteration >= self.num_world_model_warmup_iterations
@@ -719,19 +705,41 @@ class SuperMimic:
             self.iteration += 1
             if self.learning_rate_schedule_unit == "learner_updates":
                 self._update_learning_rate()
+        metrics = {"learner_updates": float(self.iteration)}
         if totals:
             means = torch.stack([torch.stack(values).float().mean() for values in totals.values()])
             if self.is_multi_gpu:
                 dist.all_reduce(means)
                 means /= self.gpu_world_size
             metrics.update(zip(totals, means.tolist()))
-            self._window_break_sum.zero_()
-        metrics["learner_updates"] = float(self.iteration)
         losses = {key.removesuffix("_loss"): value for key, value in metrics.items() if key.endswith("_loss")}
         stats = {f"SuperMimic/{key}": value for key, value in metrics.items() if not key.endswith("_loss")}
         stats["Optimizer/learning_rate"] = self.learning_rate
         stats["Optimizer/actor_learning_rate"] = self.actor_learning_rate
         return losses, stats
+
+    def _take_updates(self) -> int:
+        """Consume the whole accrued learner updates, running none until every rank holds the warmup steps."""
+        count = max(int(self._update_debt + 1e-9), 0)
+        self._update_debt -= count
+        if self.storage.num_steps < self.num_warmup_steps:
+            count = 0
+            if self.update_schedule == "after_warmup":
+                self._update_debt = 0.0
+        if self.is_multi_gpu:
+            ready_count = torch.tensor(count, device=self.device)
+            dist.all_reduce(ready_count, op=dist.ReduceOp.MIN)
+            count = int(ready_count)
+        return count
+
+    def _reset_update_debt(self) -> None:
+        """Restore the fractional update credit that collection would have accrued over ``env_steps``."""
+        if self.update_schedule == "after_warmup":
+            self._update_debt = 0.0
+        elif self.env_steps:
+            self._update_debt = (self.env_steps - 1) * self.updates_per_step % 1
+        else:
+            self._update_debt = 1.0 - self.updates_per_step
 
     def _run_iteration(self, update_policy: bool) -> dict[str, torch.Tensor]:
         """Run one learner iteration and return the mean of each metric over its updates."""
@@ -862,11 +870,7 @@ class SuperMimic:
         self.storage.clear()
         self.actor.reset()
         self._last_obs = self._last_actions = self._last_previous_actions = None
-        self._update_debt = 0.0
-        if self.update_schedule == "from_start":
-            self._update_debt = (
-                (self.env_steps - 1) * self.updates_per_step % 1 if self.env_steps else 1 - self.updates_per_step
-            )
+        self._reset_update_debt()
         self._window_break_sum.zero_()
         self._collected_steps = 0
         self._update_learning_rate()
