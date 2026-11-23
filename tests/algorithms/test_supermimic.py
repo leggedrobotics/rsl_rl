@@ -856,7 +856,8 @@ def test_cuda_graph_collection_matches_eager_across_resets_and_pushes() -> None:
 
     eager, eager_actions = collect(False)
     graphed, graphed_actions = collect(True)
-    assert all(graph.graph is not None for graph in (*graphed._act_graphs.values(), graphed._process_env_step_graph))
+    graphs = (*graphed._act_graphs.values(), *graphed._process_env_step_graphs.values())
+    assert graphs and all(graph.graph is not None for graph in graphs)
     torch.testing.assert_close(graphed_actions, eager_actions, rtol=0, atol=0)
     assert graphed.storage.num_steps == eager.storage.num_steps == 12
     torch.testing.assert_close(graphed.storage.data[:12].to_dict(), eager.storage.data[:12].to_dict(), rtol=0, atol=0)
@@ -865,6 +866,24 @@ def test_cuda_graph_collection_matches_eager_across_resets_and_pushes() -> None:
         torch.testing.assert_close(getattr(graphed.actor, name), getattr(eager.actor, name), rtol=0, atol=0)
     torch.testing.assert_close(graphed.world_model.state_dict(), eager.world_model.state_dict(), rtol=0, atol=0)
     torch.testing.assert_close(graphed._window_break_sum, eager._window_break_sum, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
+@pytest.mark.parametrize(("first", "second"), [("train_mode", "eval_mode"), ("eval_mode", "train_mode")])
+def test_cuda_graph_collection_follows_mode_switches(first: str, second: str) -> None:
+    """Graphed collection updates world-model statistics only in training mode, as eager collection does."""
+
+    def counts(use_cuda_graph: bool) -> list[tuple[int, int]]:
+        env = ScalarEnv(device="cuda:0")
+        learner = _learner(env, use_cuda_graph=use_cuda_graph)
+        result = []
+        for mode in (first, second, first):
+            getattr(learner, mode)()
+            _collect(learner, env, 4)
+            result.append((int(learner.world_model.in_norm.count), int(learner.world_model.out_norm.count)))
+        return result
+
+    assert counts(True) == counts(False)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")

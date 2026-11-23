@@ -255,7 +255,7 @@ class SuperMimic:
         self._successor_keys = groups("state", "prev_action", "prev_prev_action")
         self._final_keys = groups("state", "labels")
         self._act_graphs: dict[bool, CudaGraphCallable] = {}
-        self._process_env_step_graph: CudaGraphCallable | None = None
+        self._process_env_step_graphs: dict[bool, CudaGraphCallable] = {}
         self._graph_updates: dict[bool, CudaGraphCallable] = {}
         self.error_floor = error_floor
 
@@ -383,9 +383,12 @@ class SuperMimic:
         step_rewards, step_dones = rewards.reshape(-1).to(self.device), dones.reshape(-1).to(self.device).bool()
         process = self._process_env_step
         if self.use_cuda_graph:
-            if self._process_env_step_graph is None:
-                self._process_env_step_graph = CudaGraphCallable(self._process_env_step, self.device)
-            process = self._process_env_step_graph
+            # World-model statistics only update in training mode, so each mode has its own graph
+            if self.world_model.training not in self._process_env_step_graphs:
+                self._process_env_step_graphs[self.world_model.training] = CudaGraphCallable(
+                    self._process_env_step, self.device
+                )
+            process = self._process_env_step_graphs[self.world_model.training]
         process(
             self._last_obs,
             self._last_actions,
@@ -817,7 +820,7 @@ class SuperMimic:
     def release_cuda_graphs(self) -> None:
         """Release graphs containing NCCL collectives before process-group teardown."""
         self._act_graphs.clear()
-        self._process_env_step_graph = None
+        self._process_env_step_graphs.clear()
         self._graph_updates.clear()
         if self.use_cuda_graph:
             torch.cuda.synchronize(self.device)

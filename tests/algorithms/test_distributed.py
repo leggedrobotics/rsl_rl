@@ -524,7 +524,7 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
             assert all(optimizer.state for optimizer in learner.muon_optimizers.values())
         if cuda_graph:
             assert all(graph.graph is not None for graph in learner._act_graphs.values())
-            assert learner._process_env_step_graph.graph is not None
+            assert all(graph.graph is not None for graph in learner._process_env_step_graphs.values())
             assert learner._graph_updates[True].graph is not None
 
         learner.actor_learning_rate_multiplier.completed_episodes.copy_(
