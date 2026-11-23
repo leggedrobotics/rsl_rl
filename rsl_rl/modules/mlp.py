@@ -181,17 +181,21 @@ class ResidualMLP(nn.Module):
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 # Normalize each row of the weight matrix
-                module.weight.copy_(torch.nn.functional.normalize(module.weight, dim=-1, eps=1e-8))
+                weight = module.weight.to(dtype=torch.promote_types(module.weight.dtype, torch.float32))
+                module.weight.copy_(torch.nn.functional.normalize(weight, dim=-1, eps=1e-8))
             elif isinstance(module, nn.BatchNorm1d):
                 # Normalize the scale and bias jointly to preserve their relative magnitudes
-                squared_norm = module.weight.square().sum() + module.bias.square().sum()
+                weight = module.weight.to(dtype=torch.promote_types(module.weight.dtype, torch.float32))
+                bias = module.bias.to(dtype=weight.dtype)
+                squared_norm = weight.square().sum() + bias.square().sum()
                 factor = math.sqrt(module.weight.shape[-1]) * torch.rsqrt(squared_norm + 1e-8)
-                module.weight.mul_(factor)
-                module.bias.mul_(factor)
+                module.weight.copy_(weight * factor)
+                module.bias.copy_(bias * factor)
             elif isinstance(module, nn.RMSNorm):
                 # Rescale the RMS normalization weights to the square root of the feature dimension
-                factor = math.sqrt(module.weight.shape[-1]) * torch.rsqrt(module.weight.square().sum() + 1e-8)
-                module.weight.mul_(factor)
+                weight = module.weight.to(dtype=torch.promote_types(module.weight.dtype, torch.float32))
+                factor = math.sqrt(module.weight.shape[-1]) * torch.rsqrt(weight.square().sum() + 1e-8)
+                module.weight.copy_(weight * factor)
 
 
 class _ResidualBlock(nn.Module):
