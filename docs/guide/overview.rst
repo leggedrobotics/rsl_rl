@@ -365,7 +365,7 @@ With ``actor_learning_rate_multiplier`` above 1, they contain ``actor_learning_r
 iteration where the actor learning rate started to decay, or ``None`` before that.
 
 SuperMimic distributed training
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 SuperMimic uses the runner's existing ``torchrun``/NCCL setup, with one process per GPU. Each rank keeps its own
 simulation, observation history and replay buffer. Actor, world-model and critic gradients are averaged before
