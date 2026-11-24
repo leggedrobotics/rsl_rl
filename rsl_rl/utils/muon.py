@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import torch
 from collections.abc import Callable, Iterable
+from torch import nn
 
 
 def orthogonalize_matrix(matrix: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
@@ -95,3 +96,15 @@ class Muon(torch.optim.Optimizer):
                 param.sub_(scale * update)
 
         return loss
+
+
+def select_hidden_weight_matrices(module: nn.Module) -> list[nn.Parameter]:
+    """Return the weights of the linear layers between the first and last layer of each MLP in a module."""
+    from rsl_rl.modules.mlp import MLP
+
+    hidden_weights = []
+    for mlp in module.modules():
+        if isinstance(mlp, MLP):
+            linear_layers = [layer for layer in mlp if isinstance(layer, nn.Linear)]
+            hidden_weights.extend(layer.weight for layer in linear_layers[1:-1])
+    return hidden_weights

@@ -25,13 +25,9 @@ Distillation
    :undoc-members:
 
 
-SuperMimic
-----------
+SHAC
+----
 
-.. automodule:: rsl_rl.algorithms.supermimic
-   :members:
-   :undoc-members:
-
-.. automodule:: rsl_rl.algorithms.supermimic_task
+.. automodule:: rsl_rl.algorithms.shac
    :members:
    :undoc-members:

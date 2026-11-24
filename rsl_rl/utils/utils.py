@@ -11,8 +11,7 @@ import importlib
 import pkgutil
 import torch
 import warnings
-from collections import OrderedDict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from tensordict import TensorDict
 from typing import Any, Callable
 
@@ -340,24 +339,6 @@ def raise_if_nonfinite(flags: dict[str, torch.Tensor], distributed_device: str |
         raise ValueError("The environment on another rank returned NaN or Inf values.")
 
 
-def remap_state_dict_prefixes(
-    state_dict: Mapping[str, torch.Tensor], prefixes: Mapping[str, str]
-) -> Mapping[str, torch.Tensor]:
-    """Rename module prefixes in checkpoint keys and PyTorch's per-module metadata."""
-
-    def remap_key(key: str) -> str:
-        for old_prefix, new_prefix in prefixes.items():
-            if key == old_prefix or key.startswith(f"{old_prefix}."):
-                return new_prefix + key[len(old_prefix) :]
-        return key
-
-    remapped = OrderedDict((remap_key(key), value) for key, value in state_dict.items())
-    metadata = getattr(state_dict, "_metadata", None)
-    if metadata is not None:
-        remapped._metadata = {remap_key(key): value for key, value in metadata.items()}
-    return remapped
-
-
 def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.Module:
     """Wrap a model with :func:`torch.compile`, validating the compile mode.
 
@@ -432,6 +413,16 @@ class CudaGraphCallable:
             # Replay the graph and return independent copies of its outputs
             self.graph.replay()
             return {key: value.clone() for key, value in self._static_outputs.items()}
+
+
+def normalize_loss_across_ranks(
+    total: torch.Tensor, weight: torch.Tensor, world_size: int, minimum: float = 1.0
+) -> torch.Tensor:
+    """Scale a local loss sum so averaging gradients across ranks gives the globally weighted mean."""
+    if world_size > 1:
+        weight = weight.detach().clone()
+        torch.distributed.all_reduce(weight)
+    return total * world_size / weight.clamp(min=minimum)
 
 
 def reduce_gradients_in_buckets(params: Iterable[torch.nn.Parameter], world_size: int, bucket_mb: float) -> None:

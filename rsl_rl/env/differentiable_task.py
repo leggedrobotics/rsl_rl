@@ -3,16 +3,49 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Task-owned differentiable state coordinates and heads for SuperMimic."""
+"""Task-owned differentiable state coordinates and heads for SHAC."""
 
 from __future__ import annotations
 
-import copy
 import torch
+from tensordict import TensorDict
 from torch import nn
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 State = tuple[torch.Tensor, ...]
+
+
+class RolloutState(NamedTuple):
+    """Physical state and feature histories at one step of a differentiable rollout."""
+
+    state: State
+    goal: torch.Tensor
+    context: torch.Tensor
+    action_history: torch.Tensor
+    obs_history: torch.Tensor
+    observations: TensorDict
+
+    @property
+    def actor_obs(self) -> TensorDict:
+        """Return policy inputs for this rollout step, including its noisy observation history."""
+        return prepare_actor_obs(self.observations, self.obs_history)
+
+
+def prepare_actor_obs(observations: TensorDict, history: torch.Tensor) -> TensorDict:
+    """Replace the policy frame with the current noisy frame and expose any preceding frames oldest first."""
+    inputs = observations.clone(recurse=False)
+    inputs["policy"] = history[..., -1, :]
+    if history.shape[-2] > 1:
+        inputs["history"] = history[..., :-1, :].flatten(-2)
+    return inputs
+
+
+def concatenate_observation_set(obs: TensorDict, obs_groups: dict[str, list[str]], name: str) -> torch.Tensor:
+    """Concatenate one explicitly mapped observation set, using an empty tensor for absent optional sets."""
+    groups = obs_groups.get(name)
+    if groups:
+        return torch.cat([obs[key] for key in groups], dim=-1)
+    return obs[obs_groups["state"][0]].new_empty((*obs.batch_size, 0))
 
 
 class StateRepresentation(Protocol):
@@ -75,7 +108,7 @@ class EuclideanStateRepresentation:
 
 
 class DifferentiableTask:
-    """Provide task features, rewards and state updates for SuperMimic.
+    """Provide task features, rewards and state updates for SHAC.
 
     ``prev_actions`` has shape ``[..., action_history_length, num_actions]``, oldest first. Actor observations and
     goals must use deployable inputs. Privileged context is available separately to dynamics and critic heads.
@@ -88,33 +121,26 @@ class DifferentiableTask:
     action_history_length: int = 2
     num_labels: int = 0
 
-    def to(self, device: torch.device | str) -> DifferentiableTask:
-        """Move tensor attributes used by actor heads. Override for nested task state."""
-        for name, value in vars(self).items():
-            if isinstance(value, torch.Tensor):
-                setattr(self, name, value.to(device))
-        return self
+    def start_rollout(self, batch_size: int) -> RolloutState:
+        """Provide initial states and actor histories when using task dynamics directly."""
+        raise NotImplementedError
 
-    def copy_for_inference(self) -> DifferentiableTask:
-        """Copy task attributes so an inference policy can move them to its device.
+    def step(
+        self, rollout: RolloutState, actions: torch.Tensor, survival: torch.Tensor
+    ) -> tuple[RolloutState, torch.Tensor, torch.Tensor]:
+        """Advance task dynamics and return the next rollout state, reward and termination probability.
 
-        Override this method if :meth:`to` mutates nested objects. Copy those objects while sharing simulator handles.
-        """
-        return copy.copy(self)
-
-    def actor_obs(
-        self, state: State, goal: torch.Tensor, context: torch.Tensor, prev_actions: torch.Tensor
-    ) -> torch.Tensor:
-        """Build noise-free deployment frames; replay also passes ``[batch, history_length]`` leading dimensions.
-
-        ``prev_actions`` has shape ``[..., action_history_length, num_actions]``. Use deployable inputs only.
+        Preserve action derivatives and leave unreachable rows at their last reachable state.
         """
         raise NotImplementedError
 
-    def actor_goal(self, state: State, goal: torch.Tensor) -> torch.Tensor:
-        """Encode a deployable policy goal, preserving state derivatives.
+    def actor_obs(
+        self, state: State, goal: torch.Tensor, context: torch.Tensor, prev_actions: torch.Tensor
+    ) -> TensorDict:
+        """Return named deployable observations for this state, preserving its leading batch dimensions and gradients.
 
-        For example a velocity command as is, or the reference joint positions of the current frame of a motion.
+        Match the groups the environment exposes to the actor. Learned dynamics applies noise to the ``policy``
+        frame and constructs its ``history``. A command can be part of the frame or a separate group.
         """
         raise NotImplementedError
 
@@ -213,9 +239,8 @@ class DifferentiableTask:
     def reference_action(self, state: State, goal: torch.Tensor) -> torch.Tensor:
         """Return the action that the policy output corrects when the actor uses ``use_reference_action``.
 
-        Motion-tracking tasks can return the reference joint targets in action units, so the policy learns a
-        correction to the reference pose. Use deployable inputs only: exported policies take this action as an
-        additional ``reference_action`` input.
+        The environment adds this reference to the correction returned by the actor. SHAC uses the same
+        reference to record applied actions in replay and to step the imagined dynamics.
         """
         raise NotImplementedError
 

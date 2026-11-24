@@ -8,6 +8,6 @@
 from .distillation import Distillation
 from .ppo import PPO
 from .sac import SAC
-from .supermimic import SuperMimic
+from .shac import SHAC
 
-__all__ = ["PPO", "SAC", "Distillation", "SuperMimic"]
+__all__ = ["PPO", "SAC", "SHAC", "Distillation"]

@@ -97,10 +97,6 @@ OnPolicyRunner & OffPolicyRunner
      - dict
      - required
      - Critic model configuration.
-   * - ``world_model``
-     - dict
-     - --
-     - World model configuration, required by SuperMimic only.
 
 DistillationRunner
 ^^^^^^^^^^^^^^^^^^
@@ -158,7 +154,7 @@ Algorithm Configuration
 -----------------------
 
 RSL-RL implements :class:`~rsl_rl.algorithms.ppo.PPO`, :class:`~rsl_rl.algorithms.sac.SAC`,
-:class:`~rsl_rl.algorithms.distillation.Distillation`, and :class:`~rsl_rl.algorithms.supermimic.SuperMimic`. Each
+:class:`~rsl_rl.algorithms.distillation.Distillation`, and :class:`~rsl_rl.algorithms.shac.SHAC`. Each
 algorithm has its own configuration listed below.
 
 PPO
@@ -478,17 +474,8 @@ Distillation
        :class:`torch.nn.parallel.DistributedDataParallel`'s default ``bucket_cap_mb``.
 
 
-SuperMimic
-^^^^^^^^^^
-
-SuperMimic uses ``actor``, ``world_model`` and ``critic`` model configurations. ``task_cfg.class_name`` resolves a
-:class:`~rsl_rl.algorithms.supermimic_task.DifferentiableTask` with ``env``, ``device`` and the remaining task kwargs.
-The task supplies physical coordinates, rewards and feature construction; :ref:`supermimic-contract` lists its hooks
-in call order.
-Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 0.1]`` after global norm clipping.
-Policy updates keep the whole imagined rollout for the backward pass: GPU memory grows with ``policy_batch_size``,
-``horizon`` and the network widths, and is first requested when policy updates begin after
-``num_world_model_warmup_iterations``.
+SHAC
+^^^^
 
 .. list-table::
    :header-rows: 1
@@ -501,48 +488,31 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``class_name``
      - str
      - required
-     - ``"SuperMimic"``.
+     - ``"SHAC"``.
+   * - ``world_model_cfg``
+     - dict | None
+     - ``None``
+     - :ref:`Learned dynamics settings <learned-dynamics-configuration>`. With ``None``, the task supplies the dynamics.
    * - ``task_cfg``
      - dict
      - required
-     - Differentiable task class and kwargs.
-   * - ``replay_buffer_capacity``
+     - :class:`~rsl_rl.env.differentiable_task.DifferentiableTask` class and constructor arguments.
+   * - ``history_length``
      - int
-     - ``1000000``
-     - Maximum transitions across environments on each rank. Replay allocates storage on the first write.
-   * - ``max_replay_memory_fraction``
-     - float | None
-     - ``None``
-     - Fraction of free CUDA memory available to replay. ``None`` disables the limit.
+     - ``1``
+     - Number of frames in imagined observation histories. Match the environment's history length and reset padding.
+   * - ``use_reference_action``
+     - bool
+     - ``False``
+     - Train the actor to predict a correction that the environment adds to its reference action.
+   * - ``normalize_before_action``
+     - bool
+     - ``True``
+     - Update the actor's input normalization before choosing each collection action. Set to false to update afterwards.
    * - ``updates_per_step``
      - float
      - ``0.4``
      - Learner iterations accrued per collected environment step.
-   * - ``num_warmup_steps``
-     - int
-     - ``64``
-     - Stored steps per environment before learning.
-   * - ``num_world_model_warmup_iterations``
-     - int
-     - ``500``
-     - Learner iterations fitting only dynamics.
-   * - ``num_world_model_updates``
-     - int
-     - ``10``
-     - Dynamics optimizer steps per learner iteration.
-   * - ``world_model_window``
-     - int
-     - ``8``
-     - Maximum number of consecutive transitions used to fit the world model.
-   * - ``world_model_batch_size``
-     - int
-     - ``2048``
-     - Replay anchors per dynamics optimizer step.
-   * - ``world_model_mirror_fraction``
-     - float
-     - ``0.0``
-     - Fraction of each dynamics batch replaced by its left-right mirror image; requires a task that
-       implements ``mirror_state``, ``mirror_actions``, ``mirror_context`` and, with labels, ``mirror_labels``.
    * - ``num_policy_updates``
      - int
      - ``1``
@@ -554,7 +524,7 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``policy_batch_size``
      - int
      - ``4096``
-     - Starts per actor update.
+     - Number of rollout starting states per actor update.
    * - ``gamma``
      - float
      - ``0.99``
@@ -562,9 +532,7 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``max_step_reward``
      - float | None
      - ``None``
-     - Optional per-step reward bound used to cap values at the maximum discounted return. Set it when the
-       per-step reward has a known upper bound: without a cap, value estimates are unbounded and can overshoot
-       when policy updates begin.
+     - Upper bound on the per-step reward, used to cap value estimates at the maximum discounted return.
    * - ``action_noise``
      - float
      - ``0.1``
@@ -572,7 +540,7 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``actor_ema_halflife``
      - int | None
      - ``None``
-     - Deployment-only actor exponential moving average (EMA) half-life in actor optimizer steps, e.g. ``500``.
+     - Half-life of the actor weights averaged for inference and export, measured in actor optimizer steps.
    * - ``lam``
      - float
      - ``0.95``
@@ -596,11 +564,7 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``actor_learning_rate_multiplier``
      - float
      - ``1.0``
-     - Factor on the actor learning rate early in training. It decays linearly to 1 over
-       ``actor_learning_rate_decay_iterations``, starting when ``actor_learning_rate_decay_return`` or
-       ``actor_learning_rate_decay_start`` is reached, whichever comes first. Learner iterations include
-       ``num_world_model_warmup_iterations``, during which the actor is not updated, so a multiplier that
-       decays within them has no effect.
+     - Initial multiplier on the actor learning rate. It decays linearly to 1 once either decay threshold is reached.
    * - ``actor_learning_rate_decay_iterations``
      - int
      - ``300``
@@ -608,9 +572,7 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``actor_learning_rate_decay_return``
      - float | None
      - ``None``
-     - Return threshold that starts the decay. Each episode completed since the previous update contributes
-       its return divided by the environment's ``max_episode_length``, a scalar or one value per environment,
-       so short failed episodes count low; the decay starts once their mean reaches this value.
+     - Mean completed-episode return that starts the decay. Each return is divided by the maximum episode length.
    * - ``actor_learning_rate_decay_start``
      - int | None
      - ``None``
@@ -618,8 +580,7 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``muon_models``
      - tuple[str]
      - ``()``
-     - Models among ``"actor"`` and ``"world_model"`` whose hidden weight matrices are trained with Muon;
-       their other parameters and all other models use Adam.
+     - Models whose hidden weight matrices use Muon. Accepts ``"actor"`` and ``"world_model"``. Other parameters use Adam.
    * - ``max_grad_norm``
      - float
      - ``1.0``
@@ -635,34 +596,21 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``use_mixed_precision``
      - bool
      - ``False``
-     - Enable BF16 matrix operations while integrating physical states in FP32. The critic is also
-       fitted through its BF16 output, which resolves values to 8 significant bits.
+     - Use bfloat16 for matrix operations and float32 for physical state integration.
    * - ``use_cuda_graph``
      - bool
      - ``False``
-     - Capture learner and collection calls. Requires CUDA and task heads that avoid host synchronization.
-       Captured calls keep Python values from capture time and see in-place tensor updates.
+     - Capture collection and learner updates in CUDA graphs. Task methods must support graph capture.
    * - ``update_schedule``
      - str
      - ``"after_warmup"``
-     - Start the learner-update cadence after warm-up (``"after_warmup"``) or at the first
-       collected step (``"from_start"``); updates due during warm-up are skipped either way.
+     - Count steps toward updates after warm-up (``"after_warmup"``) or from the first step (``"from_start"``).
+       Updates begin once replay is ready.
    * - ``learning_rate_schedule_unit``
      - str
      - ``"learner_updates"``
      - Measure cosine-schedule progress in learner updates or in collected environment steps
        (``"env_steps"``).
-   * - ``world_model_loss_reduction``
-     - str
-     - ``"sum"``
-     - Sum the dynamics loss over each replay window, or average it over all valid positions
-       (``"mean"``).
-   * - ``world_model_full_windows``
-     - bool
-     - ``False``
-     - Sample complete windows that stay within an episode and contain no external state edits.
-       Requires ``num_warmup_steps`` greater than ``world_model_window``.
-       Skip learner updates when any rank has no eligible window.
    * - ``critic_survival_weighting``
      - bool
      - ``True``
@@ -677,15 +625,6 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
      - ``True``
      - Draw new critic minibatches every epoch instead of reusing one permutation.
 
-With ``actor_ema_halflife`` set, inference and JIT/ONNX exports use EMA parameters with live normalization buffers.
-Collection and policy optimization keep using the live actor. The EMA inference actor copies the task when moved
-to another device, leaving the training task in place.
-After each successful actor step ``n``, the averaging decay is
-``min(0.5 ** (1 / h), (1 + n) / (10 + n))``, where ``h`` is the half-life and ``n`` starts at one.
-``None`` disables averaging. Use the same ``actor_ema_halflife`` setting for training and play/export.
-In Isaac Lab, pass ``agent.algorithm.actor_ema_halflife=500`` to play with or export that EMA actor.
-All ``get_inference_policy`` and export calls share one EMA actor and reset its observation and action history
-to the live actor's, so fetch the policy and export before a rollout, not during one.
 
 .. _model-configuration:
 
@@ -696,9 +635,9 @@ Different algorithms use models for different purposes. For example, :class:`~rs
 and a critic, while :class:`~rsl_rl.algorithms.distillation.Distillation` uses a student and a teacher. Even though
 their function may differ, algorithms can generally use the same underlying model classes. Available models include
 :class:`~rsl_rl.models.mlp_model.MLPModel`, :class:`~rsl_rl.models.rnn_model.RNNModel`,
-:class:`~rsl_rl.models.cnn_model.CNNModel`, :class:`~rsl_rl.models.mlp_model.QMLPModel`, and
-:class:`~rsl_rl.models.cnn_model.QCNNModel`, and
-:class:`~rsl_rl.models.mlp_model_equivariant.EquivariantMLPModel`.
+:class:`~rsl_rl.models.cnn_model.CNNModel`, :class:`~rsl_rl.models.mlp_model.QMLPModel`,
+:class:`~rsl_rl.models.cnn_model.QCNNModel`, :class:`~rsl_rl.models.mlp_model_equivariant.EquivariantMLPModel`,
+and :class:`~rsl_rl.models.supermimic_actor.SuperMimicActor`.
 
 MLPModel
 ^^^^^^^^
@@ -943,112 +882,6 @@ the same configuration keys, except that ``distribution_cfg`` must be ``None``.
      - ...
      - ...
 
-SuperMimicActor
-^^^^^^^^^^^^^^^
-
-The actor turns environment observations into policy inputs. Its ``act`` method also returns the preceding
-action history for replay. The stateless :class:`~rsl_rl.models.supermimic_actor.SuperMimicPolicy` evaluates
-prepared histories and goals during imagination and export. Checkpoints store its weights under ``policy``
-and the loader also accepts earlier checkpoints.
-
-.. list-table::
-   :header-rows: 1
-   :class: no-wrap-type-column
-
-   * - Key
-     - Type
-     - Default
-     - Description
-   * - ``class_name``
-     - str
-     - required
-     - ``"SuperMimicActor"``.
-   * - ``history_length``
-     - int
-     - ``5``
-     - Number of actor frames; reset history repeats its first frame.
-   * - ``latent_dim``
-     - int
-     - ``32``
-     - Encoded goal width.
-   * - ``encoder_hidden_dims``
-     - tuple[int]
-     - ``(2048, 1024, 512, 256)``
-     - Goal encoder layers.
-   * - ``decoder_hidden_dims``
-     - tuple[int]
-     - ``(2048, 1024, 512, 256)``
-     - Action decoder layers.
-   * - ``use_reference_action``
-     - bool
-     - ``False``
-     - Add the network output to the task's ``reference_action``, which the task must implement; exported
-       policies take the reference action as an additional input.
-   * - ``activation``
-     - str
-     - ``"elu"``
-     - Activation of the encoder and decoder layers.
-   * - ``norm``
-     - str
-     - ``"none"``
-     - Normalization of the decoder layers, ``"none"`` or ``"layer"``.
-   * - ``encoder_norm``
-     - str
-     - ``"layer"``
-     - Normalization of the goal encoder layers. LayerNorm keeps the hidden layers from growing a component shared
-       by all goals, which would saturate the tanh latent so the policy stops seeing its goal.
-   * - ``output_gain``
-     - float
-     - ``0.01``
-     - Scale of the initial decoder output weights; values other than 1 also zero the output bias.
-   * - ``normalize_before_action``
-     - bool
-     - ``True``
-     - Update the observation and goal normalizers before choosing each collection action instead of
-       after it.
-
-WorldModel
-^^^^^^^^^^
-
-The world model predicts physical increments and optional successor event labels. The task defines integration
-coordinates and feature widths.
-
-.. list-table::
-   :header-rows: 1
-   :class: no-wrap-type-column
-
-   * - Key
-     - Type
-     - Default
-     - Description
-   * - ``class_name``
-     - str
-     - required
-     - ``"WorldModel"``.
-   * - ``hidden_dims``
-     - tuple[int]
-     - ``(2048, 2048, 2048)``
-     - Dynamics network layers with LayerNorm.
-   * - ``label_hidden_dims``
-     - tuple[int]
-     - ``(512, 512)``
-     - Optional event-head layers.
-   * - ``activation``
-     - str
-     - ``"swish"``
-     - Activation of the dynamics network.
-   * - ``normalize_output``
-     - bool
-     - ``True``
-     - Predict normalized increments and rescale them with running output statistics.
-   * - ``normalize_context``
-     - bool
-     - ``True``
-     - Normalize the dynamics context with running statistics; disable for context already in a fixed range.
-   * - ``zero_initialize_output``
-     - bool
-     - ``True``
-     - Start the dynamics output layer at zero.
 
 EquivariantMLPModel
 ^^^^^^^^^^^^^^^^^^^
@@ -1277,7 +1110,8 @@ Extension Configuration
 
 :class:`~rsl_rl.extensions.rnd.RandomNetworkDistillation` is compatible with :class:`~rsl_rl.algorithms.ppo.PPO`, and
 :class:`~rsl_rl.extensions.symmetry.Symmetry` is compatible with :class:`~rsl_rl.algorithms.ppo.PPO` and
-:class:`~rsl_rl.algorithms.sac.SAC`. The configuration keys for both extensions are listed below.
+:class:`~rsl_rl.algorithms.sac.SAC`. :class:`~rsl_rl.extensions.learned_dynamics.LearnedDynamics` is compatible
+with :class:`~rsl_rl.algorithms.shac.SHAC`.
 
 Random Network Distillation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1355,6 +1189,70 @@ Symmetry Augmentation
      - required
      - Coefficient for the symmetry loss.
 
+.. _learned-dynamics-configuration:
+
+Learned Dynamics
+^^^^^^^^^^^^^^^^
+
+Set ``algorithm.world_model_cfg`` to train a world model from replay. On every step the environment must supply
+the physical successor before resets or other state edits, as described in :meth:`~rsl_rl.env.vec_env.VecEnv.step`.
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``model``
+     - dict
+     - required
+     - Predictor class and its constructor arguments. See :class:`~rsl_rl.extensions.learned_dynamics.WorldModel`.
+   * - ``replay_buffer_capacity``
+     - int
+     - ``1000000``
+     - Maximum transitions per rank. Replay must hold at least ``max(num_warmup_steps, history_length)`` steps
+       per environment.
+   * - ``max_replay_memory_fraction``
+     - float | None
+     - ``None``
+     - Fraction of free CUDA memory available to replay. ``None`` disables the limit.
+   * - ``num_warmup_steps``
+     - int
+     - ``64``
+     - Stored steps per environment before learning.
+   * - ``batch_size``
+     - int
+     - ``2048``
+     - Replay anchors per dynamics optimizer step.
+   * - ``num_warmup_iterations``
+     - int
+     - ``500``
+     - Learner iterations fitting only dynamics.
+   * - ``num_updates``
+     - int
+     - ``10``
+     - Dynamics optimizer steps per learner iteration.
+   * - ``loss_reduction``
+     - str
+     - ``"sum"``
+     - Sum the dynamics loss over each replay window, or average it over all valid positions
+       (``"mean"``).
+   * - ``full_windows``
+     - bool
+     - ``False``
+     - Sample only complete windows within an uninterrupted episode. Requires more warm-up steps than ``window_length``.
+   * - ``mirror_fraction``
+     - float
+     - ``0.0``
+     - Fraction of each dynamics batch augmented with the task's mirror functions.
+   * - ``window_length``
+     - int
+     - ``8``
+     - Maximum number of consecutive transitions used to fit the world model.
+
+
 .. _example-configuration:
 
 Example Configuration
@@ -1362,7 +1260,7 @@ Example Configuration
 
 While the previous sections cover many configuration options, only a few are needed to start training. The following
 examples provide minimal configurations for :class:`~rsl_rl.algorithms.ppo.PPO`, :class:`~rsl_rl.algorithms.sac.SAC`,
-:class:`~rsl_rl.algorithms.distillation.Distillation`, and :class:`~rsl_rl.algorithms.supermimic.SuperMimic`.
+:class:`~rsl_rl.algorithms.distillation.Distillation`, and :class:`~rsl_rl.algorithms.shac.SHAC`.
 
 PPO
 ^^^
@@ -1431,26 +1329,27 @@ observation groups must match the policy being distilled. This example matches t
        distribution_cfg:
          class_name: GaussianDistribution
 
-SuperMimic
-^^^^^^^^^^
+SHAC
+^^^^
 
-Use :class:`~rsl_rl.runners.off_policy_runner.OffPolicyRunner` with a ``SuperMimicActor``, a ``WorldModel``, a
-feed-forward ``MLPModel`` critic and your own :class:`~rsl_rl.algorithms.supermimic_task.DifferentiableTask`:
+Use :class:`~rsl_rl.runners.on_policy_runner.OnPolicyRunner` with learned dynamics. Set ``task_cfg.class_name``
+to the environment's :class:`~rsl_rl.env.differentiable_task.DifferentiableTask` implementation.
 
 .. code-block:: yaml
 
    runner:
      num_steps_per_env: 24
-     obs_groups: {"state": ["state"], "goal": ["goal"], "context": ["context"]}
+     obs_groups: {"actor": ["policy"], "state": ["state"]}
      save_interval: 100
      algorithm:
-       class_name: SuperMimic
+       class_name: SHAC
        task_cfg:
          class_name: my_package.my_task:MyTask
+       world_model_cfg:
+         model:
+           class_name: WorldModel
      actor:
-       class_name: SuperMimicActor
-     world_model:
-       class_name: WorldModel
+       class_name: MLPModel
      critic:
        class_name: MLPModel
 
@@ -1503,32 +1402,24 @@ Depending on the algorithm and extensions used, RSL-RL expects different observa
    * - ``actor``
      - Observations used as input to the actor model.
    * - ``critic``
-     - Observations used as input to the critic model.
+     - Observations used as input to the critic model. SHAC obtains these from the task's
+       :meth:`~rsl_rl.env.differentiable_task.DifferentiableTask.critic_obs` method and omits this set.
    * - ``student``
      - Observations used as input to the student model.
    * - ``teacher``
      - Observations used as input to the teacher model.
    * - ``rnd_state``
      - Observations used as input to the RND extension.
-
    * - ``state``
-     - Required noise-free physical state for SuperMimic.
+     - Noise-free physical state used by SHAC.
    * - ``goal``
-     - Optional SuperMimic task goal.
+     - Optional task goal used by SHAC.
    * - ``context``
-     - Optional noise-free privileged dynamics and critic context.
+     - Optional privileged observations available to the SHAC task and world model.
    * - ``labels``
-     - Optional successor labels with ``task.num_labels`` columns; binary events unless the task overrides
-       ``label_activation`` and ``label_loss``.
-   * - ``prev_action`` / ``prev_prev_action``
-     - Optional action vectors overriding SuperMimic's collection history, including nonzero reset commands.
-
-Map each optional SuperMimic set explicitly. ``task.critic_obs`` supplies the critic inputs in place of a
-``critic`` observation set. Task action histories are oldest-first with shape
-``[..., task.action_history_length, num_actions]``.
-A play loop that calls ``policy.reset(dones)`` zeroes the action history, while training seeds every slot with the
-reported ``prev_action``; with a nonzero reset command, pass that action as the second argument of
-``policy.reset`` so that slots without a mapped set match training.
+     - Optional event labels for world-model training.
+   * - ``prev_action``, ``prev_prev_action``
+     - Optional actions from the previous two steps used to initialize SHAC's action history.
 
 Incomplete or incorrect configurations are handled in :func:`~rsl_rl.utils.utils.resolve_obs_groups`, which provides
 detailed information on how errors are resolved.

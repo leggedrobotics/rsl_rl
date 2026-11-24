@@ -47,11 +47,3 @@ Equivariant
 .. automodule:: rsl_rl.modules.equivariant
    :members:
    :undoc-members:
-
-
-World Model
------------
-
-.. automodule:: rsl_rl.modules.world_model
-   :members:
-   :undoc-members:

@@ -101,3 +101,60 @@ def test_lazy_memory_budget_checks_minimum_window(monkeypatch: pytest.MonkeyPatc
     undersized = ReplayBuffer(2, 1000, min_steps_per_env=143, max_memory_fraction=0.5, device="cuda")
     with pytest.warns(UserWarning, match="Reducing replay"), pytest.raises(ValueError, match="143 steps"):
         undersized.add_transition(step)
+
+
+def test_invalid_transition_preserves_existing_slot() -> None:
+    """Reject a changed transition schema before overwriting a full replay slot."""
+    replay = ReplayBuffer(1, 1)
+    step = TensorDict({"dones": torch.tensor([False]), "state": torch.zeros(1, 1)}, [1])
+    replay.add_transition(step)
+    invalid = TensorDict({"dones": torch.tensor([True]), "state": torch.ones(1, 2)}, [1])
+
+    with pytest.raises(ValueError, match="shape or dtype changed"):
+        replay.add_transition(invalid)
+    assert not replay.transitions["dones"].any()
+    assert not replay.transitions["state"].any()
+
+
+def test_history_repeats_earliest_episode_or_stored_frame() -> None:
+    """SHAC histories repeat valid starts after overwrite and episode boundaries."""
+    replay = ReplayBuffer(1, 4)
+    for step in range(7):
+        replay.add_transition(
+            TensorDict({"value": torch.tensor([[float(step)]]), "dones": torch.tensor([step == 4])}, batch_size=[1])
+        )
+    batch, valid = replay.sample_sequence(100, ("value",), history_length=3)
+    values = batch["value"][..., 0]
+    for row in range(100):
+        anchor = int(values[row, -1])
+        earliest = max(3, 5 if anchor >= 5 else 3)
+        expected = torch.arange(anchor - 3, anchor + 1).clamp(min=earliest).float()
+        torch.testing.assert_close(values[row], expected)
+        assert valid[row].sum() == min(4, anchor - earliest + 1)
+
+
+def test_complete_windows_balance_environments_and_exclude_boundaries() -> None:
+    """Unequal valid-window counts must not oversample an environment or cross a reset or edit."""
+    replay = ReplayBuffer(3, 18)
+    for step in range(10):
+        replay.add_transition(
+            TensorDict(
+                {
+                    "value": torch.full((3, 1), step),
+                    "env": torch.arange(3),
+                    "dones": torch.tensor([True, step in (5, 8), False]),
+                    "window_break": torch.tensor([False, False, step == 4]),
+                },
+                [3],
+            )
+        )
+    torch.manual_seed(42)
+    counts = replay.compute_complete_window_counts(3)
+    batch, valid = replay.sample_sequence(6000, ("value", "env"), length=3, complete_window_counts=counts)
+    values = batch["value"][..., 0]
+    envs = batch["env"][:, 0]
+    assert valid.all() and (envs != 0).all()
+    assert ((envs == 1).float().mean() - 0.5).abs() < 0.04
+    assert (values[envs == 1] == torch.tensor([6, 7, 8])).all()
+    assert set(values[envs == 2, 0].tolist()) == {5, 6, 7}
+    assert (values[:, 1:] - values[:, :-1] == 1).all()

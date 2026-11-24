@@ -10,9 +10,9 @@ import os
 import time
 import torch
 
-from rsl_rl.algorithms import PPO
+from rsl_rl.algorithms import PPO, SHAC
 from rsl_rl.env import VecEnv
-from rsl_rl.models import MLPModel
+from rsl_rl.models import MLPModel, SuperMimicActor
 from rsl_rl.utils import find_nonfinite, raise_if_nonfinite, resolve_callable
 from rsl_rl.utils.logger import Logger
 
@@ -20,7 +20,7 @@ from rsl_rl.utils.logger import Logger
 class OnPolicyRunner:
     """On-policy runner for reinforcement learning algorithms."""
 
-    alg: PPO
+    alg: PPO | SHAC
     """The actor-critic algorithm."""
 
     def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
@@ -36,7 +36,7 @@ class OnPolicyRunner:
         obs = self.env.get_observations()
 
         # Create the algorithm
-        alg_class: type[PPO] = resolve_callable(self.cfg["algorithm"]["class_name"])  # type: ignore
+        alg_class: type[PPO | SHAC] = resolve_callable(self.cfg["algorithm"]["class_name"])  # type: ignore
         self.alg = alg_class.construct_algorithm(obs, self.env, self.cfg, self.device)
 
         # Create the logger
@@ -181,7 +181,7 @@ class OnPolicyRunner:
             self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
 
-    def get_inference_policy(self, device: str | None = None) -> MLPModel:
+    def get_inference_policy(self, device: str | None = None) -> MLPModel | SuperMimicActor:
         """Return the policy on the requested device for inference."""
         self.alg.eval_mode()  # Switch to evaluation mode (e.g. for dropout)
         return self.alg.get_policy().to(device)  # type: ignore

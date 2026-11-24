@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from rsl_rl.algorithms import SAC, SuperMimic
+from rsl_rl.algorithms import SAC
 from rsl_rl.runners.on_policy_runner import OnPolicyRunner
 
 
@@ -15,5 +15,5 @@ class OffPolicyRunner(OnPolicyRunner):
     This runner uses the interaction, logging, and checkpointing loop provided by :class:`OnPolicyRunner`.
     """
 
-    alg: SAC | SuperMimic
+    alg: SAC
     """The off-policy algorithm."""

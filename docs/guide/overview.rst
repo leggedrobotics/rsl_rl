@@ -41,10 +41,10 @@ Algorithms
    algorithm useful for transferring policies from training-time privileged observation sets to observations available
    during real-world deployment.
 
-:class:`~rsl_rl.algorithms.supermimic.SuperMimic`
-   SuperMimic fits physical dynamics from replay and trains a history-conditioned actor on imagined trajectories.
-   Actor gradients pass through the learned dynamics, and the critic estimates the remaining return.
-   See :ref:`supermimic-contract` for the environment and checkpoint interfaces.
+:class:`~rsl_rl.algorithms.shac.SHAC`
+   Short-Horizon Actor-Critic (SHAC) trains the actor by differentiating the task reward through a short rollout.
+   The critic estimates the return beyond the rollout. The dynamics can come from the task or from the
+   :class:`~rsl_rl.extensions.learned_dynamics.LearnedDynamics` extension.
 
 Models
 ^^^^^^
@@ -84,6 +84,9 @@ Models
    augmentation or a mirror loss, the constraint cannot be traded away against the task reward. Observation
    normalization uses symmetrized running statistics to preserve equivariance, and for export the network is folded
    into a plain MLP without runtime overhead. For more details, please check `this paper <https://arxiv.org/abs/2403.17320>`__.
+
+:class:`~rsl_rl.models.supermimic_actor.SuperMimicActor`
+   A deterministic actor that encodes the goal and combines it with a history of policy observations to predict actions.
 
 Distributions
 ^^^^^^^^^^^^^
@@ -130,6 +133,10 @@ Extensions
    added to the loss function to actively encourage symmetry in the policy. This extension is compatible with the
    :class:`~rsl_rl.algorithms.ppo.PPO` and :class:`~rsl_rl.algorithms.sac.SAC` algorithms. For more details, please
    check `this paper <https://arxiv.org/abs/2403.04359>`__.
+
+:class:`~rsl_rl.extensions.learned_dynamics.LearnedDynamics`
+   Fits a world model to sequences of simulator transitions from replay. SHAC uses the model to generate
+   differentiable rollouts from sampled states.
 
 Loggers
 ^^^^^^^
@@ -325,95 +332,3 @@ following replay script:
    for _ in range(1000):
        actions = policy(obs)
        obs, rewards, dones, extras = env.step(actions)
-
-
-.. _supermimic-contract:
-
-SuperMimic environment and checkpoints
---------------------------------------
-
-The environment supplies flat, noise-free ``state`` and optional ``goal``, privileged ``context`` and event ``labels``
-sets. Every step must supply physical successors before resets and interval events in ``extras["final_obs"]``, with
-``extras["final_obs_every_step"] = True``. Interval edits cut future model-fitting windows through ``window_break``;
-replay retains the original physical successor.
-Task features, ``pre_dynamics`` and ``post_dynamics`` preserve state and action gradients.
-A window break is recorded whenever the ``state`` returned by ``step`` is not exactly equal to the one in ``final_obs``
-for a continuing environment, so compute both the same way; ``SuperMimic/window_break_fraction`` logs how often it
-happens.
-The actor and critic learn only from ``task.reward`` and ``task.termination_prob``: environment rewards support logging,
-curriculum updates and optional learning-rate scheduling. ``dones`` mark episode boundaries.
-Actor moments update during ``act`` and world-model moments during ``process_env_step``, using in-place writes compatible
-with inference-mode collection. ``updates_per_step`` accrues learner credit; runner iteration is the logging step axis.
-All optimizers share one cosine schedule of length ``num_schedule_updates``.
-With the actor option ``use_reference_action``, the policy output is added to the task's ``reference_action`` during
-collection and imagination, e.g. the reference joint targets of motion tracking; exported policies then take an
-additional ``reference_action`` input.
-The actor keeps a per-environment observation history, so a play loop must call ``policy.reset(dones)`` after every
-environment step.
-Tasks can also override ``dynamics_actions`` to map policy outputs to physical commands before the world model,
-``world_model_loss`` to supervise further coordinates, such as integrated joint positions, and ``update_curriculum`` to
-update task curricula from each collected step.
-``label_activation`` and ``label_loss``, overridden together, replace the event probabilities and their binary
-cross-entropy, e.g. to regress contact forces. ``pre_dynamics`` edits a transition start after the actor has acted,
-e.g. with a velocity impulse scheduled in ``context``, as a deterministic function of the state and the context.
-
-The learner calls the task hooks in the following order. ``observed`` is the state the actor sees, ``start`` is the
-state returned by ``pre_dynamics``, which is ``observed`` by default, and ``successor`` is the state returned by
-``post_dynamics``:
-
-#. Collection step: ``actor_obs(observed)``, ``actor_goal(observed)``, ``add_noise`` and, if enabled,
-   ``reference_action(observed)`` yield the action, and replay stores ``observed``. Then ``pre_dynamics(observed)``,
-   ``dynamics_actions`` and ``dynamics_context(start)`` update the world-model statistics, and ``update_curriculum``
-   sees the step.
-#. Step of a world-model fit: ``pre_dynamics`` edits the replayed ``observed`` in the first step of a window and the
-   previous ``successor`` afterwards. ``dynamics_actions`` and ``dynamics_context(start)`` feed the world model,
-   ``dynamics_context`` of its integrated state feeds the label head and ``label_activation`` maps the logits to
-   labels. ``post_dynamics(start, integrated state, labels, actions, context)`` returns ``successor``. After the last
-   step, ``world_model_loss`` and ``label_loss`` compare all steps with replay.
-#. Imagined step: ``critic_obs(observed, ..., history)`` receives the observation history the actor acts on, and
-   ``actor_goal(observed)`` and ``reference_action(observed)`` yield the action. ``pre_dynamics(observed)`` and the
-   transition hooks run as in the fit, followed by ``reward(start, ..., successor)``, ``termination_prob(successor)``
-   and ``advance(successor)``. ``actor_obs(successor)`` and ``add_noise`` append the next frame to the history.
-   ``successor`` is the next ``observed``; after the last step it is only passed to ``critic_obs``.
-
-``ScalarTask`` in ``tests/algorithms/test_supermimic.py`` is a minimal complete task.
-
-Full checkpoints contain ``actor_state_dict``, ``critic_state_dict``, ``world_model_state_dict``, each model's
-``*_optimizer_state_dict`` and the counters ``iteration`` and ``env_steps``. They count learner updates and
-collected environment steps, respectively.
-Replay, collection history, simulator state and task-owned state such as curricula are excluded.
-``runner.load(path, load_cfg={"actor": True, "critic": True, "world_model": True, "iteration": True})`` loads all
-models and counters with fresh optimizers. For deployment use ``runner.load(path, load_cfg={"actor": True})``; other
-partial model selections are rejected. Model state-dict loading checks tensor shapes. Task coordinate meaning must
-match the training configuration.
-The loader accepts earlier actor and world-model checkpoint keys.
-
-With ``actor_ema_halflife`` enabled, checkpoints also contain ``actor_ema_state_dict`` and ``actor_ema_updates``.
-Full and actor-only loads restore the averaged parameters and successful actor-step count.
-Checkpoints without these keys initialize the average from the loaded live actor and reset its count to zero.
-Enable the same half-life for play/export to deploy the EMA with live normalization buffers.
-Loading an EMA checkpoint with averaging disabled warns and uses the live actor.
-
-With ``muon_models`` set, checkpoints also contain ``<model>_muon_optimizer_state_dict`` for each listed model.
-Resume with the same ``muon_models``, or load with fresh optimizers as above to change it.
-With ``actor_learning_rate_multiplier`` above 1, they contain ``actor_learning_rate_decay_from``, the learner
-iteration where the actor learning rate started to decay, or ``None`` before that.
-
-SuperMimic distributed training
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-SuperMimic uses the runner's ``torchrun``/NCCL setup with one process per GPU. The runner broadcasts model parameters
-before collection. When constructing distributed learners directly, call ``broadcast_parameters()`` on each rank
-before training. Ranks keep separate simulation, observation history and replay, and combine gradients,
-observation statistics and completed-episode returns across ranks.
-
-Use the same model configuration, collection cadence and batch sizes on every rank. ``replay_buffer_capacity``,
-``world_model_batch_size`` and ``policy_batch_size`` are per-rank values: four ranks with a policy batch of 2048
-use 8192 imagined starts per synchronized actor update. ``updates_per_step`` and schedule counters retain their
-per-environment-step meaning; they are not multiplied by the number of ranks. Masked world-model and critic means
-use the total valid weight across ranks.
-
-The standard runner writes one checkpoint from rank zero. Every rank must load that same checkpoint when resuming,
-including optimizer state and counters, because the start-of-training broadcast only copies model state. Each
-rank then refills its local replay buffer. CUDA graph capture requires NCCL;
-the runner releases collection and learner graphs before process-group teardown.

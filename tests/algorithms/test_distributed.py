@@ -22,6 +22,7 @@ import pytest
 from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import reduce_gradients_in_buckets
+from rsl_rl.utils.utils import normalize_loss_across_ranks
 from tests.algorithms.test_distillation import _fill_distillation_storage, _make_distillation_setup
 from tests.algorithms.test_ppo import NUM_ENVS, NUM_STEPS, OBS_DIM, _build_ppo
 from tests.conftest import make_obs
@@ -427,11 +428,11 @@ def test_sac_distributed_cuda_graphs_stay_synchronized_and_shut_down() -> None:
     spawn_gloo(_sac_cuda_graph_worker)
 
 
-def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool, cuda_graph: bool = False) -> None:
+def _shac_worker(rank: int, world_size: int, store_file: str, blink: bool, cuda_graph: bool = False) -> None:
     import copy
 
-    from rsl_rl.algorithms import SuperMimic
-    from tests.algorithms.test_supermimic import MirroredScalarTask, ScalarEnv, _cfg, _collect
+    from rsl_rl.algorithms import SHAC
+    from tests.algorithms.test_shac import MirroredScalarTask, ScalarEnv, _cfg, _collect
 
     device = f"cuda:{rank}" if cuda_graph else "cpu"
     if cuda_graph:
@@ -451,11 +452,11 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
         torch.manual_seed(rank + 10)
         cfg = _cfg(
             actor_ema_halflife=10,
-            num_world_model_warmup_iterations=1,
+            num_warmup_iterations=1,
             actor_learning_rate_multiplier=4.0,
             actor_learning_rate_decay_return=10.0,
-            world_model_full_windows=True,
-            world_model_loss_reduction="mean",
+            full_windows=True,
+            loss_reduction="mean",
             update_schedule="from_start",
             learning_rate_schedule_unit="env_steps",
             use_cuda_graph=cuda_graph,
@@ -465,24 +466,24 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
             cfg["algorithm"].update(
                 muon_models=("actor", "world_model"),
                 task_cfg={"class_name": MirroredScalarTask},
-                world_model_mirror_fraction=0.5,
             )
-            cfg["actor"].update(encoder_hidden_dims=(8, 8, 8), decoder_hidden_dims=(8, 8, 8))
-            cfg["world_model"]["hidden_dims"] = (16, 16, 16)
+            cfg["actor"].update(hidden_dims=(8, 8, 8))
+            cfg["algorithm"]["world_model_cfg"]["mirror_fraction"] = 0.5
+            cfg["algorithm"]["world_model_cfg"]["model"]["hidden_dims"] = (16, 16, 16)
         env = ScalarEnv(device=device)
         env.position.fill_(rank * 2)
-        learner = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, device)
+        learner = SHAC.construct_algorithm(env.get_observations(), env, cfg, device)
         learner.broadcast_parameters()
 
-        def assert_synchronized(alg: SuperMimic) -> None:
-            for model in (alg.actor, alg.world_model, alg._raw_critic):
+        def assert_synchronized(alg: SHAC) -> None:
+            for model in (alg.actor, alg.learned_dynamics.world_model, alg.critic):
                 for value in model.state_dict().values():
                     assert torch.isfinite(value).all()
                     _assert_close_across_ranks(value)
             for value in alg.actor_ema.averaged_parameters:
                 _assert_close_across_ranks(value)
             _assert_close_across_ranks(alg.actor_ema.num_updates)
-            for _, optimizer in alg._iter_model_optimizers():
+            for optimizer in alg.optimizers.values():
                 for state in optimizer.state.values():
                     for value in state.values():
                         if isinstance(value, torch.Tensor):
@@ -506,24 +507,28 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
             name: copy.deepcopy(model.state_dict())
             for name, model in (
                 ("actor", learner.actor),
-                ("world_model", learner.world_model),
+                ("world_model", learner.learned_dynamics.world_model),
                 ("critic", learner.critic),
             )
         }
         _collect(learner, env, 1)
-        obs_norm = learner.actor.policy.obs_normalizer
+        obs_norm = learner.actor.obs_normalizer
         torch.testing.assert_close(obs_norm.mean[0], torch.tensor(float(world_size - 1), device=device))
         assert obs_norm.count == 4 * world_size
-        _assert_not_close_across_ranks(learner.storage.transitions["state"][0])
+        _assert_not_close_across_ranks(learner.learned_dynamics.storage.transitions["state"][0])
         for _ in range(8):
             _collect(learner, env, 1)
             learner.update()
         assert_synchronized(learner)
-        for name, model in (("actor", learner.actor), ("world_model", learner.world_model), ("critic", learner.critic)):
+        for name, model in (
+            ("actor", learner.actor),
+            ("world_model", learner.learned_dynamics.world_model),
+            ("critic", learner.critic),
+        ):
             assert any(not torch.equal(initial[name][key], value) for key, value in model.named_parameters())
         if blink:
-            assert set(learner.muon_optimizers) == {"actor", "world_model"}
-            assert all(optimizer.state for optimizer in learner.muon_optimizers.values())
+            assert set(learner.optimizers) == {"actor", "critic", "world_model", "actor_muon", "world_model_muon"}
+            assert all(optimizer.state for optimizer in learner.optimizers.values())
         if cuda_graph:
             assert all(graph.graph is not None for graph in learner._act_graphs.values())
             assert all(graph.graph is not None for graph in learner._process_env_step_graphs.values())
@@ -536,7 +541,7 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
         learner.update()
         assert learner.actor_learning_rate_multiplier.decay_start_update == expected
         checkpoint = copy.deepcopy(learner.save())
-        restored = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, device)
+        restored = SHAC.construct_algorithm(env.get_observations(), env, cfg, device)
         restored.load(checkpoint, None, True)
         restored.broadcast_parameters()
         assert (
@@ -552,13 +557,13 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
 
         value = torch.tensor(2.0, device=device, requires_grad=True)
         weight = torch.tensor(float(rank), device=device)
-        restored._normalize_loss_across_ranks((value - rank).square() * weight, weight).backward()
+        normalize_loss_across_ranks((value - rank).square() * weight, weight, world_size).backward()
         torch.distributed.all_reduce(value.grad)
         value.grad /= world_size
         ranks = torch.arange(world_size, device=device, dtype=torch.float32)
         torch.testing.assert_close(value.grad, (2 * (2 - ranks) * ranks).sum() / ranks.sum())
 
-        window_breaks = restored.storage.transitions["window_break"]
+        window_breaks = restored.learned_dynamics.storage.transitions["window_break"]
         previous_breaks = window_breaks.clone()
         if rank == 0:
             window_breaks.fill_(True)
@@ -575,7 +580,7 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
         assert int(restored.actor_ema.num_updates) == before["actor_ema_updates"]
         assert_synchronized(restored)
         if rank == 0:
-            restored._nonfinite_final_obs[0] = True
+            restored.learned_dynamics.nonfinite_final_obs[0] = True
         with pytest.raises(ValueError, match="nonfinite final_obs"):
             restored.update()
     finally:
@@ -587,12 +592,12 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
 
 @pytest.mark.skipif(not _GLOO_AVAILABLE, reason="torch.distributed gloo backend is required")
 @pytest.mark.parametrize("blink", [False, True])
-def test_supermimic_distributed_updates_and_resume(blink: bool) -> None:
+def test_shac_distributed_updates_and_resume(blink: bool) -> None:
     """Rank-local replay trains identical models, optimizer moments and EMA through restart and failures."""
-    spawn_gloo(_supermimic_worker, blink, world_size=4 if blink else 2)
+    spawn_gloo(_shac_worker, blink, world_size=4 if blink else 2)
 
 
 @pytest.mark.skipif(not _NCCL_GPUS_AVAILABLE, reason="NCCL and at least two GPUs are required")
-def test_supermimic_distributed_cuda_graphs_stay_synchronized_and_shut_down() -> None:
+def test_shac_distributed_cuda_graphs_stay_synchronized_and_shut_down() -> None:
     """Collective operations remain synchronized during captured BlinkMimic collection, learning and restart."""
-    spawn_gloo(_supermimic_worker, True, True)
+    spawn_gloo(_shac_worker, True, True)
