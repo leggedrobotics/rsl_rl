@@ -558,7 +558,7 @@ class SuperMimic:
             label_loss = self._globally_normalized_loss((bce.mean(dim=-1) * mask).sum(), valid_count)
             loss = loss + label_loss
             metrics["label_loss"] = label_loss.detach()
-        self._apply(loss, "world_model", self.world_model)
+        metrics["world_model_grad_norm"] = self._apply(loss, "world_model", self.world_model)
         metrics["world_model_loss"] = loss.detach() / (
             self.world_model_window if self.world_model_loss_reduction == "sum" else 1
         )

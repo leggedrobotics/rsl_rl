@@ -76,6 +76,9 @@ class DifferentiableTask:
 
     ``prev_actions`` has shape ``[..., action_history_length, num_actions]``, oldest first. Actor observations and
     goals must use deployable inputs. Privileged context is available separately to dynamics and critic heads.
+    Heads and the representation need finite gradients as well as finite values, e.g. ``torch.linalg.vector_norm``
+    instead of ``sqrt(sum(x**2))`` at zero: an optimizer step with a nonfinite gradient is skipped and logged as a NaN
+    gradient norm.
     """
 
     representation: StateRepresentation

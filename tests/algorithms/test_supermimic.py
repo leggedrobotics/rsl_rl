@@ -234,7 +234,7 @@ def test_direct_and_standard_runner_train_all_models() -> None:
     losses, stats = learner.update()
     assert {"world_model", "policy", "critic", "label"} == losses.keys()
     assert all(torch.isfinite(torch.tensor(value)) for value in (losses | stats).values())
-    assert stats["SuperMimic/policy_grad_norm"] > 0
+    assert stats["SuperMimic/policy_grad_norm"] > 0 and stats["SuperMimic/world_model_grad_norm"] > 0
     for module in (learner.actor, learner.world_model):
         assert all(not buffer.is_inference() for buffer in module.buffers())
     checkpoint = copy.deepcopy(learner.save())
