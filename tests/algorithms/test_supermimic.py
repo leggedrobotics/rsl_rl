@@ -822,7 +822,7 @@ def test_task_analytic_successors_follow_labels_in_fitting_and_imagination() -> 
         prev_actions: torch.Tensor,
         labels: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        assert torch.equal(next_state[0], torch.cat([successor[0] for successor in post_calls]))
+        assert next_state is post_calls[-1]
         return reward(state, actions, next_state, goal, prev_actions, labels)
 
     learner.task.post_dynamics = post
@@ -956,7 +956,7 @@ def test_critic_ignores_states_after_imagined_termination(monkeypatch: pytest.Mo
     """After a certain termination, imagined states neither train the critic nor update its normalizer."""
     env, learner = ScalarEnv(), _learner()
     _collect(learner, env, 4)
-    monkeypatch.setattr(learner.task, "termination_prob", lambda state, *args, **kwargs: torch.ones(len(state[0])))
+    monkeypatch.setattr(learner.task, "termination_prob", lambda *args, **kwargs: torch.ones(4))
     count = int(learner.critic.obs_normalizer.count)
     learner._fit_policy()
     assert int(learner.critic.obs_normalizer.count) - count == learner.policy_batch_size
