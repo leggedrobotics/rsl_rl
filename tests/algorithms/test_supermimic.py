@@ -256,6 +256,16 @@ def test_goal_latent_ignores_the_scale_of_hidden_encoder_weights() -> None:
         torch.testing.assert_close(torch.tanh(encoder(goals)), latent, atol=1e-4, rtol=0)
 
 
+def test_policy_normalizes_observations_and_goals_with_their_moments() -> None:
+    """Inputs at the mean of the collected observations and goals act like zero inputs before any collection."""
+    policy = _learner().actor.policy
+    with torch.no_grad():
+        expected = policy(torch.zeros(4, 2, 2), torch.zeros(4, 1))
+        policy.obs_norm.update(torch.full((8, 2), 3.0))
+        policy.goal_norm.update(torch.full((8, 1), -2.0))
+        torch.testing.assert_close(policy(torch.full((4, 2, 2), 3.0), torch.full((4, 1), -2.0)), expected)
+
+
 def test_replay_start_padding_repeats_the_same_noisy_reset_frame(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unavailable history repeats one corrupted frame, as during collection."""
     torch.manual_seed(0)
@@ -458,26 +468,24 @@ def test_environments_keep_separate_episode_boundaries(monkeypatch: pytest.Monke
     torch.manual_seed(0)
     env, cfg = ScalarEnv(reset_action=0.4), _cfg()
     cfg["actor"]["history_length"] = 4
-    env.episode_length_buf = torch.arange(4)  # the episodes end on different steps
+    env.episode_length_buf = torch.arange(4)
     learner = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, env.device)
     obs, histories = env.get_observations(), []
     for step in range(12):
         actions = learner.act(obs)
         histories.append(learner.actor.history.clone())
         obs, rewards, dones, extras = env.step(actions)
-        if step == 6:  # an interval edit of the first environment only
+        if step == 6:
             env.position[0] += 10
             obs = env.get_observations()
         learner.process_env_step(obs, rewards, dones, extras)
     data = learner.storage.data[:12]
     assert data["dones"].any() and data["dones"].sum(dim=1).max() == 1
     assert data["window_break"].nonzero().tolist() == [[6, 0]]
-    # Every stored successor is the physical one, also on the steps that end an episode
     torch.testing.assert_close(data["next_state"], data["state"] + 0.2 * data["actions"])
     windows, starts = learner.storage.sample(1024, length=3), learner.storage.sample(1024, history=3)
     monkeypatch.setattr(learner.storage, "sample", lambda count, length=1, history=0: starts if history else windows)
     _, mask = learner._windows(1024)
-    # Windows of the first environment that begin one step before the edit and at it lose only their later targets
     for slot, expected in ((5, [1.0, 1.0, 0.0]), (6, [1.0, 0.0, 0.0])):
         assert mask[windows.ids[:, 0] == 4 * slot].unique(dim=0).tolist() == [expected]
     start, frames = learner._starts(1024)
@@ -539,7 +547,6 @@ def test_critic_targets_use_terminations_lambda_and_reach_weights() -> None:
     features = torch.zeros(3, 1, learner.critic.obs_dim)
     rewards, terminals, reach = torch.tensor([[1.0], [2.0]]), torch.full((2, 1), 0.5), torch.tensor([[1.0], [0.5]])
     metrics = learner._fit_critic(features, rewards, terminals, reach)
-    # The second target is 2 + 0.5 * 0.5 * 4 = 3 and the first is 1 + 0.5 * 0.5 * (0.5 * 4 + 0.5 * 3) = 1.875
     assert metrics["critic_loss"].item() == pytest.approx((1.0 * (4 - 1.875) ** 2 + 0.5 * (4 - 3.0) ** 2) / 1.5)
 
 
@@ -549,7 +556,7 @@ def test_imagined_objective_matches_a_step_by_step_rollout(monkeypatch: pytest.M
     env, learner = ScalarEnv(), _learner(gamma=0.9, horizon=5)
     _collect(learner, env, 8)
     task, actor, seen = learner.task, learner.actor, {}
-    with torch.no_grad():  # the output layers of the dynamics and the policy start at or near zero
+    with torch.no_grad():
         learner.world_model.net.output_layer.weight.normal_(0, 0.5)
         actor.policy.decoder.output_layer.weight.normal_(0, 0.5)
     monkeypatch.setattr(task, "termination_prob", lambda successor, *args, **kwargs: torch.sigmoid(successor[0][:, 0]))
@@ -1350,6 +1357,14 @@ def test_reference_action_requires_a_task_reference_at_construction() -> None:
         SuperMimic.construct_algorithm(env.get_observations(), env, cfg, env.device)
 
 
+def test_dynamics_actions_may_change_the_action_width(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The world model is sized for the physical command, not for the policy output."""
+    monkeypatch.setattr(ScalarTask, "dynamics_actions", lambda self, actions: torch.cat((actions, -actions), dim=-1))
+    env, learner = ScalarEnv(), _learner()
+    _collect(learner, env, 4)
+    assert learner.world_model.num_actions == 2 and math.isfinite(learner.update()[0]["policy"])
+
+
 def test_task_model_loss_uses_integrated_coordinates_and_valid_mean(monkeypatch: pytest.MonkeyPatch) -> None:
     """A task may supervise coordinates beyond the predicted increment without window-length scaling."""
     env, learner = ScalarEnv(), _learner(world_model_loss_reduction="mean")
@@ -1374,16 +1389,15 @@ def test_world_model_loss_sums_scaled_rollout_errors_over_valid_positions(monkey
     window, mask = learner._windows(64)
     assert not mask.all() and mask[:, 1:].any()
     monkeypatch.setattr(learner, "_windows", lambda batch_size: (window, mask))
-    monkeypatch.setattr(learner, "_apply", lambda *args, **kwargs: None)  # the model stays unchanged
-    with torch.no_grad():  # every event logit is 1, so the cross entropy of a label y is log(1 + e) - y
+    monkeypatch.setattr(learner, "_apply", lambda *args, **kwargs: None)
+    with torch.no_grad():
         learner.world_model.label_head.output_layer.weight.zero_()
         learner.world_model.label_head.output_layer.bias.fill_(1.0)
     entropy = math.log1p(math.e) - window["labels"][..., 0]
-    # The zero-initialized dynamics predict the mean increment of the collected physical transitions
     data = learner.storage.data[:6]
     increments = data["next_state"] - data["state"]
     rollout = window["state"][:, :1] + increments.mean() * torch.arange(1, 4)[:, None]
-    for floor in (0.01, 1.0):  # below and above the standard deviation of the increments
+    for floor in (0.01, 1.0):
         learner.error_floor.fill_(floor)
         errors = ((rollout - window["next_state"]) / increments.std(unbiased=False).clamp(min=floor)).square()[..., 0]
         metrics = learner._fit_world_model()
@@ -1435,5 +1449,4 @@ def test_default_world_model_normalizes_inputs_and_rescales_increments() -> None
         model.label_logits((state,), context)
     torch.testing.assert_close(seen[0], normalized)
     torch.testing.assert_close(seen[1], normalized[:, [0, 2]])
-    # The observed increments have mean 3 and standard deviation 2
     torch.testing.assert_close(result, state + 3 + 2 * (2 + model.out_norm.eps))
