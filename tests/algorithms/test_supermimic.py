@@ -453,6 +453,39 @@ def test_interval_edits_cut_only_future_world_model_targets() -> None:
     assert (history[:, 0, 0] != history[:, -1, 0]).any()
 
 
+def test_environments_keep_separate_episode_boundaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Episode ends and an interval edit of one environment leave the replay and histories of the others intact."""
+    torch.manual_seed(0)
+    env, cfg = ScalarEnv(reset_action=0.4), _cfg()
+    cfg["actor"]["history_length"] = 4
+    env.episode_length_buf = torch.arange(4)  # the episodes end on different steps
+    learner = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, env.device)
+    obs, histories = env.get_observations(), []
+    for step in range(12):
+        actions = learner.act(obs)
+        histories.append(learner.actor.history.clone())
+        obs, rewards, dones, extras = env.step(actions)
+        if step == 6:  # an interval edit of the first environment only
+            env.position[0] += 10
+            obs = env.get_observations()
+        learner.process_env_step(obs, rewards, dones, extras)
+    data = learner.storage.data[:12]
+    assert data["dones"].any() and data["dones"].sum(dim=1).max() == 1
+    assert data["window_break"].nonzero().tolist() == [[6, 0]]
+    # Every stored successor is the physical one, also on the steps that end an episode
+    torch.testing.assert_close(data["next_state"], data["state"] + 0.2 * data["actions"])
+    windows, starts = learner.storage.sample(1024, length=3), learner.storage.sample(1024, history=3)
+    monkeypatch.setattr(learner.storage, "sample", lambda count, length=1, history=0: starts if history else windows)
+    _, mask = learner._windows(1024)
+    # Windows of the first environment that begin one step before the edit and at it lose only their later targets
+    for slot, expected in ((5, [1.0, 1.0, 0.0]), (6, [1.0, 0.0, 0.0])):
+        assert mask[windows.ids[:, 0] == 4 * slot].unique(dim=0).tolist() == [expected]
+    start, frames = learner._starts(1024)
+    slot, env_id = starts.ids[:, -1] // 4, starts.ids[:, -1] % 4
+    torch.testing.assert_close(start["state"], data["state"][slot, env_id], rtol=0, atol=0)
+    torch.testing.assert_close(frames, torch.stack(histories)[slot, env_id], rtol=0, atol=0)
+
+
 def test_nonzero_crouch_reset_actions_seed_both_predecessors() -> None:
     """Explicit action sets preserve held reset commands instead of assuming zero actions."""
     env = ScalarEnv(reset_action=0.4)
@@ -471,9 +504,9 @@ def test_lambda_returns_terminal_reward_and_bootstrap() -> None:
         torch.tensor([[0.0], [1.0], [0.0]]),
         torch.tensor([[7.0], [8.0], [9.0], [10.0]]),
         0.5,
-        1.0,
+        0.5,
     )
-    torch.testing.assert_close(actual, torch.tensor([[2.0], [2.0], [8.0]]))
+    torch.testing.assert_close(actual, torch.tensor([[3.5], [2.0], [8.0]]))
 
 
 def test_value_cap_bounds_policy_bootstrap_and_critic_targets() -> None:
@@ -494,6 +527,53 @@ def test_value_cap_bounds_policy_bootstrap_and_critic_targets() -> None:
     metrics = learner._fit_critic(features, torch.tensor([[0.0, 4.0]]), torch.zeros(1, 2), torch.ones(1, 2))
     assert metrics["critic_loss"].item() == pytest.approx((9.0**2 + 8.0**2) / 2)
     assert 2.0 < learner.critic.mlp.output_layer.bias.item() < 10.0
+
+
+def test_critic_targets_use_terminations_lambda_and_reach_weights() -> None:
+    """Value targets mix one-step and longer returns, stop at terminations and are weighted by reach."""
+    learner = _learner(gamma=0.5, lam=0.5, horizon=2, num_critic_mini_batches=1)
+    with torch.no_grad():
+        for parameter in learner.critic.parameters():
+            parameter.zero_()
+        learner.critic.mlp.output_layer.bias.fill_(4.0)
+    features = torch.zeros(3, 1, learner.critic.obs_dim)
+    rewards, terminals, reach = torch.tensor([[1.0], [2.0]]), torch.full((2, 1), 0.5), torch.tensor([[1.0], [0.5]])
+    metrics = learner._fit_critic(features, rewards, terminals, reach)
+    # The second target is 2 + 0.5 * 0.5 * 4 = 3 and the first is 1 + 0.5 * 0.5 * (0.5 * 4 + 0.5 * 3) = 1.875
+    assert metrics["critic_loss"].item() == pytest.approx((1.0 * (4 - 1.875) ** 2 + 0.5 * (4 - 3.0) ** 2) / 1.5)
+
+
+def test_imagined_objective_matches_a_step_by_step_rollout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rewards are discounted and weighted by the probability of reaching their step, the final value by survival."""
+    torch.manual_seed(0)
+    env, learner = ScalarEnv(), _learner(gamma=0.9, horizon=5)
+    _collect(learner, env, 8)
+    task, actor, seen = learner.task, learner.actor, {}
+    with torch.no_grad():  # the output layers of the dynamics and the policy start at or near zero
+        learner.world_model.net.output_layer.weight.normal_(0, 0.5)
+        actor.policy.decoder.output_layer.weight.normal_(0, 0.5)
+    monkeypatch.setattr(task, "termination_prob", lambda successor, *args, **kwargs: torch.sigmoid(successor[0][:, 0]))
+    monkeypatch.setattr(task, "advance", lambda successor, goal, context: (goal + 0.1 * successor[0], context + 0.05))
+    start, frames = learner._starts(4)
+    monkeypatch.setattr(learner, "_starts", lambda batch_size: (start, frames))
+    monkeypatch.setattr(learner, "_fit_critic", lambda *args: seen.update(reach=args[3]) or {})
+    state, goal, context, previous = (start["state"],), start["goal"], start["context"], start["prev_actions"]
+    history, reach, objective = frames, [torch.ones(4)], torch.zeros(4)
+    for step in range(5):
+        action = actor.forward_history(history, task.actor_goal(state, goal))
+        successor, _, labels = learner._predict(state, action, context, previous)
+        objective = objective + 0.9**step * reach[-1] * task.reward(state, action, successor, goal, previous, labels)
+        reach.append(reach[-1] * (1 - task.termination_prob(successor, goal, labels)))
+        goal, context = task.advance(successor, goal, context)
+        previous = torch.cat((previous[:, 1:], action[:, None]), dim=1)
+        history = torch.cat((history[:, 1:], task.actor_obs(successor, goal, context, previous)[:, None]), dim=1)
+        state = successor
+    objective = objective + 0.9**5 * reach[-1] * learner._value(task.critic_obs(state, goal, context, previous))
+    gradient = torch.autograd.grad(-objective.mean(), list(actor.parameters()))
+    metrics = learner._fit_policy()
+    torch.testing.assert_close(metrics["policy_loss"], -objective.mean().detach())
+    torch.testing.assert_close(metrics["policy_grad_norm"], torch.cat([g.flatten() for g in gradient]).norm())
+    torch.testing.assert_close(seen["reach"], torch.stack(reach[:-1]).detach())
 
 
 @pytest.mark.parametrize(
@@ -1275,6 +1355,32 @@ def test_task_model_loss_uses_integrated_coordinates_and_valid_mean(monkeypatch:
     assert result["world_model_error"].item() == pytest.approx(2.75)
 
 
+def test_world_model_loss_sums_scaled_rollout_errors_over_valid_positions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each window is rolled out from its first state and adds its valid errors in units of the increment scale."""
+    torch.manual_seed(0)
+    env, learner = ScalarEnv(), _learner(action_noise=1.0)
+    _collect(learner, env, 6)
+    window, mask = learner._windows(64)
+    assert not mask.all() and mask[:, 1:].any()
+    monkeypatch.setattr(learner, "_windows", lambda batch_size: (window, mask))
+    monkeypatch.setattr(learner, "_apply", lambda *args, **kwargs: None)  # the model stays unchanged
+    with torch.no_grad():  # every event logit is 1, so the cross entropy of a label y is log(1 + e) - y
+        learner.world_model.label_head.output_layer.weight.zero_()
+        learner.world_model.label_head.output_layer.bias.fill_(1.0)
+    entropy = math.log1p(math.e) - window["labels"][..., 0]
+    # The zero-initialized dynamics predict the mean increment of the collected physical transitions
+    data = learner.storage.data[:6]
+    increments = data["next_state"] - data["state"]
+    rollout = window["state"][:, :1] + increments.mean() * torch.arange(1, 4)[:, None]
+    for floor in (0.01, 1.0):  # below and above the standard deviation of the increments
+        learner.error_floor.fill_(floor)
+        errors = ((rollout - window["next_state"]) / increments.std(unbiased=False).clamp(min=floor)).square()[..., 0]
+        metrics = learner._fit_world_model()
+        assert metrics["label_loss"].item() == pytest.approx(((entropy * mask).sum() / mask.sum()).item())
+        expected = ((errors * mask).sum(dim=1).mean() + metrics["label_loss"]) / learner.world_model_window
+        assert metrics["world_model_loss"].item() == pytest.approx(expected.item(), rel=1e-4)
+
+
 def test_raw_world_model_preserves_task_normalized_context() -> None:
     """Physical residual outputs and fixed-range context bypass empirical rescaling when requested."""
     model = WorldModel(
@@ -1300,3 +1406,23 @@ def test_raw_world_model_preserves_task_normalized_context() -> None:
     torch.testing.assert_close(result, state + 3)
     torch.testing.assert_close(seen[0][:, -1:], context)
     torch.testing.assert_close(seen[0][:, :2], torch.zeros(4, 2))
+
+
+def test_default_world_model_normalizes_inputs_and_rescales_increments() -> None:
+    """Dynamics and event inputs use the moments of the observed inputs; outputs are scaled by increment moments."""
+    model = WorldModel(EuclideanStateRepresentation(1), 1, 1, 1, hidden_dims=(8,), num_labels=1, label_hidden_dims=(8,))
+    state, action, context = torch.tensor([[0.0], [2.0]]), torch.tensor([[1.0], [3.0]]), torch.tensor([[10.0], [30.0]])
+    model.observe((state,), action, context, (state + torch.tensor([[1.0], [5.0]]),))
+    inputs = torch.cat((state, action, context), -1)
+    normalized = (inputs - inputs.mean(0)) / (inputs.std(0, unbiased=False) + model.in_norm.eps)
+    seen = []
+    model.net.register_forward_pre_hook(lambda module, args: seen.append(args[0]))
+    model.label_head.register_forward_pre_hook(lambda module, args: seen.append(args[0]))
+    with torch.no_grad():
+        model.net.output_layer.bias.fill_(2.0)
+        result = model((state,), action, context)[0]
+        model.label_logits((state,), context)
+    torch.testing.assert_close(seen[0], normalized)
+    torch.testing.assert_close(seen[1], normalized[:, [0, 2]])
+    # The observed increments have mean 3 and standard deviation 2
+    torch.testing.assert_close(result, state + 3 + 2 * (2 + model.out_norm.eps))
