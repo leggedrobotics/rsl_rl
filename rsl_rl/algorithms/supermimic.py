@@ -777,7 +777,7 @@ class SuperMimic:
             self._update_debt = 0.0
             return
         accrued = 1.0 - self.updates_per_step + self.env_steps * self.updates_per_step
-        self._update_debt = accrued % 1 if self.env_steps else accrued
+        self._update_debt = accrued - int(accrued + 1e-9) if self.env_steps else accrued
 
     def _run_iteration(self, update_policy: bool) -> dict[str, torch.Tensor]:
         """Run one learner iteration and return the mean of each metric over its updates."""

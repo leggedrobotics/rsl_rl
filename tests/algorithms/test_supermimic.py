@@ -769,6 +769,17 @@ def test_collection_schedule_keeps_fractional_credit_through_warmup() -> None:
     assert resumed_counts == [4, 4, 4, 4, 4, 5]
 
 
+def test_restored_update_credit_matches_the_running_learner() -> None:
+    """A load restores the credit of the running learner where the accrued credit rounds below a whole update."""
+    options = {"updates_per_step": 0.6, "update_schedule": "from_start"}
+    learner, restored, env = _learner(**options), _learner(**options), ScalarEnv()
+    for _ in range(8):
+        _collect(learner, env, 1)
+        learner.update()
+        restored.load(copy.deepcopy(learner.save()), None, True)
+        assert restored._update_debt == pytest.approx(learner._update_debt, abs=1e-6)
+
+
 def test_collection_can_select_actions_before_updating_moments() -> None:
     """Fresh observations change future normalization without changing the action already being selected."""
     env, cfg = ScalarEnv(), _cfg()
