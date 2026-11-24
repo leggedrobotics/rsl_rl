@@ -458,7 +458,7 @@ class SuperMimic:
         )
         self.actor_learning_rate_multiplier.record(rewards, done)
         self.storage.write(transition)
-        physical = self.task.representation.unflatten(state)
+        physical = self.task.pre_dynamics(self.task.representation.unflatten(state), context)
         self.world_model.observe(
             physical,
             self.task.dynamics_actions(actions),
@@ -543,6 +543,7 @@ class SuperMimic:
         state = self.task.representation.unflatten(window["state"][:, 0])
         predictions, logits = [], []
         for step in range(self.world_model_window):
+            state = self.task.pre_dynamics(state, window["context"][:, step])
             state, event_logits, _ = self._predict(
                 state, window["actions"][:, step], window["context"][:, step], window["prev_actions"][:, step]
             )
@@ -596,6 +597,7 @@ class SuperMimic:
                     action = self._actor_forward(history, self.task.actor_goal(state, goal))
                 if self.actor.use_reference_action:
                     action = action + self.task.reference_action(state, goal)
+                state = self.task.pre_dynamics(state, context)
                 successor, _, labels = self._predict(state, action, context, previous)
                 rewards.append(self.task.reward(state, action, successor, goal, previous, labels=labels))
                 terminals.append(self.task.termination_prob(successor, goal, labels=labels))

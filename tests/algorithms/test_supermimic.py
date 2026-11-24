@@ -1044,7 +1044,7 @@ def test_cuda_graph_collection_follows_mode_switches(first: str, second: str) ->
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
 @pytest.mark.parametrize(
-    "option", ["default", "muon", "actor_multiplier", "reference_action", "mirror", "full_windows"]
+    "option", ["default", "muon", "actor_multiplier", "reference_action", "mirror", "full_windows", "hooks"]
 )
 def test_cuda_graph_matches_eager_and_resumes(option: str) -> None:
     """Graphed learner iterations match eager updates exactly with each optional training feature."""
@@ -1055,6 +1055,7 @@ def test_cuda_graph_matches_eager_and_resumes(option: str) -> None:
         "reference_action": {"task_cfg": {"class_name": ReferenceScalarTask}},
         "mirror": {"task_cfg": {"class_name": MirroredScalarTask}, "world_model_mirror_fraction": 0.5},
         "full_windows": {"world_model_full_windows": True},
+        "hooks": {"task_cfg": {"class_name": HookedScalarTask}},
     }[option]
 
     def train(use_cuda_graph: bool) -> tuple[SuperMimic, ScalarEnv, list[dict[str, float]]]:
@@ -1550,3 +1551,85 @@ def test_label_loss_must_return_a_loss_per_replay_position() -> None:
     learner.task.label_loss = lambda logits, labels: (logits - labels).square().mean()
     with pytest.raises(ValueError, match="one value per replay position"):
         learner._fit_world_model()
+
+
+class ImpulseScalarTask(ReferenceScalarTask):
+    """A step-counting context schedules a position impulse that acts after the actor has chosen its action."""
+
+    def pre_dynamics(self, state: State, context: torch.Tensor) -> State:
+        """Add the scheduled impulse to the transition start."""
+        return (state[0] + context,)
+
+    def dynamics_context(self, state: State, context: torch.Tensor, prev_actions: torch.Tensor) -> torch.Tensor:
+        """Also expose the transition start to dynamics."""
+        return torch.cat((state[0], super().dynamics_context(state, context, prev_actions)), -1)
+
+    def advance(
+        self, next_state: State, goal: torch.Tensor, context: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Count imagined steps in the context."""
+        return goal, context + 1
+
+
+class CountingScalarEnv(ScalarEnv):
+    """The context counts collected steps."""
+
+    def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:
+        """Count the step, then advance the system."""
+        self.context.add_(1.0)
+        return super().step(actions)
+
+
+def test_pre_dynamics_edits_the_start_of_statistics_fitted_and_imagined_transitions() -> None:
+    """Each impulse moves the start seen by the model, post-dynamics and reward, not by replay, actor or critic."""
+    env = CountingScalarEnv()
+    learner = _learner(env, task_cfg={"class_name": ImpulseScalarTask})
+    learner.actor.use_reference_action = True
+    _collect(learner, env, 4)
+    data = learner.storage.data[:4]
+    assert torch.equal(data["state"][1:], data["next_state"][:-1])
+    for column in (0, 2):
+        torch.testing.assert_close(learner.world_model.in_norm.mean[column], (data["state"] + data["context"]).mean())
+    window, mask = learner._windows(learner.world_model_batch_size)
+    start, history = learner._starts(learner.policy_batch_size)
+    learner._windows, learner._starts = lambda batch_size: (window, mask), lambda batch_size: (start, history)
+    seen = {"critic_obs": [], "actor_goal": [], "reference_action": [], "post_dynamics": [], "reward": []}
+
+    def record(name: str) -> None:
+        hook = getattr(learner.task, name)
+
+        def recorded(state: State, *args: torch.Tensor, **kwargs: torch.Tensor) -> torch.Tensor | State:
+            seen[name].append((state, hook(state, *args, **kwargs)))
+            return seen[name][-1][1]
+
+        setattr(learner.task, name, recorded)
+
+    for name in seen:
+        record(name)
+    learner._fit_world_model()
+    learner._fit_policy()
+    steps, horizon = learner.world_model_window, learner.horizon
+    fitted, imagined = seen["post_dynamics"][:steps], seen["post_dynamics"][steps:]
+    observed = [window["state"][:, 0], *(successor[0] for _, successor in fitted[:-1])]
+    observed += [state[0] for state, _ in seen["critic_obs"][:-1]]
+    contexts = [window["context"][:, step] for step in range(steps)]
+    contexts += [start["context"] + step for step in range(horizon)]
+    assert len(observed) == len(contexts) == len(seen["post_dynamics"]) == steps + horizon
+    for (edited, _), state, context in zip(seen["post_dynamics"], observed, contexts):
+        assert torch.equal(edited[0], state + context)
+    assert torch.equal(observed[steps], start["state"])
+    for step in range(horizon):
+        assert seen["actor_goal"][step][0] is seen["reference_action"][step][0] is seen["critic_obs"][step][0]
+        assert seen["reward"][step][0] is imagined[step][0]
+        assert seen["critic_obs"][step + 1][0] is imagined[step][1]
+
+
+def test_default_transition_hooks_keep_the_given_states() -> None:
+    """Without overrides, transitions start from the observed state and keep the integrated successor."""
+    task, state, successor = DifferentiableTask(), (torch.randn(4, 1),), (torch.randn(4, 1),)
+    assert task.pre_dynamics(state, torch.zeros(4, 1)) is state
+    assert task.post_dynamics(state, successor, None, torch.zeros(4, 1), torch.zeros(4, 1)) is successor
+
+
+class HookedScalarTask(ImpulseScalarTask, HistoryCriticScalarTask, LoadScalarTask):
+    """The impulse, critic history and label hooks at once."""

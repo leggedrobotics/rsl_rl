@@ -146,7 +146,7 @@ class DifferentiableTask:
         prev_actions: torch.Tensor,
         labels: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Return transition rewards using the pre-transition goal and successor labels."""
+        """Return transition rewards from the :meth:`pre_dynamics` start, pre-transition goal and successor labels."""
         raise NotImplementedError
 
     def termination_prob(
@@ -155,13 +155,26 @@ class DifferentiableTask:
         """Return successor termination probabilities in [0,1]."""
         raise NotImplementedError
 
+    def pre_dynamics(self, state: State, context: torch.Tensor) -> State:
+        """Apply an exogenous edit to a transition start after the actor has acted, e.g. a scheduled velocity impulse.
+
+        The edit must be a deterministic function of ``state`` and ``context`` without random draws, because it runs
+        wherever the world-model inputs of a transition are built: for the world-model statistics during collection,
+        in each step of the world-model fit and in each imagined step. Replay keeps the state the actor observed, and
+        the actor and :meth:`critic_obs` see that state. :meth:`dynamics_context`, the world model,
+        :meth:`post_dynamics` and :meth:`reward` receive the edited start. Imagined returns are differentiated through
+        the edit, so it must preserve state derivatives.
+        """
+        return state
+
     def post_dynamics(
         self, state: State, next_state: State, labels: torch.Tensor | None, actions: torch.Tensor, context: torch.Tensor
     ) -> State:
         """Advance task-owned analytic state after integration and successor-label prediction.
 
-        ``actions`` are the policy actions applied in the transition, before :meth:`dynamics_actions`, and ``context``
-        is its privileged context, for analytic state that they drive, such as filters, delay buffers or estimators.
+        ``state`` is the transition start returned by :meth:`pre_dynamics`. ``actions`` are the policy actions applied
+        in the transition, before :meth:`dynamics_actions`, and ``context`` is its privileged context, for analytic
+        state that they drive, such as filters, delay buffers or estimators.
         """
         return next_state
 
