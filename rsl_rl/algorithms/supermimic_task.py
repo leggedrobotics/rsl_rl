@@ -77,8 +77,8 @@ class DifferentiableTask:
     ``prev_actions`` has shape ``[..., action_history_length, num_actions]``, oldest first. Actor observations and
     goals must use deployable inputs. Privileged context is available separately to dynamics and critic heads.
     Heads and the representation need finite gradients as well as finite values, e.g. ``torch.linalg.vector_norm``
-    instead of ``sqrt(sum(x**2))`` at zero: an optimizer step with a nonfinite gradient is skipped and logged as a NaN
-    gradient norm.
+    instead of ``sqrt(sum(x**2))`` at zero: an optimizer step with a nonfinite gradient is skipped and shows as a
+    nonfinite gradient norm in the logs.
     """
 
     representation: StateRepresentation
@@ -185,7 +185,7 @@ class DifferentiableTask:
         """Add task observation noise while retaining imagined state derivatives.
 
         This is the only source of actor observation noise: it is applied in training-mode collection and imagination,
-        not in eval mode, and observation noise configured in the environment is not used.
+        not in eval mode; the observation sets from the environment are expected to be noise-free.
         """
         return observation
 
