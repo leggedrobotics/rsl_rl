@@ -27,11 +27,7 @@ def hidden_matrices(module: nn.Module) -> list[nn.Parameter]:
 
 
 class ActorLearningRateMultiplier:
-    """Factor on the actor learning rate that decays linearly to 1 once triggered.
-
-    The decay starts at the first update whose completed episodes reach a mean normalized return, or at a fixed learner
-    iteration, whichever comes first.
-    """
+    """Raise the actor learning rate early in training and decay it to its base value."""
 
     def __init__(
         self,
@@ -57,11 +53,12 @@ class ActorLearningRateMultiplier:
         self.max_episode_length = (
             max_episode_length.to(device) if isinstance(max_episode_length, torch.Tensor) else max_episode_length
         )
+
         self.decay_from: int | None = None if multiplier > 1 else 0
         self.episode_return = torch.zeros(num_envs, device=device)
         self.completed_episodes = torch.zeros(2, device=device)
 
-    def record(self, rewards: torch.Tensor, dones: torch.Tensor) -> None:
+    def record_rewards(self, rewards: torch.Tensor, dones: torch.Tensor) -> None:
         """Accumulate the normalized returns of completed episodes using only device operations."""
         if self.decay_return is None:
             return
@@ -70,7 +67,7 @@ class ActorLearningRateMultiplier:
         self.completed_episodes.add_(torch.stack((normalized.sum(), dones.sum())))
         self.episode_return.masked_fill_(dones, 0.0)
 
-    def observe(self, return_sum: float, episodes: float, iteration: int) -> None:
+    def update_decay_from_returns(self, return_sum: float, episodes: float, iteration: int) -> None:
         """Start the decay once the reduced episodes completed since the previous update reach the return threshold."""
         self.completed_episodes.zero_()
         if (
@@ -106,31 +103,29 @@ class ActorLearningRateMultiplier:
 
 
 class ActorEMA:
-    """Deployment-only exponential moving average (EMA) of the actor parameters.
-
-    After actor step n, the decay is ``min(0.5 ** (1 / halflife), (1 + n) / (10 + n))``. Buffers such as normalization
-    moments and collection noise are not averaged; the deployment actor copies them from the live actor.
-    """
+    """Maintain a deployment actor with exponentially averaged parameters."""
 
     def __init__(self, actor: SuperMimicActor, halflife: int) -> None:
         """Start the average at the current actor parameters."""
         self.actor = actor
         self.halflife = halflife
-        self.params = [parameter.detach().clone() for parameter in actor.parameters()]
-        self.num_updates = torch.zeros((), dtype=torch.long, device=self.params[0].device)
+        self.averaged_parameters = [parameter.detach().clone() for parameter in actor.parameters()]
+        self.num_updates = torch.zeros((), dtype=torch.long, device=self.averaged_parameters[0].device)
         self._policy: SuperMimicActor | None = None
 
     @torch.no_grad()
     def update(self, finite: torch.Tensor) -> None:
-        """Average the live actor only after a successful optimizer step."""
+        """Average the actor after a successful step using the half-life and warm-start decay."""
         self.num_updates += finite.long()
         updates = self.num_updates.float()
         decay = torch.clamp((1 + updates) / (10 + updates), max=0.5 ** (1 / self.halflife))
         weight = (1 - decay) * finite.float()
-        torch._foreach_lerp_(self.params, list(self.actor.parameters()), [weight] * len(self.params))
+        torch._foreach_lerp_(
+            self.averaged_parameters, list(self.actor.parameters()), [weight] * len(self.averaged_parameters)
+        )
 
     @torch.no_grad()
-    def policy(self) -> SuperMimicActor:
+    def get_policy(self) -> SuperMimicActor:
         """Return a deployment actor with the averaged parameters and the live normalization and noise buffers.
 
         The deployment actor shares the training task until it moves to another device and takes its own copy.
@@ -140,7 +135,7 @@ class ActorEMA:
                 self._policy = copy.deepcopy(self.actor, {id(self.actor.task): self.actor.task}).requires_grad_(False)
             self._policy.owns_task = False
         policy = self._policy.eval()
-        for parameter, average in zip(policy.parameters(), self.params):
+        for parameter, average in zip(policy.parameters(), self.averaged_parameters):
             parameter.copy_(average)
         for target, source in zip(policy.buffers(), self.actor.buffers()):
             target.copy_(source)
@@ -148,7 +143,9 @@ class ActorEMA:
 
     def state_dict(self) -> dict:
         """Return the deployment actor state and the number of averaged steps under their checkpoint keys."""
-        averages = dict(zip(dict(self.actor.named_parameters()), self.params))
+        averages = {
+            name: average for (name, _), average in zip(self.actor.named_parameters(), self.averaged_parameters)
+        }
         return {
             "actor_ema_state_dict": {**self.actor.state_dict(), **averages},
             "actor_ema_updates": int(self.num_updates),
@@ -156,15 +153,15 @@ class ActorEMA:
 
     def load_state_dict(self, loaded_dict: dict, strict: bool) -> None:
         """Restore the average, or restart it from the loaded live actor when the checkpoint has none."""
-        policy = self.policy()
+        policy = self.get_policy()
         policy.load_state_dict(loaded_dict.get("actor_ema_state_dict", self.actor.state_dict()), strict=strict)
         with torch.no_grad():
-            for parameter, average in zip(policy.parameters(), self.params):
+            for parameter, average in zip(policy.parameters(), self.averaged_parameters):
                 average.copy_(parameter)
         self.num_updates.fill_(loaded_dict.get("actor_ema_updates", 0) if "actor_ema_state_dict" in loaded_dict else 0)
 
     @torch.no_grad()
     def broadcast(self) -> None:
         """Synchronize the average and its step count from rank 0."""
-        for tensor in (*self.params, self.num_updates):
+        for tensor in (*self.averaged_parameters, self.num_updates):
             dist.broadcast(tensor, src=0)

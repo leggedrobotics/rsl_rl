@@ -252,7 +252,7 @@ def test_goal_latent_ignores_the_scale_of_hidden_encoder_weights() -> None:
     """Hidden-layer growth cannot push every goal to the same saturated latent."""
     learner = _learner()
     encoder = learner.actor.policy.encoder
-    goals = torch.randn(64, learner.actor.goal_dim)
+    goals = torch.randn(64, learner.actor.policy.goal_dim)
     with torch.no_grad():
         latent = torch.tanh(encoder(goals))
         for layer in [module for module in encoder if isinstance(module, torch.nn.Linear)][:-1]:
@@ -320,15 +320,16 @@ def test_actor_ema_is_passive_over_five_updates(device: str) -> None:
             saved.pop("actor_ema_state_dict", None)
             saved.pop("actor_ema_updates", None)
             with torch.inference_mode():
-                action = learner.actor.forward_history(learner.actor.history, env.goal).clone()
+                action = learner.actor.policy(learner.actor.history, env.goal).clone()
             result.append((saved, metrics, action, torch.get_rng_state(), torch.cuda.get_rng_state_all()))
         assert learner.iteration == 5
         if halflife is not None:
             assert int(learner.actor_ema.num_updates) == 5
             assert any(
-                not torch.equal(p, average) for p, average in zip(learner.actor.parameters(), learner.actor_ema.params)
+                not torch.equal(p, average)
+                for p, average in zip(learner.actor.parameters(), learner.actor_ema.averaged_parameters)
             )
-            for parameter, average in zip(learner.get_policy().parameters(), learner.actor_ema.params):
+            for parameter, average in zip(learner.get_policy().parameters(), learner.actor_ema.averaged_parameters):
                 torch.testing.assert_close(parameter, average, rtol=0, atol=0)
         return result
 
@@ -342,7 +343,7 @@ def test_actor_ema_matches_closed_form_and_keeps_live_buffers() -> None:
     learner = _learner(actor_ema_halflife=1)
     learner.task.handle = Lock()
     with torch.no_grad():
-        for average in learner.actor_ema.params:
+        for average in learner.actor_ema.averaged_parameters:
             average.zero_()
         for value in range(1, 13):
             for parameter in learner.actor.parameters():
@@ -381,7 +382,7 @@ def test_actor_ema_closed_form_after_optimizer_steps() -> None:
         value * (1 - decay) * math.prod(decays[i + 1 :]) for i, (value, decay) in enumerate(zip(steps, decays))
     )
     assert int(learner.actor_ema.num_updates) == 30
-    torch.testing.assert_close(learner.actor_ema.params[0], expected.float(), rtol=1e-6, atol=1e-7)
+    torch.testing.assert_close(learner.actor_ema.averaged_parameters[0], expected.float(), rtol=1e-6, atol=1e-7)
 
 
 def test_actor_ema_checkpoint_full_actor_only_and_no_ema_loads() -> None:
@@ -463,6 +464,7 @@ def test_interval_edits_cut_only_future_world_model_targets() -> None:
     window, mask = learner._windows(64)
     assert mask[:, 0].all() and not mask[:, 1:].any()
     assert (window["next_state"][:, 0] < window["state"][:, 0] + 1).all()
+    torch.testing.assert_close(window["next_state"], window["next_state"][:, :1].expand_as(window["next_state"]))
     _, stats = learner.update()
     assert stats["SuperMimic/window_break_fraction"] == 1.0
     _, history = learner._starts(64)
@@ -613,10 +615,10 @@ def test_checkpoint_normalized_jit_and_onnx(
         assert bool(restored.alg.optimizers[key].state) is load_optimizer
     policy = restored.get_inference_policy()
     history, goal = torch.randn(4, 2, 2), torch.randn(4, goal_dim)
-    expected = policy.forward_history(history, goal)
-    torch.testing.assert_close(expected, runner.get_inference_policy().forward_history(history, goal), rtol=0, atol=0)
+    expected = policy.policy(history, goal)
+    torch.testing.assert_close(expected, runner.get_inference_policy().policy(history, goal), rtol=0, atol=0)
     if halflife is not None:
-        assert not torch.equal(expected, restored.alg.actor.forward_history(history, goal))
+        assert not torch.equal(expected, restored.alg.actor.policy(history, goal))
     restored.export_policy_to_jit(str(tmp_path))
     restored.export_policy_to_onnx(str(tmp_path))
     onnx_model = onnx.load(str(tmp_path / "policy.onnx"))
@@ -816,7 +818,7 @@ def test_collection_can_select_actions_before_updating_moments() -> None:
     state = learner.task.representation.unflatten(obs["state"])
     frame = learner.task.actor_obs(state, obs["goal"], obs["context"], actor.previous_actions)
     with torch.no_grad():
-        expected = actor.forward_history(frame[:, None].expand(-1, actor.history_length, -1), obs["goal"])
+        expected = actor.policy(frame[:, None].expand(-1, actor.policy.history_length, -1), obs["goal"])
         actual = actor(obs)
     torch.testing.assert_close(actual, expected)
     assert actor.policy.obs_norm.count == env.num_envs
@@ -918,9 +920,7 @@ def test_cuda_learning_and_checkpoint_roundtrip(mixed_precision: bool, compile_m
     restored = _learner(ScalarEnv(device="cuda"), use_mixed_precision=mixed_precision)
     restored.load(checkpoint, None, True)
     history, goal = torch.randn(4, 2, 2, device="cuda"), torch.randn(4, 1, device="cuda")
-    torch.testing.assert_close(
-        restored.actor.forward_history(history, goal), runner.alg.actor.forward_history(history, goal)
-    )
+    torch.testing.assert_close(restored.actor.policy(history, goal), runner.alg.actor.policy(history, goal))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA.")
@@ -1347,7 +1347,7 @@ class MirroredScalarTask(ScalarTask):
 
 
 def test_world_model_mirror_augmentation_replaces_a_fixed_share_of_windows() -> None:
-    """The first windows of each batch are mirrored and the rest, the mask and window breaks stay unchanged."""
+    """Mirror the first windows of each batch and preserve the remaining samples and validity."""
     env = ScalarEnv()
     learner = _learner(env, world_model_mirror_fraction=0.25, task_cfg={"class_name": MirroredScalarTask})
     assert learner.num_mirrored_windows == 2
@@ -1361,7 +1361,7 @@ def test_world_model_mirror_augmentation_replaces_a_fixed_share_of_windows() -> 
         torch.testing.assert_close(mirrored[key][:2], -window[key][:2])
     torch.testing.assert_close(mirrored["labels"], window["labels"])
     torch.testing.assert_close(mirrored[2:], window[2:])
-    assert torch.equal(mirrored["window_break"], window["window_break"]) and torch.equal(mirrored_mask, mask)
+    assert torch.equal(mirrored_mask, mask)
     with pytest.raises(ValueError, match="mirror_state, mirror_actions, mirror_context, mirror_labels"):
         _learner(env, world_model_mirror_fraction=0.25)
 
@@ -1386,7 +1386,7 @@ def test_reference_action_offsets_collection_imagination_and_exports(tmp_path: P
     with torch.no_grad():
         actor.eval()
         action = actor(obs)
-        torch.testing.assert_close(action, actor.forward_history(actor.history, obs["goal"]) + obs["goal"])
+        torch.testing.assert_close(action, actor.policy(actor.history, obs["goal"]) + obs["goal"])
         actor.train()
     runner.learn(2)
     assert math.isfinite(runner.alg.update()[1]["SuperMimic/learner_updates"])
@@ -1395,7 +1395,7 @@ def test_reference_action_offsets_collection_imagination_and_exports(tmp_path: P
     onnx_model = onnx.load(str(tmp_path / "policy.onnx"))
     assert [value.name for value in onnx_model.graph.input] == ["obs_history", "goal", "reference_action"]
     history, goal, reference = torch.randn(4, 2, 2), torch.randn(4, 1), torch.randn(4, 1)
-    expected = runner.get_inference_policy().forward_history(history, goal) + reference
+    expected = runner.get_inference_policy().policy(history, goal) + reference
     torch.testing.assert_close(torch.jit.load(str(tmp_path / "policy.pt"))(history, goal, reference), expected)
     evaluator = ReferenceEvaluator(onnx_model)
     inputs = dict(zip(evaluator.input_names, [value[:1].numpy() for value in (history, goal, reference)]))
@@ -1410,7 +1410,7 @@ def test_reference_action_is_ignored_unless_enabled() -> None:
     with torch.no_grad():
         learner.actor.eval()
         action = learner.actor(obs)
-    torch.testing.assert_close(action, learner.actor.forward_history(learner.actor.history, obs["goal"]))
+    torch.testing.assert_close(action, learner.actor.policy(learner.actor.history, obs["goal"]))
 
 
 def test_reference_action_requires_a_task_reference_at_construction() -> None:

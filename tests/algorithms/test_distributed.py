@@ -472,13 +472,14 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
         env = ScalarEnv(device=device)
         env.position.fill_(rank * 2)
         learner = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, device)
+        learner.broadcast_parameters()
 
         def assert_synchronized(alg: SuperMimic) -> None:
             for model in (alg.actor, alg.world_model, alg._raw_critic):
                 for value in model.state_dict().values():
                     assert torch.isfinite(value).all()
                     _assert_close_across_ranks(value)
-            for value in alg.actor_ema.params:
+            for value in alg.actor_ema.averaged_parameters:
                 _assert_close_across_ranks(value)
             _assert_close_across_ranks(alg.actor_ema.num_updates)
             for _, optimizer in alg._all_optimizers():
@@ -513,7 +514,7 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
         obs_norm = learner.actor.policy.obs_norm
         torch.testing.assert_close(obs_norm.mean[0], torch.tensor(float(world_size - 1), device=device))
         assert obs_norm.count == 4 * world_size
-        _assert_not_close_across_ranks(learner.storage._data["state"][0])
+        _assert_not_close_across_ranks(learner.storage.data["state"][0])
         for _ in range(8):
             _collect(learner, env, 1)
             learner.update()

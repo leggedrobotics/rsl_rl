@@ -57,21 +57,22 @@ class MLP(nn.Sequential):
         if norm not in ("none", "layer"):
             raise ValueError("norm must be 'none' or 'layer'.")
         layers = []
-        layer_dims = [input_dim, *hidden_dims_processed]
-        for layer_index in range(len(hidden_dims_processed)):
-            layers.append(nn.Linear(layer_dims[layer_index], layer_dims[layer_index + 1]))
+        in_features = input_dim
+        for out_features in hidden_dims_processed:
+            layers.append(nn.Linear(in_features, out_features))
             if norm == "layer":
-                layers.append(nn.LayerNorm(layer_dims[layer_index + 1]))
+                layers.append(nn.LayerNorm(out_features))
             layers.append(activation_mod)
+            in_features = out_features
 
         # Add last layer
         if isinstance(output_dim, int):
-            layers.append(nn.Linear(layer_dims[-1], output_dim))
+            layers.append(nn.Linear(in_features, output_dim))
         else:
             # Compute the total output dimension
             total_out_dim = reduce(lambda x, y: x * y, output_dim)
             # Add a layer to reshape the output to the desired shape
-            layers.append(nn.Linear(layer_dims[-1], total_out_dim))
+            layers.append(nn.Linear(in_features, total_out_dim))
             layers.append(nn.Unflatten(dim=-1, unflattened_size=output_dim))
 
         # Add last activation function if specified

@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 import torch
-import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from tensordict import TensorDict
+
+from rsl_rl.storage.replay_buffer import _limit_replay_capacity
 
 
 @dataclass
@@ -21,39 +22,36 @@ class ReplayIndex:
 
 
 class SequenceReplayBuffer:
-    """Lazy physical-transition replay with reset-aware observation history and future windows.
-
-    Capacity counts transitions across environments and is rounded down to complete environment steps. Samples may
-    include consecutive positions after an anchor; validity masks exclude missing positions and episode boundaries.
-    The terminating transition itself remains valid. Invalid positions repeat the last valid position, so every
-    gathered value comes from initialized storage. Storage is allocated on the first :meth:`add`. Sampling reads
-    device copies of the write cursor, so it can be captured in a CUDA graph.
-    """
+    """Store physical transitions and sample histories and windows that respect episode boundaries."""
 
     def __init__(
         self,
         num_envs: int,
         capacity: int,
         device: str = "cpu",
-        min_steps: int = 1,
+        min_steps_per_env: int = 1,
         max_memory_fraction: float | None = None,
     ) -> None:
-        """Configure storage without allocating replay tensors."""
-        if num_envs < 1 or capacity < num_envs or min_steps < 1:
-            raise ValueError("Replay capacity must hold at least one step of all environments.")
-        if max_memory_fraction is not None and not 0 < max_memory_fraction <= 1:
-            raise ValueError("max_memory_fraction must lie in (0, 1].")
+        """Initialize the replay buffer without allocating transition tensors.
+
+        Args:
+            num_envs: Number of environments.
+            capacity: Maximum number of transitions across all environments. Rounded down to complete environment steps.
+            device: Device on which to store and sample transitions.
+            min_steps_per_env: Minimum number of steps per environment that must fit in the buffer.
+            max_memory_fraction: Maximum fraction of free CUDA memory available to replay. None disables the limit.
+        """
         self.num_envs = num_envs
         self.num_slots = capacity // num_envs
         self.device = device
-        self.min_steps = min_steps
+        self.min_steps_per_env = min_steps_per_env
         self.max_memory_fraction = max_memory_fraction
+
         self.num_steps = 0
         self.step = 0
         self._num_steps_tensor = torch.zeros((), dtype=torch.long, device=device)
         self._step_tensor = torch.zeros((), dtype=torch.long, device=device)
         self.data: TensorDict | None = None
-        self._data: dict[str | tuple[str, ...], torch.Tensor] = {}
         self._flat_data: dict[str | tuple[str, ...], torch.Tensor] = {}
 
     @property
@@ -71,39 +69,24 @@ class SequenceReplayBuffer:
     def write(self, step: TensorDict) -> None:
         """Copy one environment step into the current slot without advancing.
 
-        The slot is selected on the device, so writes can be captured in CUDA graphs after the first call allocates
-        the buffer.
+        The first call allocates storage. Subsequent writes use a device-side cursor and can be captured in CUDA graphs.
         """
         if step.batch_size != torch.Size([self.num_envs]):
             raise ValueError(f"Expected one transition per environment, got batch size {step.batch_size}.")
         if "dones" not in step or step["dones"].shape != (self.num_envs,) or step["dones"].dtype != torch.bool:
             raise ValueError("Replay transitions require boolean 'dones' with shape [num_envs].")
         if self.data is None:
-            if self.max_memory_fraction is not None and torch.device(self.device).type == "cuda":
-                free, _ = torch.cuda.mem_get_info(torch.device(self.device))
-                bytes_per_step = sum(value.numel() * value.element_size() for value in step.values(True, True))
-                affordable = int(self.max_memory_fraction * free) // bytes_per_step
-                if affordable < self.num_slots:
-                    warnings.warn(
-                        f"Reducing replay from {self.num_slots} to {affordable} steps per environment to fit the"
-                        " configured GPU memory fraction.",
-                        stacklevel=2,
-                    )
-                    self.num_slots = affordable
-            if self.num_slots < self.min_steps:
-                raise ValueError(f"Replay capacity must hold at least {self.min_steps} steps per environment.")
-            with torch.inference_mode(False):
-                self._data = {
-                    key: torch.empty(self.num_slots, *value.shape, dtype=value.dtype, device=self.device)
-                    for key, value in step.items(True, True)
-                }
-                self.data = TensorDict(self._data, batch_size=[self.num_slots, self.num_envs], device=self.device)
-                self._flat_data = {key: value.flatten(0, 1) for key, value in self._data.items()}
-        if set(step.keys(True, True)) != self._data.keys():
+            self._initialize_storage(step)
+        if set(step.keys(True, True)) != self._flat_data.keys():
             raise ValueError("Replay transition keys changed after allocation.")
+        for key, value in step.items(True, True):
+            stored = self.data[key]
+            if value.shape != stored.shape[1:] or value.dtype != stored.dtype:
+                raise ValueError(f"Replay transition shape or dtype changed for {key!r}.")
+
         slot = self._step_tensor.reshape(1)
         for key, value in step.items(True, True):
-            self._data[key].index_copy_(0, slot, value.to(self.device).unsqueeze(0))
+            self.data[key].index_copy_(0, slot, value.to(self.device).unsqueeze(0))
 
     def advance(self) -> None:
         """Move to the next slot after :meth:`write`."""
@@ -112,16 +95,22 @@ class SequenceReplayBuffer:
         self._step_tensor.fill_(self.step)
         self._num_steps_tensor.fill_(self.num_steps)
 
-    def sample(self, batch_size: int, length: int = 1, history: int = 0) -> ReplayIndex:
-        """Sample positions of shape ``[batch_size, history+length]``, clipping history at resets and oldest storage.
+    def clear(self) -> None:
+        """Discard stored transitions while retaining allocated memory."""
+        self.num_steps = 0
+        self.step = 0
+        self._num_steps_tensor.zero_()
+        self._step_tensor.zero_()
 
-        Unavailable history repeats the earliest valid position. Future positions repeat the last valid position.
-        Validity remains explicit, including False on repeated padding positions.
+    def sample(self, batch_size: int, length: int = 1, history: int = 0) -> ReplayIndex:
+        """Sample positions of shape ``[batch_size, history + length]`` within replay and episode boundaries.
+
+        The terminating transition remains valid. History and future padding repeat the nearest valid position and
+        have a false validity mask. External state edits cut future windows while histories still cross them.
+        Sampling reads the device-side cursor and can be captured in CUDA graphs.
         """
         if self.num_steps == 0:
             raise RuntimeError("Cannot sample empty replay.")
-        if batch_size < 1 or length < 1 or history < 0:
-            raise ValueError("Batch size and length must be positive; history must be nonnegative.")
         num_steps = self._num_steps_tensor
         anchor = (torch.rand(batch_size, device=self.device) * num_steps).long().clamp(max=num_steps - 1)
         env_idx = torch.randint(self.num_envs, (batch_size,), device=self.device)
@@ -130,8 +119,10 @@ class SequenceReplayBuffer:
         oldest = (self._step_tensor - num_steps) % self.num_slots
         ids = ((oldest + torch.minimum(ages, num_steps - 1)) % self.num_slots) * self.num_envs + env_idx[:, None]
         if length > 1:
-            dones = self._flat_data["dones"][ids]
-            alive = torch.cumprod((~dones[:, :-1]).long(), dim=1).bool()
+            ends = self._flat_data["dones"][ids[:, :-1]]
+            if "window_break" in self._flat_data:
+                ends = ends | self._flat_data["window_break"][ids[:, :-1]]
+            alive = torch.cumprod((~ends).long(), dim=1).bool()
             valid[:, 1:] &= alive
         last = valid.sum(1, keepdim=True) - 1
         ids = ids.gather(1, torch.minimum(torch.arange(length, device=self.device), last))
@@ -170,9 +161,10 @@ class SequenceReplayBuffer:
         ages = torch.arange(self.num_slots, device=self.device)
         oldest = (self._step_tensor - self._num_steps_tensor) % self.num_slots
         slots = (oldest + ages) % self.num_slots
-        ended = self._data["dones"][slots]
-        if "window_break" in self._data:
-            ended = ended | self._data["window_break"][slots]
+        slots = torch.where(ages < self._num_steps_tensor, slots, oldest)
+        ended = self.data["dones"][slots]
+        if "window_break" in self.data:
+            ended = ended | self.data["window_break"][slots]
         prefix = torch.cat((ended.new_zeros((1, self.num_envs)), ended), dim=0).long().cumsum(0)
         last = (ages + length - 1).clamp(max=self.num_slots)
         valid = (prefix[last] == prefix[ages]) & (ages[:, None] + length <= self._num_steps_tensor)
@@ -202,8 +194,18 @@ class SequenceReplayBuffer:
         ids = slots * self.num_envs + env_ids[:, None]
         return ReplayIndex(ids, torch.ones_like(ids, dtype=torch.bool))
 
-    def clear(self) -> None:
-        """Discard stored transitions while retaining allocated memory."""
-        self.num_steps = self.step = 0
-        self._num_steps_tensor.zero_()
-        self._step_tensor.zero_()
+    def _initialize_storage(self, step: TensorDict) -> None:
+        """Allocate writable storage for the first transition's schema."""
+        num_slots = _limit_replay_capacity(
+            self.num_slots, self.max_memory_fraction, self.device, step.values(True, True)
+        )
+        if num_slots < self.min_steps_per_env:
+            raise ValueError(f"Replay capacity must hold at least {self.min_steps_per_env} steps per environment.")
+        with torch.inference_mode(False):
+            data = {
+                key: torch.empty(num_slots, *value.shape, dtype=value.dtype, device=self.device)
+                for key, value in step.items(True, True)
+            }
+            self.data = TensorDict(data, batch_size=[num_slots, self.num_envs], device=self.device)
+            self._flat_data = {key: value.flatten(0, 1) for key, value in data.items()}
+        self.num_slots = num_slots

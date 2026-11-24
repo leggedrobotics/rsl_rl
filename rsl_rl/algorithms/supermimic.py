@@ -21,7 +21,7 @@ from rsl_rl.algorithms.supermimic_optim import ActorEMA, ActorLearningRateMultip
 from rsl_rl.algorithms.supermimic_task import DifferentiableTask, State
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
-from rsl_rl.models.supermimic_actor import SuperMimicActor, observation_set
+from rsl_rl.models.supermimic_actor import SuperMimicActor, concatenate_observation_set
 from rsl_rl.modules.world_model import WorldModel
 from rsl_rl.storage import SequenceReplayBuffer
 from rsl_rl.utils import (
@@ -47,11 +47,7 @@ def lambda_returns(
 
 
 class SuperMimic:
-    """Fit physical dynamics and optimize a goal-conditioned actor through imagined trajectories.
-
-    The environment supplies noise-free state, goal, context and event-label observation groups. Every-step final
-    observations preserve the physical successor before reset and interval events. The task owns geometry, rewards,
-    analytic state updates and deployment features.
+    """Learn physical dynamics from replay and train a policy on imagined trajectories.
 
     Reference:
         SuperMimic. arXiv:2610.28480 (2026). https://arxiv.org/abs/2610.28480
@@ -113,10 +109,7 @@ class SuperMimic:
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
     ) -> None:
-        """Initialize explicit task, models, replay and gradient-update cadence.
-
-        Actor gradients also have a fixed elementwise clip of 0.1. The actor Adam optimizer uses betas (0.9, 0.95).
-        When enabled, the deployment EMA uses decay ``min(0.5 ** (1 / h), (1 + n) / (10 + n))`` after actor step n.
+        """Initialize the models, replay and update schedule.
 
         Args:
             actor: History-conditioned deployment actor.
@@ -131,15 +124,15 @@ class SuperMimic:
             num_warmup_steps: Stored steps per environment required before learning.
             num_world_model_warmup_iterations: Learner iterations fitting only dynamics.
             num_world_model_updates: Dynamics optimizer steps per learner iteration.
-            world_model_window: Maximum autoregressive dynamics fitting horizon.
+            world_model_window: Maximum number of consecutive transitions used to fit the world model.
             world_model_batch_size: Replay anchors per dynamics optimizer step.
             world_model_mirror_fraction: Fraction of each dynamics batch replaced by its left-right mirror image from
                 the task's mirror hooks, such as
                 :meth:`~rsl_rl.algorithms.supermimic_task.DifferentiableTask.mirror_state`.
             world_model_loss_reduction: Sum over a replay window or mean over all valid positions.
-            world_model_full_windows: Sample complete sequences of stored states, excluding reset boundaries.
+            world_model_full_windows: Sample full windows within an episode and without external state edits.
             num_policy_updates: Actor updates and associated critic fits per learner iteration.
-            horizon: Imagined policy horizon.
+            horizon: Number of steps in each imagined trajectory.
             policy_batch_size: Starts per actor update.
             gamma: Reward discount.
             max_step_reward: Optional per-step reward bound used to cap values at the maximum discounted return. Set
@@ -147,7 +140,7 @@ class SuperMimic:
                 can overshoot when policy updates begin.
             action_noise: Standard deviation of additive collection noise.
             actor_ema_halflife: Deployment-only actor exponential moving average (EMA) half-life in actor optimizer
-                steps, e.g. 500. None disables it; use the same setting for training and deployment.
+                steps. None disables averaging.
             lam: TD(lambda) mixing coefficient for value targets.
             num_critic_epochs: Epochs per critic fit.
             num_critic_mini_batches: Minibatches per critic epoch.
@@ -172,8 +165,7 @@ class SuperMimic:
             muon_models: Models among ``"actor"`` and ``"world_model"`` whose hidden weight matrices are trained with
                 :class:`~rsl_rl.utils.muon.Muon`; their other parameters and all other models use Adam.
             max_grad_norm: Global gradient-norm limit for each model.
-            num_schedule_updates: Length of the shared cosine learning-rate schedule, counted in
-                ``learning_rate_schedule_unit``.
+            num_schedule_updates: Duration of the cosine schedule, measured in ``learning_rate_schedule_unit``.
             final_learning_rate_ratio: Final learning rate relative to its initial value.
             learning_rate_schedule_unit: Measure schedule progress in learner updates or collected env steps.
             use_mixed_precision: Enable BF16 matrix operations while integrating physical states in FP32. The critic is
@@ -183,7 +175,7 @@ class SuperMimic:
                 for example task parameters such as reward weights read from the environment, are fixed at capture
                 time; only tensors updated in place stay live.
             device: Device for models and learning tensors.
-            multi_gpu_cfg: Distributed rank and world size; replay and batch sizes are per rank.
+            multi_gpu_cfg: Distributed rank and world size. Replay and batch sizes are per rank.
         """
         # Validate configuration
         self.is_multi_gpu = multi_gpu_cfg is not None
@@ -256,7 +248,7 @@ class SuperMimic:
         # The uncompiled critic for state_dict operations, and the forwards that compile() replaces
         self._raw_critic = self.critic
         self._world_model_forward = self.world_model
-        self._actor_forward = self.actor.forward_history
+        self._actor_forward = self.actor.policy
 
         # Create the optimizers
         self._base_learning_rates = {
@@ -272,7 +264,8 @@ class SuperMimic:
             matrices = hidden_matrices(module) if name in muon_models else []
             if matrices:
                 self.muon_optimizers[name] = Muon(matrices, lr=self._base_learning_rates[name])
-            others = [parameter for parameter in module.parameters() if all(parameter is not m for m in matrices)]
+            muon_parameters = set(matrices)
+            others = [parameter for parameter in module.parameters() if parameter not in muon_parameters]
             betas = (0.9, 0.95) if name == "actor" else (0.9, 0.999)
             self.optimizers[name] = torch.optim.Adam(
                 others, lr=self._base_learning_rates[name], betas=betas, fused=fused
@@ -345,10 +338,10 @@ class SuperMimic:
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Record the physical start and choose a noisy actor action; update actor moments now."""
         obs = obs.select(*self._actor_keys)
-        act = self._act
+        act = self.actor.act
         if self.use_cuda_graph:
             if self.actor.training not in self._act_graphs:
-                self._act_graphs[self.actor.training] = CudaGraphCallable(self._act, self.device)
+                self._act_graphs[self.actor.training] = CudaGraphCallable(self.actor.act, self.device)
             act = self._act_graphs[self.actor.training]
         outputs = act(obs)
         self._last_obs = obs.select(*self._start_keys).clone()
@@ -360,12 +353,13 @@ class SuperMimic:
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict
     ) -> dict[str, torch.Tensor]:
-        """Record every-step pre-event successors and return per-environment values summed over each episode."""
+        """Record physical successors captured before resets or interval edits on every step."""
         if self._last_obs is None or self._last_actions is None:
             raise RuntimeError("act() must precede process_env_step().")
         if extras.get("final_obs") is None or extras.get("final_obs_every_step") is not True:
             raise ValueError("SuperMimic requires every-step extras['final_obs'] with final_obs_every_step=True.")
-        step_rewards, step_dones = rewards.reshape(-1).to(self.device), dones.reshape(-1).to(self.device).bool()
+        step_rewards = rewards.reshape(-1).to(self.device)
+        step_dones = dones.reshape(-1).to(self.device).bool()
         process = self._process_env_step
         if self.use_cuda_graph:
             # World-model statistics only update in training mode, so each mode has its own graph
@@ -391,9 +385,11 @@ class SuperMimic:
             self._update_debt += self.updates_per_step
             if not replay_ready:
                 self._update_debt -= max(int(self._update_debt + 1e-9), 0)
-        goal = observation_set(self._last_obs, self.obs_groups, "goal")
+        goal = concatenate_observation_set(self._last_obs, self.obs_groups, "goal")
         self.task.update_curriculum(goal, step_rewards, step_dones, extras)
-        self._last_obs = self._last_actions = self._last_previous_actions = None
+        self._last_obs = None
+        self._last_actions = None
+        self._last_previous_actions = None
         return {"Training/mean_reward": rewards}
 
     def compute_returns(self, obs: TensorDict) -> None:
@@ -409,7 +405,7 @@ class SuperMimic:
         if self.is_multi_gpu:
             dist.all_reduce(collected)
         nonfinite_state, nonfinite_labels, return_sum, episodes = collected.tolist()
-        self.actor_learning_rate_multiplier.observe(return_sum, episodes, self.iteration)
+        self.actor_learning_rate_multiplier.update_decay_from_returns(return_sum, episodes, self.iteration)
         if nonfinite_state or nonfinite_labels:
             sets = [name for name, flag in (("state", nonfinite_state), ("labels", nonfinite_labels)) if flag]
             raise ValueError(f"SuperMimic received nonfinite final_obs in the observation sets {sets}.")
@@ -516,7 +512,9 @@ class SuperMimic:
                 self.env_steps = loaded_dict.get("env_steps", 0)
         self.storage.clear()
         self.actor.reset()
-        self._last_obs = self._last_actions = self._last_previous_actions = None
+        self._last_obs = None
+        self._last_actions = None
+        self._last_previous_actions = None
         self._reset_update_debt()
         self._window_break_sum.zero_()
         self._nonfinite_final_obs.zero_()
@@ -527,17 +525,16 @@ class SuperMimic:
 
     def get_policy(self) -> SuperMimicActor:
         """Return deployment weights, using the optional EMA with live normalization and collection-noise buffers."""
-        return self.actor if self.actor_ema is None else self.actor_ema.policy()
+        return self.actor if self.actor_ema is None else self.actor_ema.get_policy()
 
     def compile(self, mode: str | None = None) -> None:
         """Compile differentiable dynamics and stateless actor forwards using the standard mode restrictions."""
         self._world_model_forward = compile_model(self.world_model, mode)
         self.critic = compile_model(self._raw_critic, mode)
-        self._actor_forward = (
-            self.actor.forward_history if mode is None else torch.compile(self.actor.forward_history, mode=mode)
-        )
+        self._actor_forward = compile_model(self.actor.policy, mode)
 
     @staticmethod
+    @torch.no_grad()
     def construct_algorithm(obs: TensorDict, env: VecEnv, cfg: dict, device: str) -> SuperMimic:
         """Resolve the task and explicit network configs, inferring synthetic feature widths once."""
         alg_class, alg_cfg = resolve_class(cfg["algorithm"])
@@ -551,16 +548,17 @@ class SuperMimic:
         cfg["obs_groups"] = groups
         task = task_class(env=env, device=device, **task_cfg)
         example = obs.to(device)
-        example_set = functools.partial(observation_set, example, groups)
+        example_set = functools.partial(concatenate_observation_set, example, groups)
         for name in groups:
             if any(example[key].ndim != 2 for key in groups[name]):
                 raise ValueError("SuperMimic observation groups must be flat noise-free vectors.")
         previous = torch.zeros(env.num_envs, task.action_history_length, env.num_actions, device=device)
         for name, offset in (("prev_action", -1), ("prev_prev_action", -2)):
             if name in groups:
-                if example_set(name).shape[-1] != env.num_actions or task.action_history_length < -offset:
+                action = example_set(name)
+                if action.shape[-1] != env.num_actions or task.action_history_length < -offset:
                     raise ValueError("Previous-action observation width/history is incompatible.")
-                previous[:, offset] = example_set(name)
+                previous[:, offset] = action
         state, goal, context = (
             task.representation.unflatten(example_set("state")),
             example_set("goal"),
@@ -575,8 +573,8 @@ class SuperMimic:
         critic_class, critic_cfg = resolve_class(cfg["critic"])
         actor = actor_class(
             task, groups, actor_obs.shape[-1], actor_goal.shape[-1], env.num_envs, env.num_actions, **actor_cfg
-        ).to(device)
-        history = actor_obs[:, None].repeat(1, actor.history_length, 1)
+        )
+        history = actor_obs[:, None].repeat(1, actor.policy.history_length, 1)
         critic_features = task.critic_obs(state, goal, context, previous, history)
         world_model = model_class(
             task.representation,
@@ -585,15 +583,15 @@ class SuperMimic:
             dynamics_context.shape[-1],
             num_labels=task.num_labels,
             **model_cfg,
-        ).to(device)
+        )
         critic_obs = TensorDict({"critic": critic_features}, batch_size=[env.num_envs])
-        critic = critic_class(critic_obs, {"critic": ["critic"]}, "critic", 1, **critic_cfg).to(device)
+        critic = critic_class(critic_obs, {"critic": ["critic"]}, "critic", 1, **critic_cfg)
         storage = SequenceReplayBuffer(
             env.num_envs,
             alg_cfg.pop("replay_buffer_capacity", 1_000_000),
-            device,
-            min_steps=max(alg_cfg.get("num_warmup_steps", 64), actor.history_length),
+            min_steps_per_env=max(1, alg_cfg.get("num_warmup_steps", 64)),
             max_memory_fraction=alg_cfg.pop("max_replay_memory_fraction", None),
+            device=device,
         )
         learner = alg_class(
             actor,
@@ -611,7 +609,6 @@ class SuperMimic:
             ),
             **alg_cfg,
         )
-        learner.broadcast_parameters()
         learner.compile(cfg.get("torch_compile_mode"))
         return learner
 
@@ -634,12 +631,6 @@ class SuperMimic:
         if self.use_cuda_graph:
             torch.cuda.synchronize(self.device)
 
-    def _act(self, obs: TensorDict) -> dict[str, torch.Tensor]:
-        """Choose a noisy action and record it as the latest action using only device operations."""
-        self.actor.sync_actions(obs)
-        previous_actions = self.actor.previous_actions.clone()
-        return {"actions": self.actor(obs, stochastic_output=True), "previous_actions": previous_actions}
-
     def _process_env_step(
         self,
         start: TensorDict,
@@ -652,13 +643,13 @@ class SuperMimic:
     ) -> dict[str, torch.Tensor]:
         """Store the transition, update dynamics statistics and reset finished histories on the device."""
         groups = self.obs_groups
-        state = observation_set(start, groups, "state")
-        successor = observation_set(final, groups, "state")
-        context = observation_set(start, groups, "context")
-        goal = observation_set(start, groups, "goal")
-        window_break = (observation_set(obs, groups, "state") != successor).any(dim=-1) & ~done
+        state = concatenate_observation_set(start, groups, "state")
+        successor = concatenate_observation_set(final, groups, "state")
+        context = concatenate_observation_set(start, groups, "context")
+        goal = concatenate_observation_set(start, groups, "goal")
+        window_break = (concatenate_observation_set(obs, groups, "state") != successor).any(dim=-1) & ~done
         # Tasks without event labels store an empty label set
-        labels = observation_set(final, groups, "labels")
+        labels = concatenate_observation_set(final, groups, "labels")
         transition = TensorDict(
             {
                 "state": state,
@@ -678,7 +669,7 @@ class SuperMimic:
         self._nonfinite_final_obs.logical_or_(
             torch.stack((~torch.isfinite(successor).all(), ~torch.isfinite(labels).all()))
         )
-        self.actor_learning_rate_multiplier.record(rewards, done)
+        self.actor_learning_rate_multiplier.record_rewards(rewards, done)
         self.storage.write(transition)
         physical = self.task.pre_dynamics(self.task.representation.unflatten(state), context)
         self.world_model.observe(
@@ -687,8 +678,10 @@ class SuperMimic:
             self.task.dynamics_context(physical, context, previous_actions),
             self.task.representation.unflatten(successor),
         )
-        reset_action = observation_set(obs, groups, "prev_action") if "prev_action" in groups else None
-        reset_previous = observation_set(obs, groups, "prev_prev_action") if "prev_prev_action" in groups else None
+        reset_action = concatenate_observation_set(obs, groups, "prev_action") if "prev_action" in groups else None
+        reset_previous = (
+            concatenate_observation_set(obs, groups, "prev_prev_action") if "prev_prev_action" in groups else None
+        )
         self.actor.reset(done, reset_action, reset_previous)
         self._window_break_sum.add_(window_break.float().mean())
         return {}
@@ -781,17 +774,18 @@ class SuperMimic:
     def _windows(
         self, batch_size: int, cumulative_counts: torch.Tensor | None = None
     ) -> tuple[TensorDict, torch.Tensor]:
-        """Sample uniform anchors, additionally cutting world-model targets after external state edits."""
+        """Gather dynamics training windows and mirror the configured share."""
         if self.world_model_full_windows:
             index = self.storage.sample_sequences(batch_size, self.world_model_window + 1, cumulative_counts)
             ids, valid = index.ids[:, :-1], index.valid[:, :-1]
         else:
             index = self.storage.sample(batch_size, length=self.world_model_window)
             ids, valid = index.ids, index.valid
-        keys = ["state", "next_state", "actions", "context", "labels", "prev_actions", "window_break"]
+        keys = ("state", "next_state", "actions", "context", "labels", "prev_actions")
         window = self.storage.gather(keys, ids)
         if self.num_mirrored_windows:
-            head, task = window[: self.num_mirrored_windows], self.task
+            head = window[: self.num_mirrored_windows]
+            task = self.task
             mirrored = TensorDict(
                 {
                     "state": task.mirror_state(head["state"]),
@@ -800,15 +794,11 @@ class SuperMimic:
                     "prev_actions": task.mirror_actions(head["prev_actions"]),
                     "context": task.mirror_context(head["context"]),
                     "labels": task.mirror_labels(head["labels"]) if task.num_labels else head["labels"],
-                    "window_break": head["window_break"],
                 },
                 batch_size=head.batch_size,
             )
             window = torch.cat((mirrored, window[self.num_mirrored_windows :]))
-        mask = valid.float()
-        if not self.world_model_full_windows and self.world_model_window > 1:
-            mask[:, 1:] *= torch.cumprod((~window["window_break"][:, :-1]).long(), dim=1)
-        return window, mask
+        return window, valid.float()
 
     def _predict(
         self, state: State, actions: torch.Tensor, context: torch.Tensor, previous_actions: torch.Tensor
@@ -819,14 +809,12 @@ class SuperMimic:
                 state, self.task.dynamics_actions(actions), self.task.dynamics_context(state, context, previous_actions)
             )
             # Successor events depend on the action just applied, so their history includes it
-            next_previous_actions = torch.cat((previous_actions[..., 1:, :], actions.unsqueeze(-2)), dim=-2)
-            logits = (
-                self.world_model.label_logits(
+            logits = None
+            if self.task.num_labels:
+                next_previous_actions = torch.cat((previous_actions[..., 1:, :], actions.unsqueeze(-2)), dim=-2)
+                logits = self.world_model.label_logits(
                     raw_next, self.task.dynamics_context(raw_next, context, next_previous_actions)
                 )
-                if self.task.num_labels
-                else None
-            )
         labels = self.task.label_activation(logits.float()) if logits is not None else None
         return self.task.post_dynamics(state, raw_next, labels, actions, context), logits, labels
 
@@ -844,7 +832,7 @@ class SuperMimic:
                 reaches.append(survival)
                 features.append(self.task.critic_obs(state, goal, context, previous, history))
                 with self._autocast():
-                    action = self._actor_forward(history, self.task.actor_goal(state, goal))
+                    action = self._actor_forward(history, self.task.actor_goal(state, goal)).float()
                 if self.actor.use_reference_action:
                     action = action + self.task.reference_action(state, goal)
                 transition_start = self.task.pre_dynamics(state, context)
@@ -888,7 +876,7 @@ class SuperMimic:
 
     def _starts(self, batch_size: int) -> tuple[TensorDict, torch.Tensor]:
         """Build reset-aware actor histories, repeating the earliest available frame when needed."""
-        index = self.storage.sample(batch_size, history=self.actor.history_length - 1)
+        index = self.storage.sample(batch_size, history=self.actor.policy.history_length - 1)
         history = self.storage.gather(("state", "goal", "context", "prev_actions"), index.ids)
         state = self.task.representation.unflatten(history["state"])
         frames = self.task.add_noise(
@@ -998,7 +986,8 @@ class SuperMimic:
         )
         rates = {name: base * factor for name, base in self._base_learning_rates.items()}
         rates["actor"] *= self.actor_learning_rate_multiplier(self.iteration)
-        self.learning_rate, self.actor_learning_rate = rates["world_model"], rates["actor"]
+        self.learning_rate = rates["world_model"]
+        self.actor_learning_rate = rates["actor"]
         for name, optimizer in self._all_optimizers():
             for group in optimizer.param_groups:
                 if isinstance(group["lr"], torch.Tensor):

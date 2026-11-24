@@ -509,11 +509,11 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``replay_buffer_capacity``
      - int
      - ``1000000``
-     - Total physical transitions across environments; allocated lazily.
+     - Maximum transitions across environments on each rank. Replay allocates storage on the first write.
    * - ``max_replay_memory_fraction``
      - float | None
      - ``None``
-     - Optional fraction of free device memory available to replay.
+     - Fraction of free CUDA memory available to replay. ``None`` disables the limit.
    * - ``updates_per_step``
      - float
      - ``0.4``
@@ -533,7 +533,7 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``world_model_window``
      - int
      - ``8``
-     - Maximum autoregressive dynamics fitting horizon.
+     - Maximum number of consecutive transitions used to fit the world model.
    * - ``world_model_batch_size``
      - int
      - ``2048``
@@ -550,7 +550,7 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``horizon``
      - int
      - ``32``
-     - Imagined policy horizon.
+     - Number of steps in each imagined trajectory.
    * - ``policy_batch_size``
      - int
      - ``4096``
@@ -627,7 +627,7 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``num_schedule_updates``
      - int
      - ``250000``
-     - Length of the shared cosine learning-rate schedule, counted in ``learning_rate_schedule_unit``.
+     - Duration of the cosine schedule, measured in ``learning_rate_schedule_unit``.
    * - ``final_learning_rate_ratio``
      - float
      - ``0.03``
@@ -640,10 +640,8 @@ Policy updates keep the whole imagined rollout for the backward pass: GPU memory
    * - ``use_cuda_graph``
      - bool
      - ``False``
-     - Capture each learner iteration and the collection calls ``act`` and ``process_env_step`` in CUDA
-       graphs. Requires a CUDA device and task heads without host synchronization. Python values read
-       inside the captured calls, for example task parameters such as reward weights read from the
-       environment, are fixed at capture time; only tensors updated in place stay live.
+     - Capture learner and collection calls. Requires CUDA and task heads that avoid host synchronization.
+       Captured calls keep Python values from capture time and see in-place tensor updates.
    * - ``update_schedule``
      - str
      - ``"after_warmup"``
@@ -948,10 +946,10 @@ the same configuration keys, except that ``distribution_cfg`` must be ``None``.
 SuperMimicActor
 ^^^^^^^^^^^^^^^
 
-The actor consumes deployable features from the task and exports explicit ``obs_history`` and optional ``goal`` inputs.
-Feature widths are inferred at construction. Imagination and the exports evaluate the same stateless network,
-:class:`~rsl_rl.models.supermimic_actor.SuperMimicPolicy`, which actor checkpoints store under ``policy``.
-Actor checkpoints saved before this submodule was introduced can still be loaded.
+The actor turns environment observations into policy inputs. Its ``act`` method also returns the preceding
+action history for replay. The stateless :class:`~rsl_rl.models.supermimic_actor.SuperMimicPolicy` evaluates
+prepared histories and goals during imagination and export. Checkpoints store its weights under ``policy``
+and the loader also accepts earlier checkpoints.
 
 .. list-table::
    :header-rows: 1
@@ -1514,7 +1512,7 @@ Depending on the algorithm and extensions used, RSL-RL expects different observa
      - Observations used as input to the RND extension.
 
    * - ``state``
-     - SuperMimic physical state, noise-free; required without a policy-group fallback.
+     - Required noise-free physical state for SuperMimic.
    * - ``goal``
      - Optional SuperMimic task goal.
    * - ``context``
@@ -1525,8 +1523,8 @@ Depending on the algorithm and extensions used, RSL-RL expects different observa
    * - ``prev_action`` / ``prev_prev_action``
      - Optional action vectors overriding SuperMimic's collection history, including nonzero reset commands.
 
-SuperMimic optional sets must be mapped explicitly. Its critic inputs are constructed by ``task.critic_obs``;
-do not map a ``critic`` set for this algorithm. Task action histories are oldest-first with shape
+Map each optional SuperMimic set explicitly. ``task.critic_obs`` supplies the critic inputs in place of a
+``critic`` observation set. Task action histories are oldest-first with shape
 ``[..., task.action_history_length, num_actions]``.
 A play loop that calls ``policy.reset(dones)`` zeroes the action history, while training seeds every slot with the
 reported ``prev_action``; with a nonzero reset command, pass that action as the second argument of

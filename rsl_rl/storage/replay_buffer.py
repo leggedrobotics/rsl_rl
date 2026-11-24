@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import torch
 import warnings
+from collections.abc import Iterable
 from dataclasses import dataclass
 from tensordict import TensorDict
 
@@ -231,26 +232,19 @@ class ReplayBuffer:
     def _initialize_storage(self, transition: ReplayBuffer.Transition) -> None:
         """Allocate replay tensors using the shapes and dtypes of the first transition."""
         # Limit capacity to the configured fraction of free GPU memory
-        if self.max_memory_fraction is not None and torch.device(self.device).type == "cuda":
-            free_memory, _ = torch.cuda.mem_get_info(torch.device(self.device))
-            bytes_per_step = sum(
-                value.numel() * value.element_size()  # type: ignore
-                for value in (
-                    *transition.observations.values(include_nested=True, leaves_only=True),
-                    transition.actions,
-                    transition.rewards,
-                    *transition.next_observations.values(include_nested=True, leaves_only=True),
-                    transition.dones,
-                    transition.terminated,
-                )
-            )
-            num_affordable_steps = int(self.max_memory_fraction * free_memory) // bytes_per_step
-            if num_affordable_steps < self.num_slots:
-                warnings.warn(
-                    f"Reducing replay from {self.num_slots} to {num_affordable_steps} steps per environment"
-                    " to fit the configured GPU memory fraction.",
-                )
-                self.num_slots = num_affordable_steps
+        self.num_slots = _limit_replay_capacity(
+            self.num_slots,
+            self.max_memory_fraction,
+            self.device,
+            (
+                *transition.observations.values(include_nested=True, leaves_only=True),
+                transition.actions,
+                transition.rewards,
+                *transition.next_observations.values(include_nested=True, leaves_only=True),
+                transition.dones,
+                transition.terminated,
+            ),
+        )
 
         # Ensure the minimum replay window still fits
         if self.num_slots < self.min_steps_per_env:
@@ -282,3 +276,22 @@ class ReplayBuffer:
             )
             self.dones = torch.empty(self.num_slots, self.num_envs, dtype=torch.bool, device=self.device)
             self.terminated = torch.empty(self.num_slots, self.num_envs, dtype=torch.bool, device=self.device)
+
+
+def _limit_replay_capacity(
+    num_slots: int, max_memory_fraction: float | None, device: str, step_tensors: Iterable[torch.Tensor]
+) -> int:
+    """Limit the number of steps per environment to the CUDA replay memory budget."""
+    if max_memory_fraction is None or torch.device(device).type != "cuda":
+        return num_slots
+    free_memory, _ = torch.cuda.mem_get_info(torch.device(device))
+    bytes_per_step = sum(tensor.numel() * tensor.element_size() for tensor in step_tensors)
+    num_affordable_steps = int(max_memory_fraction * free_memory) // bytes_per_step
+    if num_affordable_steps < num_slots:
+        warnings.warn(
+            f"Reducing replay from {num_slots} to {num_affordable_steps} steps per environment"
+            " to fit the configured GPU memory fraction.",
+            stacklevel=3,
+        )
+        return num_affordable_steps
+    return num_slots

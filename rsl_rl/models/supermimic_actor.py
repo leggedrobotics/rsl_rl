@@ -21,7 +21,7 @@ from rsl_rl.modules.mlp import MLP
 from rsl_rl.modules.normalization import EmpiricalNormalization
 
 
-def observation_set(obs: TensorDict, obs_groups: dict[str, list[str]], name: str) -> torch.Tensor:
+def concatenate_observation_set(obs: TensorDict, obs_groups: dict[str, list[str]], name: str) -> torch.Tensor:
     """Concatenate one explicitly mapped observation set, using an empty tensor for absent optional sets."""
     groups = obs_groups.get(name)
     if groups:
@@ -30,11 +30,7 @@ def observation_set(obs: TensorDict, obs_groups: dict[str, list[str]], name: str
 
 
 class SuperMimicPolicy(nn.Module):
-    """Stateless deployable network mapping a normalized observation history and an optional goal to actions.
-
-    The goal passes a normalizer, the encoder and a tanh into a latent that conditions the history decoder. Imagination
-    differentiates through this network and the JIT and ONNX exports wrap a copy of it.
-    """
+    """Map an observation history and optional goal to an action."""
 
     def __init__(
         self,
@@ -52,8 +48,11 @@ class SuperMimicPolicy(nn.Module):
     ) -> None:
         """Construct the goal encoder, history decoder and input normalizers."""
         super().__init__()
-        self.obs_dim, self.goal_dim = obs_dim, goal_dim
-        self.history_length, self.num_actions = history_length, num_actions
+        self.obs_dim = obs_dim
+        self.goal_dim = goal_dim
+        self.history_length = history_length
+        self.num_actions = num_actions
+
         self.encoder = (
             MLP(goal_dim, latent_dim, encoder_hidden_dims, activation=activation, norm=encoder_norm)
             if goal_dim
@@ -74,7 +73,7 @@ class SuperMimicPolicy(nn.Module):
         self.goal_norm = EmpiricalNormalization(goal_dim) if goal_dim else nn.Identity()
 
     def forward(self, obs_history: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
-        """Return actions from an observation history ``[..., history_length, obs_dim]`` and a goal, if any."""
+        """Normalize the history and condition action decoding on the encoded goal when present."""
         features = self.obs_norm(obs_history).flatten(-2)
         if self.goal_dim:
             encoded = torch.tanh(self.encoder(self.goal_norm(goal)))
@@ -83,7 +82,7 @@ class SuperMimicPolicy(nn.Module):
 
 
 class SuperMimicActor(nn.Module):
-    """Deployable policy network with task-owned real observation conversion and collection history.
+    """Build policy inputs from task observations and maintain per-environment history.
 
     Real inference takes the environment TensorDict. JIT and ONNX exports take only a deployable ``obs_history`` of
     shape ``[batch, history_length, obs_dim]``, oldest frame first, and an optional ``goal``, the output of
@@ -118,15 +117,13 @@ class SuperMimicActor(nn.Module):
         reference action as an additional input.
         """
         super().__init__()
-        if min(history_length, num_envs, num_actions, obs_dim, task.action_history_length) < 1 or goal_dim < 0:
-            raise ValueError("Actor/history dimensions must be positive and goal_dim nonnegative.")
-        self.task, self.obs_groups = task, obs_groups
+        self.task = task
+        self.obs_groups = obs_groups
         # Deployment copies that share the training actor's task leave it on the training device when moved
         self.owns_task = True
         self.use_reference_action = use_reference_action
-        self.obs_dim, self.goal_dim = obs_dim, goal_dim
-        self.history_length, self.num_actions = history_length, num_actions
         self.normalize_before_action = normalize_before_action
+
         self.policy = SuperMimicPolicy(
             obs_dim,
             goal_dim,
@@ -140,6 +137,7 @@ class SuperMimicActor(nn.Module):
             encoder_norm,
             output_gain,
         )
+
         self.register_buffer("history", torch.zeros(num_envs, history_length, obs_dim), persistent=False)
         self.register_buffer(
             "previous_actions", torch.zeros(num_envs, task.action_history_length, num_actions), persistent=False
@@ -148,41 +146,18 @@ class SuperMimicActor(nn.Module):
         self.register_buffer("noise_std", torch.zeros(num_actions), persistent=False)
 
     @torch.no_grad()
-    def sync_actions(self, obs: TensorDict) -> None:
-        """Read task-reported action history, including nonzero reset hold actions."""
-        if "prev_action" in self.obs_groups:
-            self.previous_actions[:, -1].copy_(observation_set(obs, self.obs_groups, "prev_action"))
-        if "prev_prev_action" in self.obs_groups and self.previous_actions.shape[1] > 1:
-            self.previous_actions[:, -2].copy_(observation_set(obs, self.obs_groups, "prev_prev_action"))
+    def act(self, obs: TensorDict) -> dict[str, torch.Tensor]:
+        """Collect a noisy action and its preceding action history for replay."""
+        self._sync_action_history(obs)
+        previous_actions = self.previous_actions.clone()
+        actions = self._action_from_observations(obs, stochastic_output=True)
+        return {"actions": actions, "previous_actions": previous_actions}
 
     @torch.no_grad()
     def forward(self, obs: TensorDict, stochastic_output: bool = False) -> torch.Tensor:
-        """Build a real actor frame, update history and return an action, with collection noise if requested."""
-        self.sync_actions(obs)
-        state = self.task.representation.unflatten(observation_set(obs, self.obs_groups, "state"))
-        goal, context = observation_set(obs, self.obs_groups, "goal"), observation_set(obs, self.obs_groups, "context")
-        frame = self.task.actor_obs(state, goal, context, self.previous_actions)
-        policy_goal = self.task.actor_goal(state, goal)
-        if self.training:
-            frame = self.task.add_noise(frame)
-            if self.normalize_before_action:
-                self._update_normalization(frame, policy_goal)
-        shifted = torch.cat((self.history[:, 1:], frame.unsqueeze(1)), dim=1)
-        self.history.copy_(torch.where(self.fresh[:, None, None], frame[:, None].expand_as(shifted), shifted))
-        self.fresh.zero_()
-        action = self.forward_history(self.history, policy_goal)
-        if self.use_reference_action:
-            action = action + self.task.reference_action(state, goal)
-        if stochastic_output:
-            action = action + torch.randn_like(action) * self.noise_std
-        if self.training and not self.normalize_before_action:
-            self._update_normalization(frame, policy_goal)
-        self.previous_actions.copy_(torch.cat((self.previous_actions[:, 1:], action[:, None]), dim=1))
-        return action
-
-    def forward_history(self, obs_history: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
-        """Evaluate the stateless differentiable policy used during imagination, in FP32 also under autocast."""
-        return self.policy(obs_history, goal).float()
+        """Return an action from environment observations and update the actor history."""
+        self._sync_action_history(obs)
+        return self._action_from_observations(obs, stochastic_output)
 
     @torch.no_grad()
     def reset(
@@ -219,14 +194,53 @@ class SuperMimicActor(nn.Module):
         return super().load_state_dict(state_dict, strict=strict, assign=assign)
 
     def as_jit(self) -> nn.Module:
-        """Return a copy of the policy network with explicit deployable history, optional goal and reference inputs."""
+        """Export a stateless policy that takes task features and history assembled by the caller."""
         if self.use_reference_action:
-            return _GoalReferenceExport(self.policy) if self.goal_dim else _ReferenceExport(self.policy)
-        return _GoalExport(self.policy) if self.goal_dim else _HistoryExport(self.policy)
+            return _GoalReferenceExport(self.policy) if self.policy.goal_dim else _ReferenceExport(self.policy)
+        return _GoalExport(self.policy) if self.policy.goal_dim else _HistoryExport(self.policy)
 
     def as_onnx(self) -> nn.Module:
         """Return the same stateless representation for ONNX export."""
         return self.as_jit()
+
+    def _sync_action_history(self, obs: TensorDict) -> None:
+        """Read task-reported action history, including nonzero reset hold actions."""
+        if "prev_action" in self.obs_groups:
+            self.previous_actions[:, -1].copy_(concatenate_observation_set(obs, self.obs_groups, "prev_action"))
+        if "prev_prev_action" in self.obs_groups and self.previous_actions.shape[1] > 1:
+            self.previous_actions[:, -2].copy_(concatenate_observation_set(obs, self.obs_groups, "prev_prev_action"))
+
+    def _action_from_observations(self, obs: TensorDict, stochastic_output: bool) -> torch.Tensor:
+        """Build and record a task observation frame, then select and record the action."""
+        state = self.task.representation.unflatten(concatenate_observation_set(obs, self.obs_groups, "state"))
+        goal = concatenate_observation_set(obs, self.obs_groups, "goal")
+        context = concatenate_observation_set(obs, self.obs_groups, "context")
+        frame = self.task.actor_obs(state, goal, context, self.previous_actions)
+        policy_goal = self.task.actor_goal(state, goal)
+        if self.training:
+            frame = self.task.add_noise(frame)
+            if self.normalize_before_action:
+                self._update_normalization(frame, policy_goal)
+
+        shifted = torch.cat((self.history[:, 1:], frame.unsqueeze(1)), dim=1)
+        self.history.copy_(torch.where(self.fresh[:, None, None], frame[:, None].expand_as(shifted), shifted))
+        self.fresh.zero_()
+
+        action = self.policy(self.history, policy_goal).float()
+        if self.use_reference_action:
+            action = action + self.task.reference_action(state, goal)
+        if stochastic_output:
+            action = action + torch.randn_like(action) * self.noise_std
+        if self.training and not self.normalize_before_action:
+            self._update_normalization(frame, policy_goal)
+        self.previous_actions.copy_(torch.cat((self.previous_actions[:, 1:], action[:, None]), dim=1))
+        return action
+
+    def _update_normalization(self, frame: torch.Tensor, goal: torch.Tensor) -> None:
+        """Update collection moments once, either before or after selecting the action."""
+        self.policy.obs_norm.update(frame)
+        if self.policy.goal_dim:
+            self.policy.goal_norm.update(goal)
 
     def _apply(self, fn: Callable, recurse: bool = True) -> SuperMimicActor:
         """Keep task observation tensors on the actor device without moving a shared task."""
@@ -238,12 +252,6 @@ class SuperMimicActor(nn.Module):
         if self.owns_task:
             self.task.to(self.history.device)
         return self
-
-    def _update_normalization(self, frame: torch.Tensor, goal: torch.Tensor) -> None:
-        """Update collection moments once, either before or after selecting the action."""
-        self.policy.obs_norm.update(frame)
-        if self.goal_dim:
-            self.policy.goal_norm.update(goal)
 
 
 class _HistoryExport(nn.Module):

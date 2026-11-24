@@ -18,7 +18,7 @@ from rsl_rl.modules.normalization import EmpiricalNormalization
 
 
 class WorldModel(nn.Module):
-    """Predict increments in task-owned coordinates and preserve state/action Jacobians."""
+    """Predict the next physical state and optional event labels."""
 
     def __init__(
         self,
@@ -37,13 +37,15 @@ class WorldModel(nn.Module):
         """Build normalized residual dynamics and an optional event head."""
         super().__init__()
         self.representation = representation
-        self.feature_dim, self.num_actions = feature_dim, num_actions
+        self.feature_dim = feature_dim
         self.normalize_output = normalize_output
         self.normalize_context = normalize_context
-        self.in_norm = EmpiricalNormalization(feature_dim + num_actions + (context_dim if normalize_context else 0))
+        self._context_start = feature_dim + num_actions
+
+        self.in_norm = EmpiricalNormalization(self._context_start + (context_dim if normalize_context else 0))
         self.out_norm = EmpiricalNormalization(representation.increment_dim, eps=1e-4)
         self.net = MLP(
-            feature_dim + num_actions + context_dim,
+            self._context_start + context_dim,
             representation.increment_dim,
             hidden_dims,
             activation=activation,
@@ -56,38 +58,37 @@ class WorldModel(nn.Module):
             MLP(feature_dim + context_dim, num_labels, label_hidden_dims, norm="layer") if num_labels else None
         )
 
-    def inputs(self, state: State, actions: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
-        """Concatenate physical state features, actions and task-normalized privileged context."""
-        return torch.cat((self.representation.features(state), actions, context), -1)
+    def forward(self, state: State, actions: torch.Tensor, context: torch.Tensor) -> State:
+        """Integrate the predicted increment while preserving state and action derivatives."""
+        inputs = self._dynamics_inputs(state, actions, context)
+        if self.normalize_context:
+            inputs = self.in_norm(inputs)
+        else:
+            inputs = torch.cat((self.in_norm(inputs[..., : self._context_start]), context), dim=-1)
+        increment = self.net(inputs).float()
+        if self.normalize_output:
+            increment = self.out_norm.inverse(increment)
+        with torch.autocast(increment.device.type, enabled=False):
+            return self.representation.integrate(state, increment)
 
     def observe(self, state: State, actions: torch.Tensor, context: torch.Tensor, successor: State) -> None:
         """Update real-transition input and increment statistics at collection time."""
-        inputs = self.inputs(state, actions, context)
-        self.in_norm.update(inputs if self.normalize_context else inputs[..., : self.feature_dim + self.num_actions])
+        inputs = self._dynamics_inputs(state, actions, context)
+        self.in_norm.update(inputs if self.normalize_context else inputs[..., : self._context_start])
         self.out_norm.update(self.representation.increments(state, successor))
 
     def label_logits(self, state: State, context: torch.Tensor) -> torch.Tensor:
         """Predict successor events using the matching physical/context input moments."""
         if self.label_head is None:
             raise ValueError("The world model has no event label head.")
-        start = self.feature_dim + self.num_actions
+        mean = self.in_norm.mean
+        std = self.in_norm.std
         features = self.representation.features(state)
-        features = (features - self.in_norm.mean[: self.feature_dim]) / (
-            self.in_norm.std[: self.feature_dim] + self.in_norm.eps
-        )
+        features = (features - mean[: self.feature_dim]) / (std[: self.feature_dim] + self.in_norm.eps)
         if self.normalize_context:
-            context = (context - self.in_norm.mean[start:]) / (self.in_norm.std[start:] + self.in_norm.eps)
-        return self.label_head(torch.cat((features, context), -1))
+            context = (context - mean[self._context_start :]) / (std[self._context_start :] + self.in_norm.eps)
+        return self.label_head(torch.cat((features, context), dim=-1))
 
-    def forward(self, state: State, actions: torch.Tensor, context: torch.Tensor) -> State:
-        """Integrate the predicted physical increment without detaching its inputs."""
-        inputs = self.inputs(state, actions, context)
-        if self.normalize_context:
-            inputs = self.in_norm(inputs)
-        else:
-            inputs = torch.cat((self.in_norm(inputs[..., : self.feature_dim + self.num_actions]), context), -1)
-        increment = self.net(inputs).float()
-        if self.normalize_output:
-            increment = self.out_norm.inverse(increment)
-        with torch.autocast(increment.device.type, enabled=False):
-            return self.representation.integrate(state, increment)
+    def _dynamics_inputs(self, state: State, actions: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+        """Concatenate the physical features, actions and context for dynamics prediction."""
+        return torch.cat((self.representation.features(state), actions, context), dim=-1)

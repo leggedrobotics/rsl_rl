@@ -16,13 +16,16 @@ State = tuple[torch.Tensor, ...]
 
 
 class StateRepresentation(Protocol):
-    """Differentiable state coordinates supporting arbitrary leading batch dimensions."""
+    """Convert between task observations and differentiable physical coordinates."""
 
     increment_dim: int
+    """Number of coordinates predicted by the world model."""
+
     error_floor: torch.Tensor
+    """Positive minimum loss scale for each increment coordinate."""
 
     def unflatten(self, flat: torch.Tensor) -> State:
-        """Decode a physical observation without detaching derivatives."""
+        """Decode the last dimension of a physical observation, preserving leading batch dimensions."""
         ...
 
     def features(self, state: State) -> torch.Tensor:
@@ -47,8 +50,6 @@ class EuclideanStateRepresentation:
 
     def __init__(self, dimension: int, error_floor: float = 1e-3) -> None:
         """Set state width and the minimum per-coordinate model-loss scale."""
-        if dimension < 1 or error_floor <= 0:
-            raise ValueError("Euclidean state dimension and error floor must be positive.")
         self.increment_dim = dimension
         self.error_floor = torch.full((dimension,), error_floor)
 
@@ -74,7 +75,7 @@ class EuclideanStateRepresentation:
 
 
 class DifferentiableTask:
-    """Differentiable task heads; simulator geometry, rewards and curricula stay task-owned.
+    """Provide task features, rewards and state updates for SuperMimic.
 
     ``prev_actions`` has shape ``[..., action_history_length, num_actions]``, oldest first. Actor observations and
     goals must use deployable inputs. Privileged context is available separately to dynamics and critic heads.
@@ -104,7 +105,10 @@ class DifferentiableTask:
     def actor_obs(
         self, state: State, goal: torch.Tensor, context: torch.Tensor, prev_actions: torch.Tensor
     ) -> torch.Tensor:
-        """Build noise-free deployable frames; replay also passes ``[batch, history_length]`` leading dimensions."""
+        """Build noise-free deployment frames; replay also passes ``[batch, history_length]`` leading dimensions.
+
+        ``prev_actions`` has shape ``[..., action_history_length, num_actions]``. Use deployable inputs only.
+        """
         raise NotImplementedError
 
     def actor_goal(self, state: State, goal: torch.Tensor) -> torch.Tensor:

@@ -61,14 +61,27 @@ def test_lazy_memory_budget_checks_minimum_window(monkeypatch: pytest.MonkeyPatc
     """The optional cap uses the actual transition schema and rejects a window that no longer fits."""
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device=None: (1024, 4096))
     step = TensorDict({"value": torch.zeros(2, 1), "dones": torch.zeros(2, dtype=torch.bool)}, batch_size=[2])
-    replay = SequenceReplayBuffer(2, 1000, "cuda", min_steps=3, max_memory_fraction=0.5)
+    replay = SequenceReplayBuffer(2, 1000, "cuda", min_steps_per_env=3, max_memory_fraction=0.5)
     assert replay.data is None and replay.num_slots == 500
     with pytest.warns(UserWarning, match="Reducing replay"):
         replay.add(step)
     assert replay.num_slots == 51
-    undersized = SequenceReplayBuffer(2, 1000, "cuda", min_steps=52, max_memory_fraction=0.5)
+    undersized = SequenceReplayBuffer(2, 1000, "cuda", min_steps_per_env=52, max_memory_fraction=0.5)
     with pytest.warns(UserWarning, match="Reducing replay"), pytest.raises(ValueError, match="52 steps"):
         undersized.add(step)
+
+
+def test_invalid_transition_preserves_existing_slot() -> None:
+    """Reject a changed transition schema before overwriting a full replay slot."""
+    replay = SequenceReplayBuffer(1, 1)
+    step = TensorDict({"dones": torch.tensor([False]), "state": torch.zeros(1, 1)}, [1])
+    replay.add(step)
+    invalid = TensorDict({"dones": torch.tensor([True]), "state": torch.ones(1, 2)}, [1])
+
+    with pytest.raises(ValueError, match="shape or dtype changed"):
+        replay.add(invalid)
+    assert not replay.data["dones"].any()
+    assert not replay.data["state"].any()
 
 
 def test_history_repeats_earliest_episode_or_stored_frame() -> None:

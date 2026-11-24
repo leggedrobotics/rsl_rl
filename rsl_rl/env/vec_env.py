@@ -102,10 +102,12 @@ class VecEnv(ABC):
             - "final_obs" (TensorDict): Observations after the final action of each episode, before resets, post-step
               events, or command resampling. SAC requires this key whenever an environment is done, so it can store
               the correct next observation for that transition. Include the groups used by the actor and critics,
-              with the same shapes and device as the returned observations. Entries for environments that are not
-              done are ignored unless ``extras["final_obs_every_step"] = True`` signals capture on every step, which
-              SuperMimic requires. Keep the tensors unchanged until ``process_env_step()`` has recorded the transition.
-              SuperMimic reads the groups of its "state" and "labels" sets from ``final_obs``.
+              with the same shapes and device as the returned observations. Keep the tensors unchanged until
+              ``process_env_step()`` has recorded the transition.
+
+            - "final_obs_every_step" (bool): Set to True when ``final_obs`` contains pre-event successors from every
+              environment on every step. SuperMimic requires this flag and reads the noise-free state and label groups.
+              Without this flag, entries for environments that are not done are ignored.
 
             - "log" (dict[str, float | torch.Tensor]): Additional information for logging and debugging purposes.
                The key should be a string and start with "/" for namespacing. The value can be a scalar or a
