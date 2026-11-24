@@ -121,9 +121,19 @@ class DifferentiableTask:
         raise NotImplementedError
 
     def critic_obs(
-        self, state: State, goal: torch.Tensor, context: torch.Tensor, prev_actions: torch.Tensor
+        self,
+        state: State,
+        goal: torch.Tensor,
+        context: torch.Tensor,
+        prev_actions: torch.Tensor,
+        history: torch.Tensor,
     ) -> torch.Tensor:
-        """Build privileged value features for the synthetic critic observation set."""
+        """Build privileged value features for the synthetic critic observation set.
+
+        ``history`` is the observation history the actor acts on at ``state``, including :meth:`add_noise`, with shape
+        ``[..., history_length, obs_dim]``, oldest first. During imagination it carries gradients: detach it if the
+        critic must not shape the actor through it.
+        """
         raise NotImplementedError
 
     def reward(

@@ -52,7 +52,12 @@ class ScalarTask(DifferentiableTask):
         return torch.cat((context, prev_actions.flatten(-2)), -1)
 
     def critic_obs(
-        self, state: State, goal: torch.Tensor, context: torch.Tensor, prev_actions: torch.Tensor
+        self,
+        state: State,
+        goal: torch.Tensor,
+        context: torch.Tensor,
+        prev_actions: torch.Tensor,
+        history: torch.Tensor,
     ) -> torch.Tensor:
         """Build privileged scalar-value inputs."""
         return torch.cat((state[0], goal, context, prev_actions.flatten(-2)), -1)
@@ -575,7 +580,9 @@ def test_imagined_objective_matches_a_step_by_step_rollout(monkeypatch: pytest.M
         previous = torch.cat((previous[:, 1:], action[:, None]), dim=1)
         history = torch.cat((history[:, 1:], task.actor_obs(successor, goal, context, previous)[:, None]), dim=1)
         state = successor
-    objective = objective + 0.9**5 * reach[-1] * learner._value(task.critic_obs(state, goal, context, previous))
+    objective = objective + 0.9**5 * reach[-1] * learner._value(
+        task.critic_obs(state, goal, context, previous, history)
+    )
     gradient = torch.autograd.grad(-objective.mean(), list(actor.parameters()))
     metrics = learner._fit_policy()
     torch.testing.assert_close(metrics["policy_loss"], -objective.mean().detach())
@@ -1455,3 +1462,44 @@ def test_default_world_model_normalizes_inputs_and_rescales_increments() -> None
     torch.testing.assert_close(seen[0], normalized)
     torch.testing.assert_close(seen[1], normalized[:, [0, 2]])
     torch.testing.assert_close(result, state + 3 + 2 * (2 + model.out_norm.eps))
+
+
+class HistoryCriticScalarTask(ScalarTask):
+    """The critic also reads the actor's observation history."""
+
+    def critic_obs(
+        self,
+        state: State,
+        goal: torch.Tensor,
+        context: torch.Tensor,
+        prev_actions: torch.Tensor,
+        history: torch.Tensor,
+    ) -> torch.Tensor:
+        """Append the flattened actor history to the scalar-value inputs."""
+        return torch.cat((super().critic_obs(state, goal, context, prev_actions, history), history.flatten(-2)), -1)
+
+
+def test_critic_reads_the_actor_history_of_each_imagined_state() -> None:
+    """Critic widths include the history, and each imagined state is valued with the history the actor acts on."""
+    env = ScalarEnv()
+    learner = _learner(env, task_cfg={"class_name": HistoryCriticScalarTask})
+    assert learner.critic.obs_dim == 5 + learner.actor.history_length * learner.actor.obs_dim
+    _collect(learner, env, 4)
+    critic_histories, actor_histories = [], []
+    critic_obs, actor_forward = learner.task.critic_obs, learner._actor_forward
+
+    def recorded_critic_obs(*args: torch.Tensor) -> torch.Tensor:
+        assert torch.equal(args[-1][:, -1], learner.task.actor_obs(*args[:-1]))
+        critic_histories.append(args[-1])
+        return critic_obs(*args)
+
+    def recorded_actor(history: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
+        actor_histories.append(history)
+        return actor_forward(history, goal)
+
+    learner.task.critic_obs, learner._actor_forward = recorded_critic_obs, recorded_actor
+    learner._fit_policy()
+    assert len(critic_histories) == len(actor_histories) + 1 == learner.horizon + 1
+    assert all(critic is actor for critic, actor in zip(critic_histories, actor_histories))
+    assert torch.equal(critic_histories[-1][:, :-1], actor_histories[-1][:, 1:])
+    assert critic_histories[-1].requires_grad

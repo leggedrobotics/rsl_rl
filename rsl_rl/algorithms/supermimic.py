@@ -588,7 +588,7 @@ class SuperMimic:
         rewards, terminals, features = [], [], []
         with _frozen(self.world_model, self.critic):
             for _ in range(self.horizon):
-                features.append(self.task.critic_obs(state, goal, context, previous))
+                features.append(self.task.critic_obs(state, goal, context, previous, history))
                 with self._autocast():
                     action = self._actor_forward(history, self.task.actor_goal(state, goal))
                 if self.actor.use_reference_action:
@@ -601,7 +601,7 @@ class SuperMimic:
                 frame = self.task.add_noise(self.task.actor_obs(successor, goal, context, previous))
                 history = torch.cat((history[:, 1:], frame[:, None]), dim=1)
                 state = successor
-            features.append(self.task.critic_obs(state, goal, context, previous))
+            features.append(self.task.critic_obs(state, goal, context, previous, history))
             reward, terminal = torch.stack(rewards), torch.stack(terminals)
             survival = [1 - terminal[0]]
             for step_terminal in terminal[1:]:
@@ -963,7 +963,6 @@ class SuperMimic:
             example_set("context"),
         )
         actor_obs, actor_goal = task.actor_obs(state, goal, context, previous), task.actor_goal(state, goal)
-        critic_features = task.critic_obs(state, goal, context, previous)
         dynamics_context = task.dynamics_context(state, context, previous)
         if example_set("labels").shape[-1] != task.num_labels:
             raise ValueError("Label observation width must equal task.num_labels.")
@@ -973,6 +972,8 @@ class SuperMimic:
         actor = actor_class(
             task, groups, actor_obs.shape[-1], actor_goal.shape[-1], env.num_envs, env.num_actions, **actor_cfg
         ).to(device)
+        history = actor_obs[:, None].repeat(1, actor.history_length, 1)
+        critic_features = task.critic_obs(state, goal, context, previous, history)
         world_model = model_class(
             task.representation,
             task.representation.features(state).shape[-1],
