@@ -100,7 +100,10 @@ class DifferentiableTask:
         raise NotImplementedError
 
     def actor_goal(self, state: State, goal: torch.Tensor) -> torch.Tensor:
-        """Encode a deployable policy goal, preserving state derivatives."""
+        """Encode a deployable policy goal, preserving state derivatives.
+
+        For example a velocity command as is, or the reference joint positions of the current frame of a motion.
+        """
         raise NotImplementedError
 
     def advance(
@@ -114,11 +117,11 @@ class DifferentiableTask:
         raise NotImplementedError
 
     def dynamics_actions(self, actions: torch.Tensor) -> torch.Tensor:
-        """Map policy outputs to physical commands before world-model normalization."""
+        """Map policy outputs to physical commands before world-model normalization, e.g. scaled joint targets."""
         return actions
 
     def dynamics_context(self, state: State, context: torch.Tensor, prev_actions: torch.Tensor) -> torch.Tensor:
-        """Return normalized privileged dynamics inputs."""
+        """Return normalized privileged dynamics inputs, e.g. log-scaled randomized masses and the recent actions."""
         raise NotImplementedError
 
     def critic_obs(
@@ -152,7 +155,10 @@ class DifferentiableTask:
     def termination_prob(
         self, next_state: State, goal: torch.Tensor, labels: torch.Tensor | None = None
     ) -> torch.Tensor:
-        """Return successor termination probabilities in [0,1]."""
+        """Return successor termination probabilities in [0,1].
+
+        For example from predicted contact labels at illegal bodies, or from a soft threshold on a tracking error.
+        """
         raise NotImplementedError
 
     def pre_dynamics(self, state: State, context: torch.Tensor) -> State:
@@ -237,5 +243,8 @@ class DifferentiableTask:
         return observation
 
     def update_curriculum(self, goal: torch.Tensor, rewards: torch.Tensor, dones: torch.Tensor, extras: dict) -> None:
-        """Update task-owned curricula from a completed physical step and its pre-step goal."""
+        """Update task-owned curricula from a completed physical step and its pre-step goal.
+
+        For example the sampling weights of reference motions.
+        """
         pass

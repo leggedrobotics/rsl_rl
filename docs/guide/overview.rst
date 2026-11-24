@@ -377,6 +377,8 @@ state returned by ``pre_dynamics``, which is ``observed`` by default, and ``succ
    and ``advance(successor)``. ``actor_obs(successor)`` and ``add_noise`` append the next frame to the history.
    ``successor`` is the next ``observed``; after the last step it is only passed to ``critic_obs``.
 
+``ScalarTask`` in ``tests/algorithms/test_supermimic.py`` is a minimal complete task.
+
 Full checkpoints contain ``actor_state_dict``, ``critic_state_dict``, ``world_model_state_dict``, each model's
 ``*_optimizer_state_dict``, the learner iteration and ``env_steps``, the number of collected steps. Replay, collection
 history, simulator state and task-owned state such as curricula are excluded.
