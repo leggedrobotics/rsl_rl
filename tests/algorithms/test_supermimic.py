@@ -214,6 +214,9 @@ def test_world_model_preserves_state_and_action_gradients_when_weights_are_froze
     model((state,), action, torch.zeros(4, 1))[0].square().sum().backward()
     assert state.grad.abs().sum() > 0 and action.grad.abs().sum() > 0
     assert all(parameter.grad is None for parameter in model.parameters())
+    representation.integrate = lambda state, increment: ((state[0] + increment) @ torch.eye(1),)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        assert model((state,), action, torch.zeros(4, 1))[0].dtype == torch.float32
 
 
 def test_direct_and_standard_runner_train_all_models() -> None:

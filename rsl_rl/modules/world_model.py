@@ -89,4 +89,5 @@ class WorldModel(nn.Module):
         increment = self.net(inputs).float()
         if self.normalize_output:
             increment = self.out_norm.inverse(increment)
-        return self.representation.integrate(state, increment)
+        with torch.autocast(increment.device.type, enabled=False):
+            return self.representation.integrate(state, increment)
