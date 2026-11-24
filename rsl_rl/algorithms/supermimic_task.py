@@ -144,8 +144,14 @@ class DifferentiableTask:
         """Return successor termination probabilities in [0,1]."""
         raise NotImplementedError
 
-    def post_dynamics(self, state: State, next_state: State, labels: torch.Tensor | None) -> State:
-        """Advance task-owned analytic state after integration and successor-label prediction."""
+    def post_dynamics(
+        self, state: State, next_state: State, labels: torch.Tensor | None, actions: torch.Tensor, context: torch.Tensor
+    ) -> State:
+        """Advance task-owned analytic state after integration and successor-label prediction.
+
+        ``actions`` are the policy actions applied in the transition, before :meth:`dynamics_actions`, and ``context``
+        is its privileged context, for analytic state that they drive, such as filters, delay buffers or estimators.
+        """
         return next_state
 
     def reference_action(self, state: State, goal: torch.Tensor) -> torch.Tensor:

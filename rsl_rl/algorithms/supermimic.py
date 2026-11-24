@@ -535,7 +535,7 @@ class SuperMimic:
                 else None
             )
         labels = torch.sigmoid(logits.float()) if logits is not None else None
-        return self.task.post_dynamics(state, raw_next, labels), logits, labels
+        return self.task.post_dynamics(state, raw_next, labels, actions, context), logits, labels
 
     def _fit_world_model(self) -> dict[str, torch.Tensor]:
         """Fit autoregressive physical successors and event labels on valid replay positions."""

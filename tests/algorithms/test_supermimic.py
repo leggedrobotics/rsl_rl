@@ -804,14 +804,17 @@ def test_collection_can_select_actions_before_updating_moments() -> None:
 
 
 def test_task_analytic_successors_follow_labels_in_fitting_and_imagination() -> None:
-    """Analytic post-dynamics runs after event prediction and retains the event-probability gradient."""
+    """Analytic post-dynamics follows event prediction, keeps its gradient and sees the step's action and context."""
     learner, env = _learner(), ScalarEnv()
-    post_calls = []
+    post_calls, post_inputs = [], []
     reward = learner.task.reward
 
-    def post(state: State, next_state: State, labels: torch.Tensor | None) -> State:
+    def post(
+        state: State, next_state: State, labels: torch.Tensor | None, actions: torch.Tensor, context: torch.Tensor
+    ) -> State:
         successor = (next_state[0] + labels[..., :1],)
         post_calls.append(successor)
+        post_inputs.append((actions, context))
         return successor
 
     def checked_reward(
@@ -827,9 +830,11 @@ def test_task_analytic_successors_follow_labels_in_fitting_and_imagination() -> 
 
     learner.task.post_dynamics = post
     learner.task.reward = checked_reward
-    state = (torch.ones(4, 1),)
-    successor, _, labels = learner._predict(state, torch.zeros(4, 1), torch.zeros(4, 1), torch.zeros(4, 2, 1))
+    learner.task.dynamics_actions = lambda actions: 2 * actions
+    state, actions, context = (torch.ones(4, 1),), torch.zeros(4, 1), torch.zeros(4, 1)
+    successor, _, labels = learner._predict(state, actions, context, torch.zeros(4, 2, 1))
     assert labels is not None
+    assert post_inputs[0][0] is actions and post_inputs[0][1] is context
     torch.testing.assert_close(torch.autograd.grad(successor[0].sum(), labels)[0], torch.ones_like(labels))
     _collect(learner, env, 4)
     post_calls.clear()
