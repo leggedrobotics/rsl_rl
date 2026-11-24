@@ -839,8 +839,8 @@ def test_task_analytic_successors_follow_labels_in_fitting_and_imagination() -> 
     learner.task.reward = checked_reward
     learner.task.dynamics_actions = lambda actions: 2 * actions
     state, actions, context = (torch.ones(4, 1),), torch.zeros(4, 1), torch.zeros(4, 1)
-    successor, _, labels = learner._predict(state, actions, context, torch.zeros(4, 2, 1))
-    assert labels is not None
+    successor, logits, labels = learner._predict(state, actions, context, torch.zeros(4, 2, 1))
+    assert torch.equal(labels, torch.sigmoid(logits))
     assert post_inputs[0][0] is actions and post_inputs[0][1] is context
     torch.testing.assert_close(torch.autograd.grad(successor[0].sum(), labels)[0], torch.ones_like(labels))
     _collect(learner, env, 4)
@@ -1503,3 +1503,50 @@ def test_critic_reads_the_actor_history_of_each_imagined_state() -> None:
     assert all(critic is actor for critic, actor in zip(critic_histories, actor_histories))
     assert torch.equal(critic_histories[-1][:, :-1], actor_histories[-1][:, 1:])
     assert critic_histories[-1].requires_grad
+
+
+class LoadScalarTask(ScalarTask):
+    """The successor label is a regressed load instead of an event probability."""
+
+    def label_activation(self, logits: torch.Tensor) -> torch.Tensor:
+        """Read the load prediction unchanged."""
+        return logits
+
+    def label_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """Regress loads with a squared error."""
+        return (logits - labels).square().mean(dim=-1)
+
+
+def test_task_label_hooks_define_label_values_and_their_masked_loss() -> None:
+    """Imagination reads the task's label activation and the model fit averages its loss over valid positions."""
+    torch.manual_seed(0)
+    env = ScalarEnv()
+    learner = _learner(env, task_cfg={"class_name": LoadScalarTask})
+    state = learner.task.representation.unflatten(torch.ones(4, 1))
+    _, logits, labels = learner._predict(state, torch.ones(4, 1), torch.zeros(4, 1), torch.zeros(4, 2, 1))
+    torch.testing.assert_close(labels, logits, rtol=0, atol=0)
+    _collect(learner, env, 4)
+    window, mask = learner._windows(64)
+    assert not mask.all()
+    losses = []
+    label_loss = learner.task.label_loss
+
+    def recorded_label_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        losses.append(label_loss(logits, labels))
+        return losses[-1]
+
+    learner._windows = lambda batch_size: (window, mask)
+    learner.task.label_loss = recorded_label_loss
+    metrics = learner._fit_world_model()
+    expected = (losses[0] * mask).sum() / mask.sum()
+    torch.testing.assert_close(metrics["label_loss"], expected.detach())
+
+
+def test_label_loss_must_return_a_loss_per_replay_position() -> None:
+    """A label loss reduced over replay positions fails the model fit."""
+    env = ScalarEnv()
+    learner = _learner(env, task_cfg={"class_name": LoadScalarTask})
+    _collect(learner, env, 4)
+    learner.task.label_loss = lambda logits, labels: (logits - labels).square().mean()
+    with pytest.raises(ValueError, match="one value per replay position"):
+        learner._fit_world_model()

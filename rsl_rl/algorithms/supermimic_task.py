@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import torch
+from torch import nn
 from typing import Protocol
 
 State = tuple[torch.Tensor, ...]
@@ -145,7 +146,7 @@ class DifferentiableTask:
         prev_actions: torch.Tensor,
         labels: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Return transition rewards using the pre-transition goal and successor event probabilities."""
+        """Return transition rewards using the pre-transition goal and successor labels."""
         raise NotImplementedError
 
     def termination_prob(
@@ -163,6 +164,20 @@ class DifferentiableTask:
         is its privileged context, for analytic state that they drive, such as filters, delay buffers or estimators.
         """
         return next_state
+
+    def label_activation(self, logits: torch.Tensor) -> torch.Tensor:
+        """Map successor-label logits to the labels read by rewards, terminations and post-dynamics.
+
+        The default yields event probabilities. Override it together with :meth:`label_loss`, e.g. to regress labels.
+        """
+        return torch.sigmoid(logits)
+
+    def label_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """Return one successor-label loss per replay position; the default treats labels as binary events.
+
+        Reduce the label dimension only: the learner masks invalid replay positions and rejects any other shape.
+        """
+        return nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction="none").mean(dim=-1)
 
     def reference_action(self, state: State, goal: torch.Tensor) -> torch.Tensor:
         """Return the action that the policy output corrects when the actor uses ``use_reference_action``.
@@ -190,7 +205,7 @@ class DifferentiableTask:
         raise NotImplementedError
 
     def mirror_labels(self, labels: torch.Tensor) -> torch.Tensor:
-        """Return the mirror image of successor event labels; required only for tasks with labels."""
+        """Return the mirror image of successor labels; required only for tasks with labels."""
         raise NotImplementedError
 
     def world_model_loss(self, prediction: State, target: State, scale: torch.Tensor) -> torch.Tensor:

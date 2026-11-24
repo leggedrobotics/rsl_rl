@@ -520,7 +520,7 @@ class SuperMimic:
     def _predict(
         self, state: State, actions: torch.Tensor, context: torch.Tensor, previous_actions: torch.Tensor
     ) -> tuple[State, torch.Tensor | None, torch.Tensor | None]:
-        """Apply learned dynamics, event probabilities and task-owned analytic state."""
+        """Apply learned dynamics, successor labels and task-owned analytic state."""
         with self._autocast():
             raw_next = self._world_model_forward(
                 state, self.task.dynamics_actions(actions), self.task.dynamics_context(state, context, previous_actions)
@@ -534,11 +534,11 @@ class SuperMimic:
                 if self.task.num_labels
                 else None
             )
-        labels = torch.sigmoid(logits.float()) if logits is not None else None
+        labels = self.task.label_activation(logits.float()) if logits is not None else None
         return self.task.post_dynamics(state, raw_next, labels, actions, context), logits, labels
 
     def _fit_world_model(self) -> dict[str, torch.Tensor]:
-        """Fit autoregressive physical successors and event labels on valid replay positions."""
+        """Fit autoregressive physical successors and their labels on valid replay positions."""
         window, mask = self._windows(self.world_model_batch_size)
         state = self.task.representation.unflatten(window["state"][:, 0])
         predictions, logits = [], []
@@ -559,10 +559,13 @@ class SuperMimic:
         loss = mean_error if self.world_model_loss_reduction == "mean" else masked_errors.sum(dim=1).mean()
         metrics = {"world_model_error": mean_error.detach()}
         if self.task.num_labels:
-            bce = nn.functional.binary_cross_entropy_with_logits(
-                torch.stack(logits, 1).float(), window["labels"].float(), reduction="none"
-            )
-            label_loss = self._globally_normalized_loss((bce.mean(dim=-1) * mask).sum(), valid_count)
+            label_errors = self.task.label_loss(torch.stack(logits, 1).float(), window["labels"].float())
+            if label_errors.shape != mask.shape:
+                raise ValueError(
+                    f"label_loss must return one value per replay position, with shape {tuple(mask.shape)}, "
+                    f"not {tuple(label_errors.shape)}."
+                )
+            label_loss = self._globally_normalized_loss((label_errors * mask).sum(), valid_count)
             loss = loss + label_loss
             metrics["label_loss"] = label_loss.detach()
         metrics["world_model_grad_norm"] = self._apply(loss, "world_model", self.world_model)
