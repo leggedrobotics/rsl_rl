@@ -147,17 +147,6 @@ class SuperMimicActor(nn.Module):
         self.register_buffer("fresh", torch.ones(num_envs, dtype=torch.bool), persistent=False)
         self.register_buffer("noise_std", torch.zeros(num_actions), persistent=False)
 
-    def _apply(self, fn: Callable, recurse: bool = True) -> SuperMimicActor:
-        """Keep task observation tensors on the actor device without moving a shared task."""
-        previous_device = self.history.device
-        super()._apply(fn, recurse=recurse)
-        if not self.owns_task and self.history.device != previous_device:
-            self.task = self.task.copy_for_inference()
-            self.owns_task = True
-        if self.owns_task:
-            self.task.to(self.history.device)
-        return self
-
     @torch.no_grad()
     def sync_actions(self, obs: TensorDict) -> None:
         """Read task-reported action history, including nonzero reset hold actions."""
@@ -190,12 +179,6 @@ class SuperMimicActor(nn.Module):
             self._update_normalization(frame, policy_goal)
         self.previous_actions.copy_(torch.cat((self.previous_actions[:, 1:], action[:, None]), dim=1))
         return action
-
-    def _update_normalization(self, frame: torch.Tensor, goal: torch.Tensor) -> None:
-        """Update collection moments once, either before or after selecting the action."""
-        self.policy.obs_norm.update(frame)
-        if self.goal_dim:
-            self.policy.goal_norm.update(goal)
 
     def forward_history(self, obs_history: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
         """Evaluate the stateless differentiable policy used during imagination, in FP32 also under autocast."""
@@ -244,6 +227,23 @@ class SuperMimicActor(nn.Module):
     def as_onnx(self) -> nn.Module:
         """Return the same stateless representation for ONNX export."""
         return self.as_jit()
+
+    def _apply(self, fn: Callable, recurse: bool = True) -> SuperMimicActor:
+        """Keep task observation tensors on the actor device without moving a shared task."""
+        previous_device = self.history.device
+        super()._apply(fn, recurse=recurse)
+        if not self.owns_task and self.history.device != previous_device:
+            self.task = self.task.copy_for_inference()
+            self.owns_task = True
+        if self.owns_task:
+            self.task.to(self.history.device)
+        return self
+
+    def _update_normalization(self, frame: torch.Tensor, goal: torch.Tensor) -> None:
+        """Update collection moments once, either before or after selecting the action."""
+        self.policy.obs_norm.update(frame)
+        if self.goal_dim:
+            self.policy.goal_norm.update(goal)
 
 
 class _HistoryExport(nn.Module):

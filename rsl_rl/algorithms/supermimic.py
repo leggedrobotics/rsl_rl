@@ -356,12 +356,6 @@ class SuperMimic:
         self._last_previous_actions = outputs["previous_actions"]
         return self._last_actions
 
-    def _act(self, obs: TensorDict) -> dict[str, torch.Tensor]:
-        """Choose a noisy action and record it as the latest action using only device operations."""
-        self.actor.sync_actions(obs)
-        previous_actions = self.actor.previous_actions.clone()
-        return {"actions": self.actor(obs, stochastic_output=True), "previous_actions": previous_actions}
-
     @torch.no_grad()
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict
@@ -402,316 +396,9 @@ class SuperMimic:
         self._last_obs = self._last_actions = self._last_previous_actions = None
         return {"Training/mean_reward": rewards}
 
-    def _process_env_step(
-        self,
-        start: TensorDict,
-        actions: torch.Tensor,
-        previous_actions: torch.Tensor,
-        obs: TensorDict,
-        final: TensorDict,
-        done: torch.Tensor,
-        rewards: torch.Tensor,
-    ) -> dict[str, torch.Tensor]:
-        """Store the transition, update dynamics statistics and reset finished histories on the device."""
-        groups = self.obs_groups
-        state = observation_set(start, groups, "state")
-        successor = observation_set(final, groups, "state")
-        context = observation_set(start, groups, "context")
-        goal = observation_set(start, groups, "goal")
-        window_break = (observation_set(obs, groups, "state") != successor).any(dim=-1) & ~done
-        # Tasks without event labels store an empty label set
-        labels = observation_set(final, groups, "labels")
-        transition = TensorDict(
-            {
-                "state": state,
-                "next_state": successor,
-                "goal": goal,
-                "context": context,
-                "labels": labels,
-                "actions": actions,
-                "prev_actions": previous_actions,
-                "dones": done,
-                "window_break": window_break,
-            },
-            batch_size=[self.storage.num_envs],
-            device=self.device,
-        )
-        # Record nonfinite consumed final observations without synchronizing; update() rejects them before training
-        self._nonfinite_final_obs.logical_or_(
-            torch.stack((~torch.isfinite(successor).all(), ~torch.isfinite(labels).all()))
-        )
-        self.actor_learning_rate_multiplier.record(rewards, done)
-        self.storage.write(transition)
-        physical = self.task.pre_dynamics(self.task.representation.unflatten(state), context)
-        self.world_model.observe(
-            physical,
-            self.task.dynamics_actions(actions),
-            self.task.dynamics_context(physical, context, previous_actions),
-            self.task.representation.unflatten(successor),
-        )
-        reset_action = observation_set(obs, groups, "prev_action") if "prev_action" in groups else None
-        reset_previous = observation_set(obs, groups, "prev_prev_action") if "prev_prev_action" in groups else None
-        self.actor.reset(done, reset_action, reset_previous)
-        self._window_break_sum.add_(window_break.float().mean())
-        return {}
-
     def compute_returns(self, obs: TensorDict) -> None:
         """Replay and imagination construct their own return targets during update."""
         pass
-
-    def _windows(
-        self, batch_size: int, cumulative_counts: torch.Tensor | None = None
-    ) -> tuple[TensorDict, torch.Tensor]:
-        """Sample uniform anchors, additionally cutting world-model targets after external state edits."""
-        if self.world_model_full_windows:
-            index = self.storage.sample_sequences(batch_size, self.world_model_window + 1, cumulative_counts)
-            ids, valid = index.ids[:, :-1], index.valid[:, :-1]
-        else:
-            index = self.storage.sample(batch_size, length=self.world_model_window)
-            ids, valid = index.ids, index.valid
-        keys = ["state", "next_state", "actions", "context", "labels", "prev_actions", "window_break"]
-        window = self.storage.gather(keys, ids)
-        if self.num_mirrored_windows:
-            head, task = window[: self.num_mirrored_windows], self.task
-            mirrored = TensorDict(
-                {
-                    "state": task.mirror_state(head["state"]),
-                    "next_state": task.mirror_state(head["next_state"]),
-                    "actions": task.mirror_actions(head["actions"]),
-                    "prev_actions": task.mirror_actions(head["prev_actions"]),
-                    "context": task.mirror_context(head["context"]),
-                    "labels": task.mirror_labels(head["labels"]) if task.num_labels else head["labels"],
-                    "window_break": head["window_break"],
-                },
-                batch_size=head.batch_size,
-            )
-            window = torch.cat((mirrored, window[self.num_mirrored_windows :]))
-        mask = valid.float()
-        if not self.world_model_full_windows and self.world_model_window > 1:
-            mask[:, 1:] *= torch.cumprod((~window["window_break"][:, :-1]).long(), dim=1)
-        return window, mask
-
-    def _starts(self, batch_size: int) -> tuple[TensorDict, torch.Tensor]:
-        """Build reset-aware actor histories, repeating the earliest available frame when needed."""
-        index = self.storage.sample(batch_size, history=self.actor.history_length - 1)
-        history = self.storage.gather(("state", "goal", "context", "prev_actions"), index.ids)
-        state = self.task.representation.unflatten(history["state"])
-        frames = self.task.add_noise(
-            self.task.actor_obs(state, history["goal"], history["context"], history["prev_actions"])
-        )
-        first = index.valid.long().argmax(dim=1)
-        first_frame = frames[torch.arange(batch_size, device=frames.device), first]
-        frames = torch.where(index.valid[..., None], frames, first_frame[:, None])
-        return history[:, -1], frames
-
-    def _predict(
-        self, state: State, actions: torch.Tensor, context: torch.Tensor, previous_actions: torch.Tensor
-    ) -> tuple[State, torch.Tensor | None, torch.Tensor | None]:
-        """Apply learned dynamics, successor labels and task-owned analytic state."""
-        with self._autocast():
-            raw_next = self._world_model_forward(
-                state, self.task.dynamics_actions(actions), self.task.dynamics_context(state, context, previous_actions)
-            )
-            # Successor events depend on the action just applied, so their history includes it
-            next_previous_actions = torch.cat((previous_actions[..., 1:, :], actions.unsqueeze(-2)), dim=-2)
-            logits = (
-                self.world_model.label_logits(
-                    raw_next, self.task.dynamics_context(raw_next, context, next_previous_actions)
-                )
-                if self.task.num_labels
-                else None
-            )
-        labels = self.task.label_activation(logits.float()) if logits is not None else None
-        return self.task.post_dynamics(state, raw_next, labels, actions, context), logits, labels
-
-    def _fit_world_model(self, cumulative_counts: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
-        """Fit autoregressive physical successors and their labels on valid replay positions."""
-        window, mask = self._windows(self.world_model_batch_size, cumulative_counts)
-        state = self.task.representation.unflatten(window["state"][:, 0])
-        predictions, logits = [], []
-        for step in range(self.world_model_window):
-            state = self.task.pre_dynamics(state, window["context"][:, step])
-            state, event_logits, _ = self._predict(
-                state, window["actions"][:, step], window["context"][:, step], window["prev_actions"][:, step]
-            )
-            predictions.append(state)
-            if event_logits is not None:
-                logits.append(event_logits)
-        prediction = tuple(torch.stack(values, dim=1) for values in zip(*predictions))
-        target = self.task.representation.unflatten(window["next_state"])
-        scale = torch.maximum(self.world_model.out_norm.std, self.error_floor)
-        errors = self.task.world_model_loss(prediction, target, scale)
-        if errors.shape != mask.shape:
-            raise ValueError(
-                f"world_model_loss must return one value per replay position, with shape {tuple(mask.shape)}, "
-                f"not {tuple(errors.shape)}."
-            )
-        masked_errors = errors * mask
-        valid_count = mask.sum()
-        mean_error = self._globally_normalized_loss(masked_errors.sum(), valid_count)
-        loss = mean_error if self.world_model_loss_reduction == "mean" else masked_errors.sum(dim=1).mean()
-        metrics = {"world_model_error": mean_error.detach()}
-        if self.task.num_labels:
-            label_errors = self.task.label_loss(torch.stack(logits, 1).float(), window["labels"].float())
-            if label_errors.shape != mask.shape:
-                raise ValueError(
-                    f"label_loss must return one value per replay position, with shape {tuple(mask.shape)}, "
-                    f"not {tuple(label_errors.shape)}."
-                )
-            label_loss = self._globally_normalized_loss((label_errors * mask).sum(), valid_count)
-            loss = loss + label_loss
-            metrics["label_loss"] = label_loss.detach()
-        metrics["world_model_grad_norm"] = self._apply(loss, "world_model", self.world_model)
-        metrics["world_model_loss"] = loss.detach() / (
-            self.world_model_window if self.world_model_loss_reduction == "sum" else 1
-        )
-        return metrics
-
-    def _value(self, features: torch.Tensor) -> torch.Tensor:
-        """Read scalar values through the standard synthetic critic observation set."""
-        return self.critic(TensorDict({"critic": features}, batch_size=features.shape[:-1])).squeeze(-1)
-
-    def _cap(self, values: torch.Tensor) -> torch.Tensor:
-        """Clamp values above ``value_cap`` when set; there is no lower bound."""
-        return values if self.value_cap is None else values.clamp(max=self.value_cap)
-
-    def _fit_policy(self) -> dict[str, torch.Tensor]:
-        """Backpropagate imagined returns through frozen dynamics and fit a TD(lambda) critic."""
-        with torch.no_grad():
-            start, history = self._starts(self.policy_batch_size)
-        state = self.task.representation.unflatten(start["state"])
-        goal, context, previous = start["goal"], start["context"], start["prev_actions"]
-        rewards, terminals, features, reaches = [], [], [], []
-        survival = start["state"].new_ones(start.batch_size)
-        reachable = survival > 0
-        with _frozen(self.world_model, self.critic):
-            for _ in range(self.horizon):
-                reaches.append(survival)
-                features.append(self.task.critic_obs(state, goal, context, previous, history))
-                with self._autocast():
-                    action = self._actor_forward(history, self.task.actor_goal(state, goal))
-                if self.actor.use_reference_action:
-                    action = action + self.task.reference_action(state, goal)
-                transition_start = self.task.pre_dynamics(state, context)
-                successor, _, labels = self._predict(transition_start, action, context, previous)
-                reward = self.task.reward(transition_start, action, successor, goal, previous, labels=labels)
-                terminal = self.task.termination_prob(successor, goal, labels=labels)
-                rewards.append(torch.where(reachable, reward, 0.0))
-                terminal = torch.where(reachable, terminal, 1.0)
-                terminals.append(terminal)
-                survival = survival * (1 - terminal)
-                reachable = survival > 0
-                state = tuple(_keep_reachable(reachable, new, old) for new, old in zip(successor, state))
-                next_goal, next_context = self.task.advance(state, goal, context)
-                goal = _keep_reachable(reachable, next_goal, goal)
-                context = _keep_reachable(reachable, next_context, context)
-                previous = _keep_reachable(reachable, torch.cat((previous[:, 1:], action[:, None]), dim=1), previous)
-                frame = self.task.add_noise(self.task.actor_obs(state, goal, context, previous))
-                history = _keep_reachable(reachable, torch.cat((history[:, 1:], frame[:, None]), dim=1), history)
-            features.append(self.task.critic_obs(state, goal, context, previous, history))
-            reward, terminal = torch.stack(rewards), torch.stack(terminals)
-            reach = torch.stack(reaches)
-            weights = reach * self.gamma ** torch.arange(self.horizon, device=self.device)[:, None]
-            value = self._value(features[-1])
-            bootstrap = torch.where(reachable, self._cap(value), 0.0)
-            objective = (weights * reward).sum(dim=0) + self.gamma**self.horizon * survival * bootstrap
-            policy_loss = -objective.mean()
-            gradient = self._apply(policy_loss, "actor", self.actor, clip_value=0.1)
-        features_tensor = torch.stack(features).detach()
-        metrics = {
-            "policy_loss": policy_loss.detach(),
-            "policy_grad_norm": gradient,
-            "imagined_survival": survival.mean().detach(),
-            "imagined_reward": reward.detach().sum() / (reach > 0).sum(),
-        }
-        if self.value_cap is not None:
-            metrics["terminal_saturation"] = ((value.detach() > self.value_cap) & reachable).sum() / (
-                reachable.sum().clamp_min(1)
-            )
-        metrics.update(self._fit_critic(features_tensor, reward.detach(), terminal.detach(), reach.detach()))
-        return metrics
-
-    def _fit_critic(
-        self, features: torch.Tensor, rewards: torch.Tensor, terminals: torch.Tensor, reach: torch.Tensor
-    ) -> dict[str, torch.Tensor]:
-        """Fit scalar values on detached imagined features with TD(lambda) targets.
-
-        ``reach`` is the probability of reaching each imagined state without an earlier termination. The loss is
-        weighted by it, and the normalizer is updated with the replay start states only, so states after a
-        termination influence neither.
-        """
-        with torch.no_grad():
-            replay_start_features = features[0]
-            self.critic.update_normalization(
-                TensorDict({"critic": replay_start_features}, batch_size=replay_start_features.shape[:1])
-            )
-            reachable = reach > 0
-            final_reachable = reachable[-1:] & (terminals[-1:] < 1)
-            reachable_states = torch.cat((reachable, final_reachable))
-            features = torch.where(reachable_states[..., None], features, features[:1])
-            values = self._value(features)
-            if self.critic_bootstrap_clipping:
-                values = self._cap(values)
-            targets = lambda_returns(rewards, terminals, values, self.gamma, self.lam)
-            targets = torch.where(reachable, self._cap(targets), 0.0).flatten()
-        features = features[:-1].flatten(0, 1)
-        if not self.critic_survival_weighting:
-            reach = reachable.to(reach.dtype)
-        reach = reach.flatten()
-        losses = []
-        permutation = None
-        for _ in range(self.num_critic_epochs):
-            if self.critic_shuffle_each_epoch:
-                permutation = torch.rand(features.shape[0], device=self.device).argsort()
-            elif permutation is None:
-                size = features.shape[0] // self.num_critic_mini_batches * self.num_critic_mini_batches
-                permutation = torch.randperm(features.shape[0], device=self.device)[:size]
-            for indices in permutation.chunk(self.num_critic_mini_batches):
-                with self._autocast():
-                    squared_errors = (self._value(features[indices]) - targets[indices]).square()
-                    loss = self._globally_normalized_loss(
-                        (reach[indices] * squared_errors).sum(), reach[indices].sum(), 1e-6
-                    )
-                self._apply(loss, "critic", self.critic)
-                losses.append(loss.detach())
-        return {"critic_loss": torch.stack(losses).mean()}
-
-    def _globally_normalized_loss(
-        self, total: torch.Tensor, weight: torch.Tensor, minimum: float = 1.0
-    ) -> torch.Tensor:
-        """Divide a local loss sum by its weight summed over all ranks, pre-multiplied by the world size.
-
-        Gradient averaging across ranks then yields the loss normalized by the global weight.
-        """
-        if self.is_multi_gpu:
-            weight = weight.detach().clone()
-            dist.all_reduce(weight)
-        return total * self.gpu_world_size / weight.clamp(min=minimum)
-
-    def _apply(self, loss: torch.Tensor, name: str, module: nn.Module, clip_value: float | None = None) -> torch.Tensor:
-        """Apply finite gradients with optional value clipping.
-
-        Fused optimizers skip nonfinite steps on the device; other optimizers check the gradient norm on the host.
-        """
-        optimizers = [self.optimizers[name], *([self.muon_optimizers[name]] if name in self.muon_optimizers else [])]
-        module.zero_grad(set_to_none=True)
-        loss.backward()
-        if self.is_multi_gpu:
-            reduce_gradients_in_buckets(module.parameters(), self.gpu_world_size, bucket_mb=25.0)
-        norm = nn.utils.clip_grad_norm_(module.parameters(), self.max_grad_norm)
-        if clip_value is not None:
-            nn.utils.clip_grad_value_(module.parameters(), clip_value)
-        finite = torch.isfinite(norm)
-        if optimizers[0].defaults.get("fused"):
-            for optimizer in optimizers:
-                optimizer.found_inf = (~finite).float()
-                optimizer.step()
-        elif finite:
-            for optimizer in optimizers:
-                optimizer.step()
-        if name == "actor" and self.actor_ema is not None:
-            self.actor_ema.update(finite)
-        return norm.detach()
 
     def update(self) -> tuple[dict[str, float], dict[str, float]]:
         """Run accumulated learner updates and return mean losses and statistics."""
@@ -766,108 +453,6 @@ class SuperMimic:
         stats["Optimizer/actor_learning_rate"] = self.actor_learning_rate
         return losses, stats
 
-    def _take_updates(self) -> tuple[int, torch.Tensor | None]:
-        """Consume accrued updates and prepare complete windows when every rank can train."""
-        count = max(int(self._update_debt + 1e-9), 0) if self.storage.num_steps >= self.num_warmup_steps else 0
-        self._update_debt -= count
-        cumulative_counts = None
-        if count and self.world_model_full_windows:
-            cumulative_counts = self.storage.complete_window_counts(self.world_model_window + 1)
-        if self.is_multi_gpu or cumulative_counts is not None:
-            ready_count = torch.tensor(count, device=self.device)
-            if cumulative_counts is not None:
-                ready_count *= cumulative_counts[-1] > 0
-            if self.is_multi_gpu:
-                dist.all_reduce(ready_count, op=dist.ReduceOp.MIN)
-            count = int(ready_count)
-        return count, cumulative_counts
-
-    def _reset_update_debt(self) -> None:
-        """Restore the fractional update credit that collection would have accrued over ``env_steps``.
-
-        The from-start schedule begins with ``1 - updates_per_step`` credit, so the first collected step yields one
-        update; whole updates already ran, so only the fraction of the accrued credit remains.
-        """
-        if self.update_schedule == "after_warmup":
-            self._update_debt = 0.0
-            return
-        accrued = 1.0 - self.updates_per_step + self.env_steps * self.updates_per_step
-        self._update_debt = accrued - int(accrued + 1e-9) if self.env_steps else accrued
-
-    def _run_iteration(
-        self, update_policy: bool, cumulative_counts: torch.Tensor | None = None
-    ) -> dict[str, torch.Tensor]:
-        """Run one learner iteration and return the mean of each metric over its updates."""
-        totals: dict[str, list[torch.Tensor]] = {}
-        for _ in range(self.num_world_model_updates):
-            for key, value in self._fit_world_model(cumulative_counts).items():
-                totals.setdefault(key, []).append(value)
-        if update_policy:
-            for _ in range(self.num_policy_updates):
-                for key, value in self._fit_policy().items():
-                    totals.setdefault(key, []).append(value)
-        return {key: torch.stack(values).float().mean() for key, values in totals.items()}
-
-    def _update_learning_rate(self) -> None:
-        """Set all optimizer rates for the next learner iteration, clamping at the cosine floor."""
-        step = max(self.env_steps - 1, 0) if self.learning_rate_schedule_unit == "env_steps" else self.iteration
-        progress = min(step / self.num_schedule_updates, 1.0)
-        factor = self.final_learning_rate_ratio + (1 - self.final_learning_rate_ratio) * 0.5 * (
-            1 + math.cos(math.pi * progress)
-        )
-        rates = {name: base * factor for name, base in self._base_learning_rates.items()}
-        rates["actor"] *= self.actor_learning_rate_multiplier(self.iteration)
-        self.learning_rate, self.actor_learning_rate = rates["world_model"], rates["actor"]
-        for name, optimizer in self._all_optimizers():
-            for group in optimizer.param_groups:
-                if isinstance(group["lr"], torch.Tensor):
-                    group["lr"].fill_(rates[name])
-                else:
-                    group["lr"] = rates[name]
-
-    def _all_optimizers(self) -> list[tuple[str, torch.optim.Optimizer]]:
-        """Return each Adam and Muon optimizer with the name of the model it trains."""
-        return [*self.optimizers.items(), *self.muon_optimizers.items()]
-
-    def _configure_optimizer_capture(self) -> None:
-        """Configure optimizers for the learner device and CUDA graphs, and discard stale graphs.
-
-        Loaded optimizer states may come from another device, so their fused flags and Adam step counters are reset to
-        this learner's configuration. Graphs need capturable optimizers with device learning rates.
-        """
-        for _, optimizer in self._all_optimizers():
-            fused = bool(optimizer.defaults.get("fused"))
-            for group in optimizer.param_groups:
-                lr = float(group["lr"])
-                group["lr"] = torch.tensor(lr, device=self.device) if self.use_cuda_graph else lr
-                group["capturable"] = self.use_cuda_graph
-                if "fused" in group:
-                    group["fused"] = fused
-                for param in group["params"]:
-                    state = optimizer.state.get(param, {})
-                    if "step" in state:
-                        state["step"] = state["step"].to(param.device if fused or self.use_cuda_graph else "cpu")
-        self._graph_updates.clear()
-
-    @torch.no_grad()
-    def broadcast_parameters(self) -> None:
-        """Synchronize learned model state while preserving each rank's local collection histories."""
-        if not self.is_multi_gpu:
-            return
-        for model in (self.actor, self.world_model, self._raw_critic):
-            for tensor in model.state_dict().values():
-                dist.broadcast(tensor, src=0)
-        if self.actor_ema is not None:
-            self.actor_ema.broadcast()
-
-    def release_cuda_graphs(self) -> None:
-        """Release graphs containing NCCL collectives before process-group teardown."""
-        self._act_graphs.clear()
-        self._process_env_step_graphs.clear()
-        self._graph_updates.clear()
-        if self.use_cuda_graph:
-            torch.cuda.synchronize(self.device)
-
     def train_mode(self) -> None:
         """Enable training models; real collection moments update in actor/process calls."""
         self.actor.train()
@@ -879,14 +464,6 @@ class SuperMimic:
         self.actor.eval()
         self.world_model.eval()
         self.critic.eval()
-
-    def get_policy(self) -> SuperMimicActor:
-        """Return deployment weights, using the optional EMA with live normalization and collection-noise buffers."""
-        return self.actor if self.actor_ema is None else self.actor_ema.policy()
-
-    def get_default_load_cfg(self) -> dict:
-        """Return the default selection for resuming this algorithm's own checkpoints, including the world model."""
-        return {"actor": True, "critic": True, "world_model": True, "optimizer": True, "iteration": True}
 
     def save(self) -> dict:
         """Save all trainable state; replay and simulator collection state are deliberately excluded."""
@@ -903,6 +480,10 @@ class SuperMimic:
         if self.actor_ema is not None:
             saved.update(self.actor_ema.state_dict())
         return saved
+
+    def get_default_load_cfg(self) -> dict:
+        """Return the default selection for resuming this algorithm's own checkpoints, including the world model."""
+        return {"actor": True, "critic": True, "world_model": True, "optimizer": True, "iteration": True}
 
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load an actor alone or a complete model selection; partial dynamics/critic restores are rejected."""
@@ -943,6 +524,10 @@ class SuperMimic:
         self._collected_steps = 0
         self._update_learning_rate()
         return bool(load_cfg.get("iteration"))
+
+    def get_policy(self) -> SuperMimicActor:
+        """Return deployment weights, using the optional EMA with live normalization and collection-noise buffers."""
+        return self.actor if self.actor_ema is None else self.actor_ema.policy()
 
     def compile(self, mode: str | None = None) -> None:
         """Compile differentiable dynamics and stateless actor forwards using the standard mode restrictions."""
@@ -1029,6 +614,421 @@ class SuperMimic:
         learner.broadcast_parameters()
         learner.compile(cfg.get("torch_compile_mode"))
         return learner
+
+    @torch.no_grad()
+    def broadcast_parameters(self) -> None:
+        """Synchronize learned model state while preserving each rank's local collection histories."""
+        if not self.is_multi_gpu:
+            return
+        for model in (self.actor, self.world_model, self._raw_critic):
+            for tensor in model.state_dict().values():
+                dist.broadcast(tensor, src=0)
+        if self.actor_ema is not None:
+            self.actor_ema.broadcast()
+
+    def release_cuda_graphs(self) -> None:
+        """Release graphs containing NCCL collectives before process-group teardown."""
+        self._act_graphs.clear()
+        self._process_env_step_graphs.clear()
+        self._graph_updates.clear()
+        if self.use_cuda_graph:
+            torch.cuda.synchronize(self.device)
+
+    def _act(self, obs: TensorDict) -> dict[str, torch.Tensor]:
+        """Choose a noisy action and record it as the latest action using only device operations."""
+        self.actor.sync_actions(obs)
+        previous_actions = self.actor.previous_actions.clone()
+        return {"actions": self.actor(obs, stochastic_output=True), "previous_actions": previous_actions}
+
+    def _process_env_step(
+        self,
+        start: TensorDict,
+        actions: torch.Tensor,
+        previous_actions: torch.Tensor,
+        obs: TensorDict,
+        final: TensorDict,
+        done: torch.Tensor,
+        rewards: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Store the transition, update dynamics statistics and reset finished histories on the device."""
+        groups = self.obs_groups
+        state = observation_set(start, groups, "state")
+        successor = observation_set(final, groups, "state")
+        context = observation_set(start, groups, "context")
+        goal = observation_set(start, groups, "goal")
+        window_break = (observation_set(obs, groups, "state") != successor).any(dim=-1) & ~done
+        # Tasks without event labels store an empty label set
+        labels = observation_set(final, groups, "labels")
+        transition = TensorDict(
+            {
+                "state": state,
+                "next_state": successor,
+                "goal": goal,
+                "context": context,
+                "labels": labels,
+                "actions": actions,
+                "prev_actions": previous_actions,
+                "dones": done,
+                "window_break": window_break,
+            },
+            batch_size=[self.storage.num_envs],
+            device=self.device,
+        )
+        # Record nonfinite consumed final observations without synchronizing; update() rejects them before training
+        self._nonfinite_final_obs.logical_or_(
+            torch.stack((~torch.isfinite(successor).all(), ~torch.isfinite(labels).all()))
+        )
+        self.actor_learning_rate_multiplier.record(rewards, done)
+        self.storage.write(transition)
+        physical = self.task.pre_dynamics(self.task.representation.unflatten(state), context)
+        self.world_model.observe(
+            physical,
+            self.task.dynamics_actions(actions),
+            self.task.dynamics_context(physical, context, previous_actions),
+            self.task.representation.unflatten(successor),
+        )
+        reset_action = observation_set(obs, groups, "prev_action") if "prev_action" in groups else None
+        reset_previous = observation_set(obs, groups, "prev_prev_action") if "prev_prev_action" in groups else None
+        self.actor.reset(done, reset_action, reset_previous)
+        self._window_break_sum.add_(window_break.float().mean())
+        return {}
+
+    def _take_updates(self) -> tuple[int, torch.Tensor | None]:
+        """Consume accrued updates and prepare complete windows when every rank can train."""
+        count = max(int(self._update_debt + 1e-9), 0) if self.storage.num_steps >= self.num_warmup_steps else 0
+        self._update_debt -= count
+        cumulative_counts = None
+        if count and self.world_model_full_windows:
+            cumulative_counts = self.storage.complete_window_counts(self.world_model_window + 1)
+        if self.is_multi_gpu or cumulative_counts is not None:
+            ready_count = torch.tensor(count, device=self.device)
+            if cumulative_counts is not None:
+                ready_count *= cumulative_counts[-1] > 0
+            if self.is_multi_gpu:
+                dist.all_reduce(ready_count, op=dist.ReduceOp.MIN)
+            count = int(ready_count)
+        return count, cumulative_counts
+
+    def _reset_update_debt(self) -> None:
+        """Restore the fractional update credit that collection would have accrued over ``env_steps``.
+
+        The from-start schedule begins with ``1 - updates_per_step`` credit, so the first collected step yields one
+        update; whole updates already ran, so only the fraction of the accrued credit remains.
+        """
+        if self.update_schedule == "after_warmup":
+            self._update_debt = 0.0
+            return
+        accrued = 1.0 - self.updates_per_step + self.env_steps * self.updates_per_step
+        self._update_debt = accrued - int(accrued + 1e-9) if self.env_steps else accrued
+
+    def _run_iteration(
+        self, update_policy: bool, cumulative_counts: torch.Tensor | None = None
+    ) -> dict[str, torch.Tensor]:
+        """Run one learner iteration and return the mean of each metric over its updates."""
+        totals: dict[str, list[torch.Tensor]] = {}
+        for _ in range(self.num_world_model_updates):
+            for key, value in self._fit_world_model(cumulative_counts).items():
+                totals.setdefault(key, []).append(value)
+        if update_policy:
+            for _ in range(self.num_policy_updates):
+                for key, value in self._fit_policy().items():
+                    totals.setdefault(key, []).append(value)
+        return {key: torch.stack(values).float().mean() for key, values in totals.items()}
+
+    def _fit_world_model(self, cumulative_counts: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
+        """Fit autoregressive physical successors and their labels on valid replay positions."""
+        window, mask = self._windows(self.world_model_batch_size, cumulative_counts)
+        state = self.task.representation.unflatten(window["state"][:, 0])
+        predictions, logits = [], []
+        for step in range(self.world_model_window):
+            state = self.task.pre_dynamics(state, window["context"][:, step])
+            state, event_logits, _ = self._predict(
+                state, window["actions"][:, step], window["context"][:, step], window["prev_actions"][:, step]
+            )
+            predictions.append(state)
+            if event_logits is not None:
+                logits.append(event_logits)
+        prediction = tuple(torch.stack(values, dim=1) for values in zip(*predictions))
+        target = self.task.representation.unflatten(window["next_state"])
+        scale = torch.maximum(self.world_model.out_norm.std, self.error_floor)
+        errors = self.task.world_model_loss(prediction, target, scale)
+        if errors.shape != mask.shape:
+            raise ValueError(
+                f"world_model_loss must return one value per replay position, with shape {tuple(mask.shape)}, "
+                f"not {tuple(errors.shape)}."
+            )
+        masked_errors = errors * mask
+        valid_count = mask.sum()
+        mean_error = self._globally_normalized_loss(masked_errors.sum(), valid_count)
+        loss = mean_error if self.world_model_loss_reduction == "mean" else masked_errors.sum(dim=1).mean()
+        metrics = {"world_model_error": mean_error.detach()}
+        if self.task.num_labels:
+            label_errors = self.task.label_loss(torch.stack(logits, 1).float(), window["labels"].float())
+            if label_errors.shape != mask.shape:
+                raise ValueError(
+                    f"label_loss must return one value per replay position, with shape {tuple(mask.shape)}, "
+                    f"not {tuple(label_errors.shape)}."
+                )
+            label_loss = self._globally_normalized_loss((label_errors * mask).sum(), valid_count)
+            loss = loss + label_loss
+            metrics["label_loss"] = label_loss.detach()
+        metrics["world_model_grad_norm"] = self._apply(loss, "world_model", self.world_model)
+        metrics["world_model_loss"] = loss.detach() / (
+            self.world_model_window if self.world_model_loss_reduction == "sum" else 1
+        )
+        return metrics
+
+    def _windows(
+        self, batch_size: int, cumulative_counts: torch.Tensor | None = None
+    ) -> tuple[TensorDict, torch.Tensor]:
+        """Sample uniform anchors, additionally cutting world-model targets after external state edits."""
+        if self.world_model_full_windows:
+            index = self.storage.sample_sequences(batch_size, self.world_model_window + 1, cumulative_counts)
+            ids, valid = index.ids[:, :-1], index.valid[:, :-1]
+        else:
+            index = self.storage.sample(batch_size, length=self.world_model_window)
+            ids, valid = index.ids, index.valid
+        keys = ["state", "next_state", "actions", "context", "labels", "prev_actions", "window_break"]
+        window = self.storage.gather(keys, ids)
+        if self.num_mirrored_windows:
+            head, task = window[: self.num_mirrored_windows], self.task
+            mirrored = TensorDict(
+                {
+                    "state": task.mirror_state(head["state"]),
+                    "next_state": task.mirror_state(head["next_state"]),
+                    "actions": task.mirror_actions(head["actions"]),
+                    "prev_actions": task.mirror_actions(head["prev_actions"]),
+                    "context": task.mirror_context(head["context"]),
+                    "labels": task.mirror_labels(head["labels"]) if task.num_labels else head["labels"],
+                    "window_break": head["window_break"],
+                },
+                batch_size=head.batch_size,
+            )
+            window = torch.cat((mirrored, window[self.num_mirrored_windows :]))
+        mask = valid.float()
+        if not self.world_model_full_windows and self.world_model_window > 1:
+            mask[:, 1:] *= torch.cumprod((~window["window_break"][:, :-1]).long(), dim=1)
+        return window, mask
+
+    def _predict(
+        self, state: State, actions: torch.Tensor, context: torch.Tensor, previous_actions: torch.Tensor
+    ) -> tuple[State, torch.Tensor | None, torch.Tensor | None]:
+        """Apply learned dynamics, successor labels and task-owned analytic state."""
+        with self._autocast():
+            raw_next = self._world_model_forward(
+                state, self.task.dynamics_actions(actions), self.task.dynamics_context(state, context, previous_actions)
+            )
+            # Successor events depend on the action just applied, so their history includes it
+            next_previous_actions = torch.cat((previous_actions[..., 1:, :], actions.unsqueeze(-2)), dim=-2)
+            logits = (
+                self.world_model.label_logits(
+                    raw_next, self.task.dynamics_context(raw_next, context, next_previous_actions)
+                )
+                if self.task.num_labels
+                else None
+            )
+        labels = self.task.label_activation(logits.float()) if logits is not None else None
+        return self.task.post_dynamics(state, raw_next, labels, actions, context), logits, labels
+
+    def _fit_policy(self) -> dict[str, torch.Tensor]:
+        """Backpropagate imagined returns through frozen dynamics and fit a TD(lambda) critic."""
+        with torch.no_grad():
+            start, history = self._starts(self.policy_batch_size)
+        state = self.task.representation.unflatten(start["state"])
+        goal, context, previous = start["goal"], start["context"], start["prev_actions"]
+        rewards, terminals, features, reaches = [], [], [], []
+        survival = start["state"].new_ones(start.batch_size)
+        reachable = survival > 0
+        with _frozen(self.world_model, self.critic):
+            for _ in range(self.horizon):
+                reaches.append(survival)
+                features.append(self.task.critic_obs(state, goal, context, previous, history))
+                with self._autocast():
+                    action = self._actor_forward(history, self.task.actor_goal(state, goal))
+                if self.actor.use_reference_action:
+                    action = action + self.task.reference_action(state, goal)
+                transition_start = self.task.pre_dynamics(state, context)
+                successor, _, labels = self._predict(transition_start, action, context, previous)
+                reward = self.task.reward(transition_start, action, successor, goal, previous, labels=labels)
+                terminal = self.task.termination_prob(successor, goal, labels=labels)
+                rewards.append(torch.where(reachable, reward, 0.0))
+                terminal = torch.where(reachable, terminal, 1.0)
+                terminals.append(terminal)
+                survival = survival * (1 - terminal)
+                reachable = survival > 0
+                state = tuple(_keep_reachable(reachable, new, old) for new, old in zip(successor, state))
+                next_goal, next_context = self.task.advance(state, goal, context)
+                goal = _keep_reachable(reachable, next_goal, goal)
+                context = _keep_reachable(reachable, next_context, context)
+                previous = _keep_reachable(reachable, torch.cat((previous[:, 1:], action[:, None]), dim=1), previous)
+                frame = self.task.add_noise(self.task.actor_obs(state, goal, context, previous))
+                history = _keep_reachable(reachable, torch.cat((history[:, 1:], frame[:, None]), dim=1), history)
+            features.append(self.task.critic_obs(state, goal, context, previous, history))
+            reward, terminal = torch.stack(rewards), torch.stack(terminals)
+            reach = torch.stack(reaches)
+            weights = reach * self.gamma ** torch.arange(self.horizon, device=self.device)[:, None]
+            value = self._value(features[-1])
+            bootstrap = torch.where(reachable, self._cap(value), 0.0)
+            objective = (weights * reward).sum(dim=0) + self.gamma**self.horizon * survival * bootstrap
+            policy_loss = -objective.mean()
+            gradient = self._apply(policy_loss, "actor", self.actor, clip_value=0.1)
+        features_tensor = torch.stack(features).detach()
+        metrics = {
+            "policy_loss": policy_loss.detach(),
+            "policy_grad_norm": gradient,
+            "imagined_survival": survival.mean().detach(),
+            "imagined_reward": reward.detach().sum() / (reach > 0).sum(),
+        }
+        if self.value_cap is not None:
+            metrics["terminal_saturation"] = ((value.detach() > self.value_cap) & reachable).sum() / (
+                reachable.sum().clamp_min(1)
+            )
+        metrics.update(self._fit_critic(features_tensor, reward.detach(), terminal.detach(), reach.detach()))
+        return metrics
+
+    def _starts(self, batch_size: int) -> tuple[TensorDict, torch.Tensor]:
+        """Build reset-aware actor histories, repeating the earliest available frame when needed."""
+        index = self.storage.sample(batch_size, history=self.actor.history_length - 1)
+        history = self.storage.gather(("state", "goal", "context", "prev_actions"), index.ids)
+        state = self.task.representation.unflatten(history["state"])
+        frames = self.task.add_noise(
+            self.task.actor_obs(state, history["goal"], history["context"], history["prev_actions"])
+        )
+        first = index.valid.long().argmax(dim=1)
+        first_frame = frames[torch.arange(batch_size, device=frames.device), first]
+        frames = torch.where(index.valid[..., None], frames, first_frame[:, None])
+        return history[:, -1], frames
+
+    def _value(self, features: torch.Tensor) -> torch.Tensor:
+        """Read scalar values through the standard synthetic critic observation set."""
+        return self.critic(TensorDict({"critic": features}, batch_size=features.shape[:-1])).squeeze(-1)
+
+    def _cap(self, values: torch.Tensor) -> torch.Tensor:
+        """Clamp values above ``value_cap`` when set; there is no lower bound."""
+        return values if self.value_cap is None else values.clamp(max=self.value_cap)
+
+    def _fit_critic(
+        self, features: torch.Tensor, rewards: torch.Tensor, terminals: torch.Tensor, reach: torch.Tensor
+    ) -> dict[str, torch.Tensor]:
+        """Fit scalar values on detached imagined features with TD(lambda) targets.
+
+        ``reach`` is the probability of reaching each imagined state without an earlier termination. The loss is
+        weighted by it, and the normalizer is updated with the replay start states only, so states after a
+        termination influence neither.
+        """
+        with torch.no_grad():
+            replay_start_features = features[0]
+            self.critic.update_normalization(
+                TensorDict({"critic": replay_start_features}, batch_size=replay_start_features.shape[:1])
+            )
+            reachable = reach > 0
+            final_reachable = reachable[-1:] & (terminals[-1:] < 1)
+            reachable_states = torch.cat((reachable, final_reachable))
+            features = torch.where(reachable_states[..., None], features, features[:1])
+            values = self._value(features)
+            if self.critic_bootstrap_clipping:
+                values = self._cap(values)
+            targets = lambda_returns(rewards, terminals, values, self.gamma, self.lam)
+            targets = torch.where(reachable, self._cap(targets), 0.0).flatten()
+        features = features[:-1].flatten(0, 1)
+        if not self.critic_survival_weighting:
+            reach = reachable.to(reach.dtype)
+        reach = reach.flatten()
+        losses = []
+        permutation = None
+        for _ in range(self.num_critic_epochs):
+            if self.critic_shuffle_each_epoch:
+                permutation = torch.rand(features.shape[0], device=self.device).argsort()
+            elif permutation is None:
+                size = features.shape[0] // self.num_critic_mini_batches * self.num_critic_mini_batches
+                permutation = torch.randperm(features.shape[0], device=self.device)[:size]
+            for indices in permutation.chunk(self.num_critic_mini_batches):
+                with self._autocast():
+                    squared_errors = (self._value(features[indices]) - targets[indices]).square()
+                    loss = self._globally_normalized_loss(
+                        (reach[indices] * squared_errors).sum(), reach[indices].sum(), 1e-6
+                    )
+                self._apply(loss, "critic", self.critic)
+                losses.append(loss.detach())
+        return {"critic_loss": torch.stack(losses).mean()}
+
+    def _globally_normalized_loss(
+        self, total: torch.Tensor, weight: torch.Tensor, minimum: float = 1.0
+    ) -> torch.Tensor:
+        """Divide a local loss sum by its weight summed over all ranks, pre-multiplied by the world size.
+
+        Gradient averaging across ranks then yields the loss normalized by the global weight.
+        """
+        if self.is_multi_gpu:
+            weight = weight.detach().clone()
+            dist.all_reduce(weight)
+        return total * self.gpu_world_size / weight.clamp(min=minimum)
+
+    def _apply(self, loss: torch.Tensor, name: str, module: nn.Module, clip_value: float | None = None) -> torch.Tensor:
+        """Apply finite gradients with optional value clipping.
+
+        Fused optimizers skip nonfinite steps on the device; other optimizers check the gradient norm on the host.
+        """
+        optimizers = [self.optimizers[name], *([self.muon_optimizers[name]] if name in self.muon_optimizers else [])]
+        module.zero_grad(set_to_none=True)
+        loss.backward()
+        if self.is_multi_gpu:
+            reduce_gradients_in_buckets(module.parameters(), self.gpu_world_size, bucket_mb=25.0)
+        norm = nn.utils.clip_grad_norm_(module.parameters(), self.max_grad_norm)
+        if clip_value is not None:
+            nn.utils.clip_grad_value_(module.parameters(), clip_value)
+        finite = torch.isfinite(norm)
+        if optimizers[0].defaults.get("fused"):
+            for optimizer in optimizers:
+                optimizer.found_inf = (~finite).float()
+                optimizer.step()
+        elif finite:
+            for optimizer in optimizers:
+                optimizer.step()
+        if name == "actor" and self.actor_ema is not None:
+            self.actor_ema.update(finite)
+        return norm.detach()
+
+    def _update_learning_rate(self) -> None:
+        """Set all optimizer rates for the next learner iteration, clamping at the cosine floor."""
+        step = max(self.env_steps - 1, 0) if self.learning_rate_schedule_unit == "env_steps" else self.iteration
+        progress = min(step / self.num_schedule_updates, 1.0)
+        factor = self.final_learning_rate_ratio + (1 - self.final_learning_rate_ratio) * 0.5 * (
+            1 + math.cos(math.pi * progress)
+        )
+        rates = {name: base * factor for name, base in self._base_learning_rates.items()}
+        rates["actor"] *= self.actor_learning_rate_multiplier(self.iteration)
+        self.learning_rate, self.actor_learning_rate = rates["world_model"], rates["actor"]
+        for name, optimizer in self._all_optimizers():
+            for group in optimizer.param_groups:
+                if isinstance(group["lr"], torch.Tensor):
+                    group["lr"].fill_(rates[name])
+                else:
+                    group["lr"] = rates[name]
+
+    def _all_optimizers(self) -> list[tuple[str, torch.optim.Optimizer]]:
+        """Return each Adam and Muon optimizer with the name of the model it trains."""
+        return [*self.optimizers.items(), *self.muon_optimizers.items()]
+
+    def _configure_optimizer_capture(self) -> None:
+        """Configure optimizers for the learner device and CUDA graphs, and discard stale graphs.
+
+        Loaded optimizer states may come from another device, so their fused flags and Adam step counters are reset to
+        this learner's configuration. Graphs need capturable optimizers with device learning rates.
+        """
+        for _, optimizer in self._all_optimizers():
+            fused = bool(optimizer.defaults.get("fused"))
+            for group in optimizer.param_groups:
+                lr = float(group["lr"])
+                group["lr"] = torch.tensor(lr, device=self.device) if self.use_cuda_graph else lr
+                group["capturable"] = self.use_cuda_graph
+                if "fused" in group:
+                    group["fused"] = fused
+                for param in group["params"]:
+                    state = optimizer.state.get(param, {})
+                    if "step" in state:
+                        state["step"] = state["step"].to(param.device if fused or self.use_cuda_graph else "cpu")
+        self._graph_updates.clear()
 
 
 def _overrides(task: DifferentiableTask, name: str) -> bool:
