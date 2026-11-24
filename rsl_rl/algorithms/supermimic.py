@@ -554,6 +554,11 @@ class SuperMimic:
         target = self.task.representation.unflatten(window["next_state"])
         scale = torch.maximum(self.world_model.out_norm.std, self.error_floor)
         errors = self.task.world_model_loss(prediction, target, scale)
+        if errors.shape != mask.shape:
+            raise ValueError(
+                f"world_model_loss must return one value per replay position, with shape {tuple(mask.shape)}, "
+                f"not {tuple(errors.shape)}."
+            )
         masked_errors = errors * mask
         valid_count = mask.sum()
         mean_error = self._globally_normalized_loss(masked_errors.sum(), valid_count)

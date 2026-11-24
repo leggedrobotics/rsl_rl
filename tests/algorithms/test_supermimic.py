@@ -1543,13 +1543,16 @@ def test_task_label_hooks_define_label_values_and_their_masked_loss() -> None:
     torch.testing.assert_close(metrics["label_loss"], expected.detach())
 
 
-def test_label_loss_must_return_a_loss_per_replay_position() -> None:
-    """A label loss reduced over replay positions fails the model fit."""
+def test_model_losses_must_return_a_loss_per_replay_position() -> None:
+    """A label or dynamics loss reduced over replay positions fails the model fit."""
     env = ScalarEnv()
     learner = _learner(env, task_cfg={"class_name": LoadScalarTask})
     _collect(learner, env, 4)
     learner.task.label_loss = lambda logits, labels: (logits - labels).square().mean()
-    with pytest.raises(ValueError, match="one value per replay position"):
+    with pytest.raises(ValueError, match="label_loss must return one value per replay position"):
+        learner._fit_world_model()
+    learner.task.world_model_loss = lambda prediction, target, scale: torch.zeros((), requires_grad=True)
+    with pytest.raises(ValueError, match="world_model_loss must return one value per replay position"):
         learner._fit_world_model()
 
 

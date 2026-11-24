@@ -222,7 +222,10 @@ class DifferentiableTask:
         raise NotImplementedError
 
     def world_model_loss(self, prediction: State, target: State, scale: torch.Tensor) -> torch.Tensor:
-        """Return one dynamics loss per replay position, including any integrated state coordinates."""
+        """Return one dynamics loss per replay position, including any integrated state coordinates.
+
+        Reduce the state dimensions only: the learner masks invalid replay positions and rejects any other shape.
+        """
         return (self.representation.error(prediction, target) / scale).square().mean(dim=-1)
 
     def add_noise(self, observation: torch.Tensor) -> torch.Tensor:
