@@ -969,7 +969,7 @@ class SuperMimic:
         world_model = model_class(
             task.representation,
             task.representation.features(state).shape[-1],
-            env.num_actions,
+            task.dynamics_actions(previous[:, -1]).shape[-1],
             dynamics_context.shape[-1],
             num_labels=task.num_labels,
             **model_cfg,
