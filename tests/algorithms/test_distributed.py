@@ -22,6 +22,7 @@ import pytest
 from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import reduce_gradients_in_buckets
+from rsl_rl.utils.utils import normalize_loss_across_ranks
 from tests.algorithms.test_distillation import _fill_distillation_storage, _make_distillation_setup
 from tests.algorithms.test_ppo import NUM_ENVS, NUM_STEPS, OBS_DIM, _build_ppo
 from tests.conftest import make_obs
@@ -425,3 +426,178 @@ def _sac_cuda_graph_worker(rank: int, world_size: int, store_file: str) -> None:
 def test_sac_distributed_cuda_graphs_stay_synchronized_and_shut_down() -> None:
     """Captured NCCL updates keep learner state identical across ranks, and released graphs allow a clean shutdown."""
     spawn_gloo(_sac_cuda_graph_worker)
+
+
+def _shac_worker(rank: int, world_size: int, store_file: str, blink: bool, cuda_graph: bool = False) -> None:
+    import copy
+
+    from rsl_rl.algorithms import SHAC
+    from tests.algorithms.test_shac import MirroredScalarTask, ScalarEnv, _cfg, _collect
+
+    device = f"cuda:{rank}" if cuda_graph else "cpu"
+    if cuda_graph:
+        torch.cuda.set_device(device)
+        torch.distributed.init_process_group(
+            backend="nccl",
+            store=torch.distributed.FileStore(store_file, world_size),
+            rank=rank,
+            world_size=world_size,
+            timeout=datetime.timedelta(seconds=60),
+        )
+    else:
+        init_gloo(rank, world_size, store_file)
+    learner = restored = None
+    try:
+        torch.set_num_threads(1)
+        torch.manual_seed(rank + 10)
+        cfg = _cfg(
+            actor_ema_halflife=10,
+            num_warmup_iterations=1,
+            actor_learning_rate_multiplier=4.0,
+            actor_learning_rate_decay_return=10.0,
+            full_windows=True,
+            loss_reduction="mean",
+            update_schedule="from_start",
+            learning_rate_schedule_unit="env_steps",
+            use_cuda_graph=cuda_graph,
+        )
+        cfg["multi_gpu"] = {"global_rank": rank, "world_size": world_size}
+        if blink:
+            cfg["algorithm"].update(
+                muon_models=("actor", "world_model"),
+                task_cfg={"class_name": MirroredScalarTask},
+            )
+            cfg["actor"].update(hidden_dims=(8, 8, 8))
+            cfg["algorithm"]["world_model_cfg"]["mirror_fraction"] = 0.5
+            cfg["algorithm"]["world_model_cfg"]["model"]["hidden_dims"] = (16, 16, 16)
+        env = ScalarEnv(device=device)
+        env.position.fill_(rank * 2)
+        learner = SHAC.construct_algorithm(env.get_observations(), env, cfg, device)
+        learner.broadcast_parameters()
+
+        def assert_synchronized(alg: SHAC) -> None:
+            for model in (alg.actor, alg.learned_dynamics.world_model, alg.critic):
+                for value in model.state_dict().values():
+                    assert torch.isfinite(value).all()
+                    _assert_close_across_ranks(value)
+            for value in alg.actor_ema.averaged_parameters:
+                _assert_close_across_ranks(value)
+            _assert_close_across_ranks(alg.actor_ema.num_updates)
+            for optimizer in alg.optimizers.values():
+                for state in optimizer.state.values():
+                    for value in state.values():
+                        if isinstance(value, torch.Tensor):
+                            _assert_close_across_ranks(value.to(device))
+
+        assert_synchronized(learner)
+        probe = nn.Linear(2, 1, bias=False, device=device)
+        with torch.no_grad():
+            probe.weight.fill_(0.5)
+        learner.optimizers["probe"] = torch.optim.SGD(probe.parameters(), lr=0.1)
+        inputs = torch.tensor([[float(rank + 1), -1.0]], device=device)
+        ranks = torch.arange(world_size, device=device, dtype=torch.float32)
+        global_inputs = torch.stack((ranks + 1, -torch.ones_like(ranks)), dim=1)
+        expected_gradient = (2 * (0.5 * ranks - 1)[:, None] * global_inputs).mean(dim=0)
+        expected_gradient *= min(learner.max_grad_norm / (expected_gradient.norm().item() + 1e-6), 1.0)
+        expected_gradient.clamp_(-0.7, 0.7)
+        learner._step_model_optimizers((probe(inputs) - 1).square().mean(), "probe", probe, clip_value=0.7)
+        torch.testing.assert_close(probe.weight[0], 0.5 - 0.1 * expected_gradient)
+        del learner.optimizers["probe"]
+        initial = {
+            name: copy.deepcopy(model.state_dict())
+            for name, model in (
+                ("actor", learner.actor),
+                ("world_model", learner.learned_dynamics.world_model),
+                ("critic", learner.critic),
+            )
+        }
+        _collect(learner, env, 1)
+        obs_norm = learner.actor.obs_normalizer
+        torch.testing.assert_close(obs_norm.mean[0], torch.tensor(float(world_size - 1), device=device))
+        assert obs_norm.count == 4 * world_size
+        _assert_not_close_across_ranks(learner.learned_dynamics.storage.transitions["state"][0])
+        for _ in range(8):
+            _collect(learner, env, 1)
+            learner.update()
+        assert_synchronized(learner)
+        for name, model in (
+            ("actor", learner.actor),
+            ("world_model", learner.learned_dynamics.world_model),
+            ("critic", learner.critic),
+        ):
+            assert any(not torch.equal(initial[name][key], value) for key, value in model.named_parameters())
+        if blink:
+            assert set(learner.optimizers) == {"actor", "critic", "world_model", "actor_muon", "world_model_muon"}
+            assert all(optimizer.state for optimizer in learner.optimizers.values())
+        if cuda_graph:
+            assert all(graph.graph is not None for graph in learner._act_graphs.values())
+            assert all(graph.graph is not None for graph in learner._process_env_step_graphs.values())
+            assert learner._update_graphs[True].graph is not None
+
+        learner.actor_learning_rate_multiplier.completed_return_stats.copy_(
+            torch.tensor([20.0, 1.0] if rank == 0 else [0.0, 0.0], device=device)
+        )
+        expected = learner.num_learner_updates
+        learner.update()
+        assert learner.actor_learning_rate_multiplier.decay_start_update == expected
+        checkpoint = copy.deepcopy(learner.save())
+        restored = SHAC.construct_algorithm(env.get_observations(), env, cfg, device)
+        restored.load(checkpoint, None, True)
+        restored.broadcast_parameters()
+        assert (
+            restored.num_learner_updates == learner.num_learner_updates
+            and restored.num_env_steps == learner.num_env_steps
+        )
+        assert restored.actor_learning_rate_multiplier.decay_start_update == expected
+        assert_synchronized(restored)
+        _collect(restored, env, 8)
+        restored.update()
+        assert restored.num_learner_updates > expected
+        assert_synchronized(restored)
+
+        value = torch.tensor(2.0, device=device, requires_grad=True)
+        weight = torch.tensor(float(rank), device=device)
+        normalize_loss_across_ranks((value - rank).square() * weight, weight, world_size).backward()
+        torch.distributed.all_reduce(value.grad)
+        value.grad /= world_size
+        ranks = torch.arange(world_size, device=device, dtype=torch.float32)
+        torch.testing.assert_close(value.grad, (2 * (2 - ranks) * ranks).sum() / ranks.sum())
+
+        window_breaks = restored.learned_dynamics.storage.transitions["window_break"]
+        previous_breaks = window_breaks.clone()
+        if rank == 0:
+            window_breaks.fill_(True)
+        restored._update_credit = 1.0
+        expected = restored.num_learner_updates
+        assert restored.update()[0] == {} and restored.num_learner_updates == expected
+        window_breaks.copy_(previous_breaks)
+
+        before = copy.deepcopy(restored.save())
+        loss = sum(parameter.sum() for parameter in restored.actor.parameters())
+        restored._step_model_optimizers(loss * (float("nan") if rank == 0 else 1.0), "actor", restored.actor)
+        for key, value in restored.actor.state_dict().items():
+            torch.testing.assert_close(value, before["actor_state_dict"][key])
+        assert int(restored.actor_ema.num_updates) == before["actor_ema_updates"]
+        assert_synchronized(restored)
+        if rank == 0:
+            restored.learned_dynamics.nonfinite_final_obs[0] = True
+        with pytest.raises(ValueError, match="nonfinite final_obs"):
+            restored.update()
+    finally:
+        for alg in (learner, restored):
+            if alg is not None:
+                alg.release_cuda_graphs()
+        torch.distributed.destroy_process_group()
+
+
+@pytest.mark.skipif(not _GLOO_AVAILABLE, reason="torch.distributed gloo backend is required")
+@pytest.mark.parametrize("blink", [False, True])
+def test_shac_distributed_updates_and_resume(blink: bool) -> None:
+    """Rank-local replay trains identical models, optimizer moments and EMA through restart and failures."""
+    spawn_gloo(_shac_worker, blink, world_size=4 if blink else 2)
+
+
+@pytest.mark.skipif(not _NCCL_GPUS_AVAILABLE, reason="NCCL and at least two GPUs are required")
+def test_shac_distributed_cuda_graphs_stay_synchronized_and_shut_down() -> None:
+    """Collective operations remain synchronized during captured BlinkMimic collection, learning and restart."""
+    spawn_gloo(_shac_worker, True, True)

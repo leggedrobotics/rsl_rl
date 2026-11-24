@@ -24,3 +24,10 @@ Distillation
    :members:
    :undoc-members:
 
+
+SHAC
+----
+
+.. automodule:: rsl_rl.algorithms.shac
+   :members:
+   :undoc-members:

@@ -32,6 +32,7 @@ class MLP(nn.Sequential):
         hidden_dims: tuple[int, ...] | list[int],
         activation: str = "elu",
         last_activation: str | None = None,
+        norm: str = "none",
     ) -> None:
         """Initialize the MLP.
 
@@ -42,6 +43,7 @@ class MLP(nn.Sequential):
                 inferred from the input dimension.
             activation: Activation function.
             last_activation: Activation function of the last layer. None results in a linear last layer.
+            norm: Optional normalization before each hidden activation: "none" or "layer".
         """
         super().__init__()
 
@@ -52,22 +54,25 @@ class MLP(nn.Sequential):
         hidden_dims_processed = [input_dim if dim == -1 else dim for dim in hidden_dims]
 
         # Create layers sequentially
+        if norm not in ("none", "layer"):
+            raise ValueError("norm must be 'none' or 'layer'.")
         layers = []
-        layers.append(nn.Linear(input_dim, hidden_dims_processed[0]))
-        layers.append(activation_mod)
-
-        for layer_index in range(len(hidden_dims_processed) - 1):
-            layers.append(nn.Linear(hidden_dims_processed[layer_index], hidden_dims_processed[layer_index + 1]))
+        in_features = input_dim
+        for out_features in hidden_dims_processed:
+            layers.append(nn.Linear(in_features, out_features))
+            if norm == "layer":
+                layers.append(nn.LayerNorm(out_features))
             layers.append(activation_mod)
+            in_features = out_features
 
         # Add last layer
         if isinstance(output_dim, int):
-            layers.append(nn.Linear(hidden_dims_processed[-1], output_dim))
+            layers.append(nn.Linear(in_features, output_dim))
         else:
             # Compute the total output dimension
             total_out_dim = reduce(lambda x, y: x * y, output_dim)
             # Add a layer to reshape the output to the desired shape
-            layers.append(nn.Linear(hidden_dims_processed[-1], total_out_dim))
+            layers.append(nn.Linear(in_features, total_out_dim))
             layers.append(nn.Unflatten(dim=-1, unflattened_size=output_dim))
 
         # Add last activation function if specified

@@ -154,7 +154,8 @@ Algorithm Configuration
 -----------------------
 
 RSL-RL implements :class:`~rsl_rl.algorithms.ppo.PPO`, :class:`~rsl_rl.algorithms.sac.SAC`,
-and :class:`~rsl_rl.algorithms.distillation.Distillation`. Each algorithm has its own configuration listed below.
+:class:`~rsl_rl.algorithms.distillation.Distillation`, and :class:`~rsl_rl.algorithms.shac.SHAC`. Each
+algorithm has its own configuration listed below.
 
 PPO
 ^^^
@@ -473,6 +474,158 @@ Distillation
        :class:`torch.nn.parallel.DistributedDataParallel`'s default ``bucket_cap_mb``.
 
 
+SHAC
+^^^^
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``class_name``
+     - str
+     - required
+     - ``"SHAC"``.
+   * - ``world_model_cfg``
+     - dict | None
+     - ``None``
+     - :ref:`Learned dynamics settings <learned-dynamics-configuration>`. With ``None``, the task supplies the dynamics.
+   * - ``task_cfg``
+     - dict
+     - required
+     - :class:`~rsl_rl.env.differentiable_task.DifferentiableTask` class and constructor arguments.
+   * - ``history_length``
+     - int
+     - ``1``
+     - Number of frames in imagined observation histories. Match the environment's history length and reset padding.
+   * - ``use_reference_action``
+     - bool
+     - ``False``
+     - Train the actor to predict a correction that the environment adds to its reference action.
+   * - ``normalize_before_action``
+     - bool
+     - ``True``
+     - Update the actor's input normalization before choosing each collection action. Set to false to update afterwards.
+   * - ``updates_per_step``
+     - float
+     - ``0.4``
+     - Learner iterations accrued per collected environment step.
+   * - ``num_policy_updates``
+     - int
+     - ``1``
+     - Actor updates and associated critic fits per learner iteration.
+   * - ``horizon``
+     - int
+     - ``32``
+     - Number of steps in each imagined trajectory.
+   * - ``policy_batch_size``
+     - int
+     - ``4096``
+     - Number of rollout starting states per actor update.
+   * - ``gamma``
+     - float
+     - ``0.99``
+     - Reward discount.
+   * - ``max_step_reward``
+     - float | None
+     - ``None``
+     - Upper bound on the per-step reward, used to cap value estimates at the maximum discounted return.
+   * - ``action_noise``
+     - float
+     - ``0.1``
+     - Standard deviation of additive collection noise.
+   * - ``actor_ema_halflife``
+     - int | None
+     - ``None``
+     - Half-life of the actor weights averaged for inference and export, measured in actor optimizer steps.
+   * - ``lam``
+     - float
+     - ``0.95``
+     - TD(lambda) mixing coefficient for value targets.
+   * - ``num_critic_epochs``
+     - int
+     - ``5``
+     - Epochs per critic fit.
+   * - ``num_critic_mini_batches``
+     - int
+     - ``4``
+     - Minibatches per critic epoch.
+   * - ``learning_rate``
+     - float
+     - ``2e-4``
+     - Initial learning rate of the world model and critic, and of the actor unless overridden.
+   * - ``actor_learning_rate``
+     - float | None
+     - ``None``
+     - Initial actor learning rate. ``None`` uses ``learning_rate``.
+   * - ``actor_learning_rate_multiplier``
+     - float
+     - ``1.0``
+     - Initial multiplier on the actor learning rate. It decays linearly to 1 once either decay threshold is reached.
+   * - ``actor_learning_rate_decay_iterations``
+     - int
+     - ``300``
+     - Learner iterations over which the multiplier decays to 1.
+   * - ``actor_learning_rate_decay_return``
+     - float | None
+     - ``None``
+     - Mean completed-episode return that starts the decay. Each return is divided by the maximum episode length.
+   * - ``actor_learning_rate_decay_start``
+     - int | None
+     - ``None``
+     - Learner iteration at which the decay starts at the latest.
+   * - ``muon_models``
+     - tuple[str]
+     - ``()``
+     - Models whose hidden weight matrices use Muon. Accepts ``"actor"`` and ``"world_model"``. Other parameters use Adam.
+   * - ``max_grad_norm``
+     - float
+     - ``1.0``
+     - Global gradient-norm limit for each model.
+   * - ``num_schedule_updates``
+     - int
+     - ``250000``
+     - Duration of the cosine schedule, measured in ``learning_rate_schedule_unit``.
+   * - ``final_learning_rate_ratio``
+     - float
+     - ``0.03``
+     - Final learning rate relative to its initial value.
+   * - ``use_mixed_precision``
+     - bool
+     - ``False``
+     - Use bfloat16 for matrix operations and float32 for physical state integration.
+   * - ``use_cuda_graph``
+     - bool
+     - ``False``
+     - Capture collection and learner updates in CUDA graphs. Task methods must support graph capture.
+   * - ``update_schedule``
+     - str
+     - ``"after_warmup"``
+     - Count steps toward updates after warm-up (``"after_warmup"``) or from the first step (``"from_start"``).
+       Updates begin once replay is ready.
+   * - ``learning_rate_schedule_unit``
+     - str
+     - ``"learner_updates"``
+     - Measure cosine-schedule progress in learner updates or in collected environment steps
+       (``"env_steps"``).
+   * - ``critic_survival_weighting``
+     - bool
+     - ``True``
+     - Weight reachable value targets by imagined survival probabilities. When disabled, all reachable
+       targets have equal weight.
+   * - ``critic_bootstrap_clipping``
+     - bool
+     - ``True``
+     - Cap values with ``max_step_reward`` before computing critic return targets.
+   * - ``critic_shuffle_each_epoch``
+     - bool
+     - ``True``
+     - Draw new critic minibatches every epoch instead of reusing one permutation.
+
+
 .. _model-configuration:
 
 Model Configuration
@@ -482,9 +635,9 @@ Different algorithms use models for different purposes. For example, :class:`~rs
 and a critic, while :class:`~rsl_rl.algorithms.distillation.Distillation` uses a student and a teacher. Even though
 their function may differ, algorithms can generally use the same underlying model classes. Available models include
 :class:`~rsl_rl.models.mlp_model.MLPModel`, :class:`~rsl_rl.models.rnn_model.RNNModel`,
-:class:`~rsl_rl.models.cnn_model.CNNModel`, :class:`~rsl_rl.models.mlp_model.QMLPModel`, and
-:class:`~rsl_rl.models.cnn_model.QCNNModel`, and
-:class:`~rsl_rl.models.mlp_model_equivariant.EquivariantMLPModel`.
+:class:`~rsl_rl.models.cnn_model.CNNModel`, :class:`~rsl_rl.models.mlp_model.QMLPModel`,
+:class:`~rsl_rl.models.cnn_model.QCNNModel`, :class:`~rsl_rl.models.mlp_model_equivariant.EquivariantMLPModel`,
+and :class:`~rsl_rl.models.supermimic_actor.SuperMimicActor`.
 
 MLPModel
 ^^^^^^^^
@@ -957,7 +1110,8 @@ Extension Configuration
 
 :class:`~rsl_rl.extensions.rnd.RandomNetworkDistillation` is compatible with :class:`~rsl_rl.algorithms.ppo.PPO`, and
 :class:`~rsl_rl.extensions.symmetry.Symmetry` is compatible with :class:`~rsl_rl.algorithms.ppo.PPO` and
-:class:`~rsl_rl.algorithms.sac.SAC`. The configuration keys for both extensions are listed below.
+:class:`~rsl_rl.algorithms.sac.SAC`. :class:`~rsl_rl.extensions.learned_dynamics.LearnedDynamics` is compatible
+with :class:`~rsl_rl.algorithms.shac.SHAC`.
 
 Random Network Distillation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1035,6 +1189,70 @@ Symmetry Augmentation
      - required
      - Coefficient for the symmetry loss.
 
+.. _learned-dynamics-configuration:
+
+Learned Dynamics
+^^^^^^^^^^^^^^^^
+
+Set ``algorithm.world_model_cfg`` to train a world model from replay. On every step the environment must supply
+the physical successor before resets or other state edits, as described in :meth:`~rsl_rl.env.vec_env.VecEnv.step`.
+
+.. list-table::
+   :header-rows: 1
+   :class: no-wrap-type-column
+
+   * - Key
+     - Type
+     - Default
+     - Description
+   * - ``model``
+     - dict
+     - required
+     - Predictor class and its constructor arguments. See :class:`~rsl_rl.extensions.learned_dynamics.WorldModel`.
+   * - ``replay_buffer_capacity``
+     - int
+     - ``1000000``
+     - Maximum transitions per rank. Replay must hold at least ``max(num_warmup_steps, history_length)`` steps
+       per environment.
+   * - ``max_replay_memory_fraction``
+     - float | None
+     - ``None``
+     - Fraction of free CUDA memory available to replay. ``None`` disables the limit.
+   * - ``num_warmup_steps``
+     - int
+     - ``64``
+     - Stored steps per environment before learning.
+   * - ``batch_size``
+     - int
+     - ``2048``
+     - Replay anchors per dynamics optimizer step.
+   * - ``num_warmup_iterations``
+     - int
+     - ``500``
+     - Learner iterations fitting only dynamics.
+   * - ``num_updates``
+     - int
+     - ``10``
+     - Dynamics optimizer steps per learner iteration.
+   * - ``loss_reduction``
+     - str
+     - ``"sum"``
+     - Sum the dynamics loss over each replay window, or average it over all valid positions
+       (``"mean"``).
+   * - ``full_windows``
+     - bool
+     - ``False``
+     - Sample only complete windows within an uninterrupted episode. Requires more warm-up steps than ``window_length``.
+   * - ``mirror_fraction``
+     - float
+     - ``0.0``
+     - Fraction of each dynamics batch augmented with the task's mirror functions.
+   * - ``window_length``
+     - int
+     - ``8``
+     - Maximum number of consecutive transitions used to fit the world model.
+
+
 .. _example-configuration:
 
 Example Configuration
@@ -1042,7 +1260,7 @@ Example Configuration
 
 While the previous sections cover many configuration options, only a few are needed to start training. The following
 examples provide minimal configurations for :class:`~rsl_rl.algorithms.ppo.PPO`, :class:`~rsl_rl.algorithms.sac.SAC`,
-and :class:`~rsl_rl.algorithms.distillation.Distillation`.
+:class:`~rsl_rl.algorithms.distillation.Distillation`, and :class:`~rsl_rl.algorithms.shac.SHAC`.
 
 PPO
 ^^^
@@ -1111,6 +1329,30 @@ observation groups must match the policy being distilled. This example matches t
        distribution_cfg:
          class_name: GaussianDistribution
 
+SHAC
+^^^^
+
+Use :class:`~rsl_rl.runners.on_policy_runner.OnPolicyRunner` with learned dynamics. Set ``task_cfg.class_name``
+to the environment's :class:`~rsl_rl.env.differentiable_task.DifferentiableTask` implementation.
+
+.. code-block:: yaml
+
+   runner:
+     num_steps_per_env: 24
+     obs_groups: {"actor": ["policy"], "state": ["state"]}
+     save_interval: 100
+     algorithm:
+       class_name: SHAC
+       task_cfg:
+         class_name: my_package.my_task:MyTask
+       world_model_cfg:
+         model:
+           class_name: WorldModel
+     actor:
+       class_name: MLPModel
+     critic:
+       class_name: MLPModel
+
 .. _observation-configuration:
 
 Observation Configuration
@@ -1160,13 +1402,24 @@ Depending on the algorithm and extensions used, RSL-RL expects different observa
    * - ``actor``
      - Observations used as input to the actor model.
    * - ``critic``
-     - Observations used as input to the critic model.
+     - Observations used as input to the critic model. SHAC obtains these from the task's
+       :meth:`~rsl_rl.env.differentiable_task.DifferentiableTask.critic_obs` method and omits this set.
    * - ``student``
      - Observations used as input to the student model.
    * - ``teacher``
      - Observations used as input to the teacher model.
    * - ``rnd_state``
      - Observations used as input to the RND extension.
+   * - ``state``
+     - Noise-free physical state used by SHAC.
+   * - ``goal``
+     - Optional task goal used by SHAC.
+   * - ``context``
+     - Optional privileged observations available to the SHAC task and world model.
+   * - ``labels``
+     - Optional event labels for world-model training.
+   * - ``prev_action``, ``prev_prev_action``
+     - Optional actions from the previous two steps used to initialize SHAC's action history.
 
 Incomplete or incorrect configurations are handled in :func:`~rsl_rl.utils.utils.resolve_obs_groups`, which provides
 detailed information on how errors are resolved.

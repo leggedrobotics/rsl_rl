@@ -41,6 +41,11 @@ Algorithms
    algorithm useful for transferring policies from training-time privileged observation sets to observations available
    during real-world deployment.
 
+:class:`~rsl_rl.algorithms.shac.SHAC`
+   Short-Horizon Actor-Critic (SHAC) trains the actor by differentiating the task reward through a short rollout.
+   The critic estimates the return beyond the rollout. The dynamics can come from the task or from the
+   :class:`~rsl_rl.extensions.learned_dynamics.LearnedDynamics` extension.
+
 Models
 ^^^^^^
 
@@ -79,6 +84,9 @@ Models
    augmentation or a mirror loss, the constraint cannot be traded away against the task reward. Observation
    normalization uses symmetrized running statistics to preserve equivariance, and for export the network is folded
    into a plain MLP without runtime overhead. For more details, please check `this paper <https://arxiv.org/abs/2403.17320>`__.
+
+:class:`~rsl_rl.models.supermimic_actor.SuperMimicActor`
+   A deterministic actor that encodes the goal and combines it with a history of policy observations to predict actions.
 
 Distributions
 ^^^^^^^^^^^^^
@@ -125,6 +133,10 @@ Extensions
    added to the loss function to actively encourage symmetry in the policy. This extension is compatible with the
    :class:`~rsl_rl.algorithms.ppo.PPO` and :class:`~rsl_rl.algorithms.sac.SAC` algorithms. For more details, please
    check `this paper <https://arxiv.org/abs/2403.04359>`__.
+
+:class:`~rsl_rl.extensions.learned_dynamics.LearnedDynamics`
+   Fits a world model to sequences of simulator transitions from replay. SHAC uses the model to generate
+   differentiable rollouts from sampled states.
 
 Loggers
 ^^^^^^^
