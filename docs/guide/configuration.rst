@@ -97,6 +97,10 @@ OnPolicyRunner & OffPolicyRunner
      - dict
      - required
      - Critic model configuration.
+   * - ``world_model``
+     - dict
+     - --
+     - World model configuration, required by SuperMimic only.
 
 DistillationRunner
 ^^^^^^^^^^^^^^^^^^
@@ -154,7 +158,8 @@ Algorithm Configuration
 -----------------------
 
 RSL-RL implements :class:`~rsl_rl.algorithms.ppo.PPO`, :class:`~rsl_rl.algorithms.sac.SAC`,
-and :class:`~rsl_rl.algorithms.distillation.Distillation`. Each algorithm has its own configuration listed below.
+:class:`~rsl_rl.algorithms.distillation.Distillation`, and :class:`~rsl_rl.algorithms.supermimic.SuperMimic`. Each
+algorithm has its own configuration listed below.
 
 PPO
 ^^^
@@ -480,6 +485,9 @@ SuperMimic uses ``actor``, ``world_model`` and ``critic`` model configurations. 
 :class:`~rsl_rl.algorithms.supermimic_task.DifferentiableTask` with ``env``, ``device`` and the remaining task kwargs.
 The task supplies physical coordinates, rewards and feature construction.
 Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 0.1]`` after global norm clipping.
+Policy updates keep the whole imagined rollout for the backward pass: GPU memory grows with ``policy_batch_size``,
+``horizon`` and the network widths, and is first requested when policy updates begin after
+``num_world_model_warmup_iterations``.
 
 .. list-table::
    :header-rows: 1
@@ -553,7 +561,9 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
    * - ``max_step_reward``
      - float | None
      - ``None``
-     - Optional per-step reward bound used to cap values at the maximum discounted return.
+     - Optional per-step reward bound used to cap values at the maximum discounted return. Set it when the
+       per-step reward has a known upper bound: without a cap, value estimates are unbounded and can overshoot
+       when policy updates begin.
    * - ``action_noise``
      - float
      - ``0.1``
@@ -587,7 +597,9 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
      - ``1.0``
      - Factor on the actor learning rate early in training. It decays linearly to 1 over
        ``actor_learning_rate_decay_iterations``, starting when ``actor_learning_rate_decay_return`` or
-       ``actor_learning_rate_decay_start`` is reached, whichever comes first.
+       ``actor_learning_rate_decay_start`` is reached, whichever comes first. Learner iterations include
+       ``num_world_model_warmup_iterations``, during which the actor is not updated, so a multiplier that
+       decays within them has no effect.
    * - ``actor_learning_rate_decay_iterations``
      - int
      - ``300``
@@ -614,7 +626,7 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
    * - ``num_schedule_updates``
      - int
      - ``250000``
-     - Learner iterations in the shared cosine learning-rate schedule.
+     - Length of the shared cosine learning-rate schedule, counted in ``learning_rate_schedule_unit``.
    * - ``final_learning_rate_ratio``
      - float
      - ``0.03``
@@ -622,7 +634,8 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
    * - ``use_mixed_precision``
      - bool
      - ``False``
-     - Enable BF16 matrix operations while integrating physical states in FP32.
+     - Enable BF16 matrix operations while integrating physical states in FP32. The critic is also
+       fitted through its BF16 output, which resolves values to 8 significant bits.
    * - ``use_cuda_graph``
      - bool
      - ``False``
@@ -633,8 +646,8 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
    * - ``update_schedule``
      - str
      - ``"after_warmup"``
-     - Accrue learner-update credit after warm-up (``"after_warmup"``) or from the first
-       collected step (``"from_start"``).
+     - Start the learner-update cadence after warm-up (``"after_warmup"``) or at the first
+       collected step (``"from_start"``); updates due during warm-up are skipped either way.
    * - ``learning_rate_schedule_unit``
      - str
      - ``"learner_updates"``
@@ -665,11 +678,14 @@ Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 
 
 With ``actor_ema_halflife`` set, inference and JIT/ONNX exports use EMA parameters with live normalization buffers.
 Collection and policy optimization keep using the live actor. The EMA inference actor shares the task of the live
-actor, so moving it to another device leaves the task tensors on the training device.
+actor, so moving it to another device leaves the task tensors on the training device; to call it in-process,
+create the runner on the device of the environment.
 After each successful actor step ``n``, the averaging decay is
 ``min(0.5 ** (1 / h), (1 + n) / (10 + n))``, where ``h`` is the half-life and ``n`` starts at one.
 ``None`` disables averaging. Use the same ``actor_ema_halflife`` setting for training and play/export.
 In Isaac Lab, pass ``agent.algorithm.actor_ema_halflife=500`` to play with or export that EMA actor.
+All ``get_inference_policy`` and export calls share one EMA actor and reset its observation and action history
+to the live actor's, so fetch the policy and export before a rollout, not during one.
 
 .. _model-configuration:
 
@@ -1345,7 +1361,7 @@ Example Configuration
 
 While the previous sections cover many configuration options, only a few are needed to start training. The following
 examples provide minimal configurations for :class:`~rsl_rl.algorithms.ppo.PPO`, :class:`~rsl_rl.algorithms.sac.SAC`,
-and :class:`~rsl_rl.algorithms.distillation.Distillation`.
+:class:`~rsl_rl.algorithms.distillation.Distillation`, and :class:`~rsl_rl.algorithms.supermimic.SuperMimic`.
 
 PPO
 ^^^
@@ -1413,6 +1429,29 @@ observation groups must match the policy being distilled. This example matches t
        class_name: MLPModel
        distribution_cfg:
          class_name: GaussianDistribution
+
+SuperMimic
+^^^^^^^^^^
+
+Use :class:`~rsl_rl.runners.off_policy_runner.OffPolicyRunner` with a ``SuperMimicActor``, a ``WorldModel``, a
+feed-forward ``MLPModel`` critic and your own :class:`~rsl_rl.algorithms.supermimic_task.DifferentiableTask`:
+
+.. code-block:: yaml
+
+   runner:
+     num_steps_per_env: 24
+     obs_groups: {"state": ["state"], "goal": ["goal"], "context": ["context"]}
+     save_interval: 100
+     algorithm:
+       class_name: SuperMimic
+       task_cfg:
+         class_name: my_package.my_task:MyTask
+     actor:
+       class_name: SuperMimicActor
+     world_model:
+       class_name: WorldModel
+     critic:
+       class_name: MLPModel
 
 .. _observation-configuration:
 
@@ -1485,6 +1524,9 @@ Depending on the algorithm and extensions used, RSL-RL expects different observa
 SuperMimic optional sets must be mapped explicitly. Its critic inputs are constructed by ``task.critic_obs``;
 do not map a ``critic`` set for this algorithm. Task action histories are oldest-first with shape
 ``[..., task.action_history_length, num_actions]``.
+A play loop that calls ``policy.reset(dones)`` zeroes the action history, while training seeds every slot with the
+reported ``prev_action``; with a nonzero reset command, pass that action as the second argument of
+``policy.reset`` so that slots without a mapped set match training.
 
 Incomplete or incorrect configurations are handled in :func:`~rsl_rl.utils.utils.resolve_obs_groups`, which provides
 detailed information on how errors are resolved.

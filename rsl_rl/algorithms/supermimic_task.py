@@ -95,7 +95,7 @@ class DifferentiableTask:
     def actor_obs(
         self, state: State, goal: torch.Tensor, context: torch.Tensor, prev_actions: torch.Tensor
     ) -> torch.Tensor:
-        """Build one noise-free deployable observation frame."""
+        """Build noise-free deployable frames; replay also passes ``[batch, history_length]`` leading dimensions."""
         raise NotImplementedError
 
     def actor_goal(self, state: State, goal: torch.Tensor) -> torch.Tensor:
@@ -105,7 +105,11 @@ class DifferentiableTask:
     def advance(
         self, next_state: State, goal: torch.Tensor, context: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Advance exogenous goals and privileged context after an imagined physical transition."""
+        """Advance exogenous goals and privileged context after an imagined physical transition.
+
+        Imagined rollouts ignore the environment's time limit: they run ``horizon`` steps from any stored step, so goals
+        must stay valid that far past the last one the environment shows, e.g. by clamping a reference-frame index.
+        """
         raise NotImplementedError
 
     def dynamics_actions(self, actions: torch.Tensor) -> torch.Tensor:
@@ -178,7 +182,11 @@ class DifferentiableTask:
         return (self.representation.error(prediction, target) / scale).square().mean(dim=-1)
 
     def add_noise(self, observation: torch.Tensor) -> torch.Tensor:
-        """Add task observation noise while retaining imagined state derivatives."""
+        """Add task observation noise while retaining imagined state derivatives.
+
+        This is the only source of actor observation noise: it is applied in training-mode collection and imagination,
+        not in eval mode, and observation noise configured in the environment is not used.
+        """
         return observation
 
     def update_curriculum(self, goal: torch.Tensor, rewards: torch.Tensor, dones: torch.Tensor, extras: dict) -> None:

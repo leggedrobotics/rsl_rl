@@ -84,8 +84,9 @@ class SuperMimicPolicy(nn.Module):
 class SuperMimicActor(nn.Module):
     """Deployable policy network with task-owned real observation conversion and collection history.
 
-    Real inference takes the environment TensorDict. JIT and ONNX exports take only deployable ``obs_history`` and
-    optional encoded ``goal`` inputs. Deployment assembles the history and computes the same task features.
+    Real inference takes the environment TensorDict. JIT and ONNX exports take only a deployable ``obs_history`` of
+    shape ``[batch, history_length, obs_dim]``, oldest frame first, and an optional ``goal``, the output of
+    ``task.actor_goal``. Deployment assembles the history and computes the same task features.
     """
 
     is_recurrent = False

@@ -337,18 +337,26 @@ The environment supplies flat, noise-free ``state`` and optional ``goal``, privi
 sets. Every step must supply physical successors before resets and interval events in ``extras["final_obs"]``, with
 ``extras["final_obs_every_step"] = True``. Interval edits cut future model-fitting windows through ``window_break``;
 replay retains the original physical successor. Task features and ``post_dynamics`` preserve state and action gradients.
+A window break is recorded whenever the ``state`` returned by ``step`` is not exactly equal to the one in ``final_obs``
+for a continuing environment, so compute both the same way; ``SuperMimic/window_break_fraction`` logs how often it
+happens.
+The actor and critic learn only from ``task.reward`` and ``task.termination_prob``: environment rewards are logged,
+``dones`` mark episode boundaries and ``time_outs`` is not read.
 Actor moments update during ``act`` and world-model moments during ``process_env_step``, using in-place writes compatible
 with inference-mode collection. ``updates_per_step`` accrues learner debt; runner iteration is the logging step axis.
-All optimizers share one cosine schedule over ``num_schedule_updates`` learner iterations.
+All optimizers share one cosine schedule of length ``num_schedule_updates``.
 With the actor option ``use_reference_action``, the policy output is added to the task's ``reference_action`` during
 collection and imagination, e.g. the reference joint targets of motion tracking; exported policies then take an
 additional ``reference_action`` input.
+The actor keeps a per-environment observation history, so a play loop must call ``policy.reset(dones)`` after every
+environment step.
 Tasks can also override ``dynamics_actions`` to map policy outputs to physical commands before the world model,
 ``world_model_loss`` to supervise further coordinates, such as integrated joint positions, and ``update_curriculum`` to
 update task curricula from each collected step. Checkpoints also contain ``env_steps``, the number of collected steps.
 
 Full checkpoints contain ``actor_state_dict``, ``critic_state_dict``, ``world_model_state_dict``, each model's
-``*_optimizer_state_dict`` and the learner iteration. Replay, collection history and simulator state are excluded.
+``*_optimizer_state_dict`` and the learner iteration. Replay, collection history, simulator state and task-owned state
+such as curricula are excluded.
 ``runner.load(path, load_cfg={"actor": True, "critic": True, "world_model": True, "iteration": True})`` loads all
 models and counters with fresh optimizers. For deployment use ``runner.load(path, load_cfg={"actor": True})``; other
 partial model selections are rejected. Model state-dict loading checks tensor shapes. Task coordinate meaning must
@@ -361,6 +369,7 @@ Enable the same half-life for play/export to deploy the EMA with live normalizat
 Loading an EMA checkpoint with averaging disabled warns and uses the live actor.
 
 With ``muon_models`` set, checkpoints also contain ``<model>_muon_optimizer_state_dict`` for each listed model.
+Resume with the same ``muon_models``, or load with fresh optimizers as above to change it.
 With ``actor_learning_rate_multiplier`` above 1, they contain ``actor_learning_rate_decay_from``, the learner
 iteration where the actor learning rate started to decay, or ``None`` before that.
 
@@ -378,6 +387,7 @@ use 8192 imagined starts per synchronized actor update. ``updates_per_step`` and
 per-environment-step meaning; they are not multiplied by the number of ranks. Masked world-model and critic means
 use the total valid weight across ranks.
 
-The standard runner writes one checkpoint from rank zero. All ranks load that same checkpoint when resuming,
-including optimizer state and counters, then refill their local replay buffers. CUDA graph capture requires NCCL;
+The standard runner writes one checkpoint from rank zero. Every rank must load that same checkpoint when resuming,
+including optimizer state and counters, because the start-of-training broadcast only copies model state. Each
+rank then refills its local replay buffer. CUDA graph capture requires NCCL;
 the runner releases collection and learner graphs before process-group teardown.

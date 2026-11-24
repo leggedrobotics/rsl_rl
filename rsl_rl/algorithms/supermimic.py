@@ -125,21 +125,25 @@ class SuperMimic:
             task: Differentiable task heads and physical state coordinates.
             obs_groups: Explicit physical observation-set mapping.
             updates_per_step: Learner iterations accrued per collected environment step.
-            update_schedule: Accrue update credit after warmup or from the first collected step.
+            update_schedule: Start the update cadence after warmup or at the first collected step; updates due during
+                warmup are skipped either way.
             num_warmup_steps: Stored steps per environment required before learning.
             num_world_model_warmup_iterations: Learner iterations fitting only dynamics.
             num_world_model_updates: Dynamics optimizer steps per learner iteration.
             world_model_window: Maximum autoregressive dynamics fitting horizon.
             world_model_batch_size: Replay anchors per dynamics optimizer step.
             world_model_mirror_fraction: Fraction of each dynamics batch replaced by its left-right mirror image from
-                the task's mirror hooks, such as :meth:`DifferentiableTask.mirror_state`.
+                the task's mirror hooks, such as
+                :meth:`~rsl_rl.algorithms.supermimic_task.DifferentiableTask.mirror_state`.
             world_model_loss_reduction: Sum over a replay window or mean over all valid positions.
             world_model_full_windows: Sample complete sequences of stored states, excluding reset boundaries.
             num_policy_updates: Actor updates and associated critic fits per learner iteration.
             horizon: Imagined policy horizon.
             policy_batch_size: Starts per actor update.
             gamma: Reward discount.
-            max_step_reward: Optional per-step reward bound used to cap values at the maximum discounted return.
+            max_step_reward: Optional per-step reward bound used to cap values at the maximum discounted return. Set
+                it when the per-step reward has a known upper bound: without a cap, value estimates are unbounded and
+                can overshoot when policy updates begin.
             action_noise: Standard deviation of additive collection noise.
             actor_ema_halflife: Deployment-only actor exponential moving average (EMA) half-life in actor optimizer
                 steps, e.g. 500. None disables it; use the same setting for training and deployment.
@@ -154,7 +158,8 @@ class SuperMimic:
             actor_learning_rate_multiplier: Factor on the actor learning rate early in training. It decays linearly to 1
                 over ``actor_learning_rate_decay_iterations`` learner iterations, starting at the first update whose
                 episodes reach ``actor_learning_rate_decay_return`` or at ``actor_learning_rate_decay_start``,
-                whichever comes first.
+                whichever comes first. Learner iterations include ``num_world_model_warmup_iterations``, during which
+                the actor is not updated, so a multiplier that decays within them has no effect.
             actor_learning_rate_decay_iterations: Learner iterations over which the multiplier decays to 1.
             actor_learning_rate_decay_return: Return threshold that starts the decay. Each episode completed since the
                 previous update contributes its return divided by ``max_episode_length``, so short failed episodes
@@ -164,12 +169,14 @@ class SuperMimic:
             max_episode_length: Maximum episode length in environment steps, a scalar or one value per environment,
                 required by ``actor_learning_rate_decay_return``.
             muon_models: Models among ``"actor"`` and ``"world_model"`` whose hidden weight matrices are trained with
-                :class:`~rsl_rl.utils.Muon`; their other parameters and all other models use Adam.
+                :class:`~rsl_rl.utils.muon.Muon`; their other parameters and all other models use Adam.
             max_grad_norm: Global gradient-norm limit for each model.
-            num_schedule_updates: Learner iterations in the shared cosine learning-rate schedule.
+            num_schedule_updates: Length of the shared cosine learning-rate schedule, counted in
+                ``learning_rate_schedule_unit``.
             final_learning_rate_ratio: Final learning rate relative to its initial value.
             learning_rate_schedule_unit: Measure schedule progress in learner updates or collected env steps.
-            use_mixed_precision: Enable BF16 matrix operations while integrating physical states in FP32.
+            use_mixed_precision: Enable BF16 matrix operations while integrating physical states in FP32. The critic is
+                also fitted through its BF16 output, which resolves values to 8 significant bits.
             use_cuda_graph: Capture each learner iteration and the collection calls in CUDA graphs. Requires a CUDA
                 device and task heads without host synchronization. Python values read inside the captured calls,
                 for example task parameters such as reward weights read from the environment, are fixed at capture

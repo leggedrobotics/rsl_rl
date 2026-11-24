@@ -80,6 +80,8 @@ class VecEnv(ABC):
             - "student": Specified observation groups are used as input to the student model.
             - "teacher": Specified observation groups are used as input to the teacher model.
             - "rnd_state": Specified observation groups are used as input to the RND extension.
+            - "state", "goal", "context", "labels", "prev_action", "prev_prev_action": Used by SuperMimic, see the
+              configuration guide.
 
             Incomplete or incorrect configurations are handled in the `resolve_obs_groups()` function in
             `rsl_rl/utils/utils.py`, which provides detailed information on the expected configuration.
@@ -103,6 +105,7 @@ class VecEnv(ABC):
               with the same shapes and device as the returned observations. Entries for environments that are not
               done are ignored unless ``extras["final_obs_every_step"] = True`` signals capture on every step, which
               SuperMimic requires. Keep the tensors unchanged until ``process_env_step()`` has recorded the transition.
+              SuperMimic reads the groups of its "state" and "labels" sets from ``final_obs``.
 
             - "log" (dict[str, float | torch.Tensor]): Additional information for logging and debugging purposes.
                The key should be a string and start with "/" for namespacing. The value can be a scalar or a
