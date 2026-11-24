@@ -20,7 +20,7 @@ import onnx
 import pytest
 
 from rsl_rl.algorithms import SuperMimic
-from rsl_rl.algorithms.supermimic import lambda_returns
+from rsl_rl.algorithms.supermimic import compute_lambda_returns
 from rsl_rl.algorithms.supermimic_task import DifferentiableTask, EuclideanStateRepresentation, State
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import WorldModel
@@ -213,7 +213,7 @@ def test_world_model_preserves_state_and_action_gradients_when_weights_are_froze
     representation = EuclideanStateRepresentation(1)
     model = WorldModel(representation, 1, 1, 1, hidden_dims=(8,))
     with torch.no_grad():
-        model.net.output_layer.weight.normal_(0, 0.1)
+        model.dynamics_mlp.output_layer.weight.normal_(0, 0.1)
     model.requires_grad_(False)
     state, action = torch.ones(4, 1, requires_grad=True), torch.ones(4, 1, requires_grad=True)
     model((state,), action, torch.zeros(4, 1))[0].square().sum().backward()
@@ -231,7 +231,7 @@ def test_direct_and_standard_runner_train_all_models() -> None:
     modules = (runner.alg.actor, runner.alg.world_model, runner.alg.critic)
     before = [copy.deepcopy(module.state_dict()) for module in modules]
     runner.learn(3)
-    assert runner.alg.iteration > 0
+    assert runner.alg.num_learner_updates > 0
     for old, module in zip(before, modules):
         assert any(not torch.equal(old[name], value) for name, value in module.named_parameters())
     learner, env = _learner(), ScalarEnv()
@@ -266,8 +266,8 @@ def test_policy_normalizes_observations_and_goals_with_their_moments() -> None:
     policy = _learner().actor.policy
     with torch.no_grad():
         expected = policy(torch.zeros(4, 2, 2), torch.zeros(4, 1))
-        policy.obs_norm.update(torch.full((8, 2), 3.0))
-        policy.goal_norm.update(torch.full((8, 1), -2.0))
+        policy.obs_normalizer.update(torch.full((8, 2), 3.0))
+        policy.goal_normalizer.update(torch.full((8, 1), -2.0))
         torch.testing.assert_close(policy(torch.full((4, 2, 2), 3.0), torch.full((4, 1), -2.0)), expected)
 
 
@@ -278,11 +278,11 @@ def test_replay_start_padding_repeats_the_same_noisy_reset_frame(monkeypatch: py
     cfg["actor"]["history_length"] = 5
     learner = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, env.device)
     _collect(learner, env, 7)
-    index = learner.storage.sample(64, history=4)
+    index = learner.storage.sample(64, history_length=4)
     assert (~index.valid).any() and index.valid.all(dim=1).any()
     monkeypatch.setattr(learner.storage, "sample", lambda *args, **kwargs: index)
     monkeypatch.setattr(learner.task, "add_noise", lambda frames: frames + torch.randn_like(frames))
-    _, frames = learner._starts(64)
+    _, frames = learner._sample_imagination_starts(64)
     first = frames[torch.arange(64), index.valid.long().argmax(dim=1)]
     torch.testing.assert_close(frames[~index.valid], first[:, None].expand_as(frames)[~index.valid], rtol=0, atol=0)
     assert (frames[index.valid.all(dim=1), 0] != frames[index.valid.all(dim=1), -1]).any()
@@ -294,7 +294,7 @@ def test_inference_device_moves_task_tensors(halflife: int | None) -> None:
     learner = _learner(actor_ema_halflife=halflife)
     learner.task.offset = torch.ones(1)
     policy = learner.get_policy().to("meta")
-    assert policy.history.device.type == "meta"
+    assert policy.obs_history.device.type == "meta"
     assert policy.task.offset.device.type == "meta"
     assert learner.task.offset.device.type == ("meta" if halflife is None else "cpu")
 
@@ -320,9 +320,9 @@ def test_actor_ema_is_passive_over_five_updates(device: str) -> None:
             saved.pop("actor_ema_state_dict", None)
             saved.pop("actor_ema_updates", None)
             with torch.inference_mode():
-                action = learner.actor.policy(learner.actor.history, env.goal).clone()
+                action = learner.actor.policy(learner.actor.obs_history, env.goal).clone()
             result.append((saved, metrics, action, torch.get_rng_state(), torch.cuda.get_rng_state_all()))
-        assert learner.iteration == 5
+        assert learner.num_learner_updates == 5
         if halflife is not None:
             assert int(learner.actor_ema.num_updates) == 5
             assert any(
@@ -348,7 +348,7 @@ def test_actor_ema_matches_closed_form_and_keeps_live_buffers() -> None:
         for value in range(1, 13):
             for parameter in learner.actor.parameters():
                 parameter.fill_(value)
-            learner.actor_ema.update(torch.tensor(True))
+            learner.actor_ema.update_parameters(torch.tensor(True))
     decays = [min(0.5, (1 + n) / (10 + n)) for n in range(1, 13)]
     expected = sum((i + 1) * (1 - decay) * math.prod(decays[i + 1 :]) for i, decay in enumerate(decays))
     with torch.inference_mode():
@@ -357,15 +357,15 @@ def test_actor_ema_matches_closed_form_and_keeps_live_buffers() -> None:
     for parameter in policy.parameters():
         torch.testing.assert_close(parameter, torch.full_like(parameter, expected))
         assert not parameter.is_inference()
-    learner.actor.policy.obs_norm.update(torch.randn(4, 2))
-    learner.actor.noise_std.fill_(0.3)
+    learner.actor.policy.obs_normalizer.update(torch.randn(4, 2))
+    learner.actor.action_noise_std.fill_(0.3)
     policy = learner.get_policy()
     for target, source in zip(policy.buffers(), learner.actor.buffers()):
         torch.testing.assert_close(target, source, rtol=0, atol=0)
     assert not policy.training and learner.actor.training
     before = copy.deepcopy(learner.save())
     loss = sum(p.sum() for p in learner.actor.parameters()) * float("nan")
-    learner._apply(loss, "actor", learner.actor)
+    learner._step_model_optimizers(loss, "actor", learner.actor)
     torch.testing.assert_close(learner.save(), before, rtol=0, atol=0)
 
 
@@ -375,7 +375,9 @@ def test_actor_ema_closed_form_after_optimizer_steps() -> None:
     parameter = next(learner.actor.parameters())
     initial, steps = parameter.detach().double().clone(), []
     for _ in range(30):
-        learner._apply(sum(p.sum() for p in learner.actor.parameters()), "actor", learner.actor, clip_value=0.1)
+        learner._step_model_optimizers(
+            sum(p.sum() for p in learner.actor.parameters()), "actor", learner.actor, clip_value=0.1
+        )
         steps.append(parameter.detach().double().clone())
     decays = [min(0.5**0.5, (1 + n) / (10 + n)) for n in range(1, 31)]
     expected = initial * math.prod(decays) + sum(
@@ -400,10 +402,26 @@ def test_actor_ema_checkpoint_full_actor_only_and_no_ema_loads() -> None:
             torch.testing.assert_close(restored.save(), saved, rtol=0, atol=0)
         else:
             assert not any(optimizer.state for optimizer in restored.optimizers.values())
-            assert restored.iteration == 0
+            assert restored.num_learner_updates == 0
     legacy = dict(saved)
-    for key in ("actor_state_dict", "actor_ema_state_dict"):
-        legacy[key] = {name.removeprefix("policy."): value for name, value in saved[key].items()}
+    legacy_actor_modules = {"obs_normalizer": "obs_norm", "goal_normalizer": "goal_norm"}
+    legacy["actor_state_dict"] = {}
+    legacy["actor_ema_state_dict"] = {}
+    for name, value in saved["actor_state_dict"].items():
+        module, _, suffix = name.removeprefix("policy.").partition(".")
+        legacy["actor_state_dict"][f"{legacy_actor_modules.get(module, module)}.{suffix}"] = value
+    for name, value in saved["actor_ema_state_dict"].items():
+        module, _, suffix = name.removeprefix("policy.").partition(".")
+        legacy["actor_ema_state_dict"][f"policy.{legacy_actor_modules.get(module, module)}.{suffix}"] = value
+    legacy_world_model_modules = {
+        "input_normalizer": "in_norm",
+        "increment_normalizer": "out_norm",
+        "dynamics_mlp": "net",
+    }
+    legacy["world_model_state_dict"] = {}
+    for name, value in saved["world_model_state_dict"].items():
+        module, _, suffix = name.partition(".")
+        legacy["world_model_state_dict"][f"{legacy_world_model_modules.get(module, module)}.{suffix}"] = value
     restored.load(legacy, None, strict=True)
     torch.testing.assert_close(restored.save(), saved, rtol=0, atol=0)
     disabled = _learner()
@@ -431,7 +449,7 @@ def test_learning_rate_tracks_learner_iterations_and_resume() -> None:
     learner, env = _learner(num_schedule_updates=8, num_world_model_updates=2), ScalarEnv()
     _collect(learner, env, learner.num_warmup_steps + 3)
     learner.update()
-    assert learner.iteration == 4
+    assert learner.num_learner_updates == 4
     expected = 2e-4 * (0.03 + 0.97 * 0.5)
     assert all(optimizer.param_groups[0]["lr"] == pytest.approx(expected) for optimizer in learner.optimizers.values())
     restored = _learner(num_schedule_updates=8, num_world_model_updates=2)
@@ -460,14 +478,14 @@ def test_interval_edits_cut_only_future_world_model_targets() -> None:
     env = ScalarEnv(pushes=True)
     learner = _learner(env)
     _collect(learner, env, 4)
-    assert learner.storage.data["window_break"][:4].all()
-    window, mask = learner._windows(64)
+    assert learner.storage.transitions["window_break"][:4].all()
+    window, mask = learner._sample_world_model_windows(64)
     assert mask[:, 0].all() and not mask[:, 1:].any()
     assert (window["next_state"][:, 0] < window["state"][:, 0] + 1).all()
     torch.testing.assert_close(window["next_state"], window["next_state"][:, :1].expand_as(window["next_state"]))
     _, stats = learner.update()
     assert stats["SuperMimic/window_break_fraction"] == 1.0
-    _, history = learner._starts(64)
+    _, history = learner._sample_imagination_starts(64)
     assert (history[:, 0, 0] != history[:, -1, 0]).any()
 
 
@@ -481,23 +499,25 @@ def test_environments_keep_separate_episode_boundaries(monkeypatch: pytest.Monke
     obs, histories = env.get_observations(), []
     for step in range(12):
         actions = learner.act(obs)
-        histories.append(learner.actor.history.clone())
+        histories.append(learner.actor.obs_history.clone())
         obs, rewards, dones, extras = env.step(actions)
         if step == 6:
             env.position[0] += 10
             obs = env.get_observations()
         learner.process_env_step(obs, rewards, dones, extras)
-    data = learner.storage.data[:12]
+    data = learner.storage.transitions[:12]
     assert data["dones"].any() and data["dones"].sum(dim=1).max() == 1
     assert data["window_break"].nonzero().tolist() == [[6, 0]]
     torch.testing.assert_close(data["next_state"], data["state"] + 0.2 * data["actions"])
-    windows, starts = learner.storage.sample(1024, length=3), learner.storage.sample(1024, history=3)
-    monkeypatch.setattr(learner.storage, "sample", lambda count, length=1, history=0: starts if history else windows)
-    _, mask = learner._windows(1024)
+    windows, starts = learner.storage.sample(1024, length=3), learner.storage.sample(1024, history_length=3)
+    monkeypatch.setattr(
+        learner.storage, "sample", lambda count, length=1, history_length=0: starts if history_length else windows
+    )
+    _, mask = learner._sample_world_model_windows(1024)
     for slot, expected in ((5, [1.0, 1.0, 0.0]), (6, [1.0, 0.0, 0.0])):
-        assert mask[windows.ids[:, 0] == 4 * slot].unique(dim=0).tolist() == [expected]
-    start, frames = learner._starts(1024)
-    slot, env_id = starts.ids[:, -1] // 4, starts.ids[:, -1] % 4
+        assert mask[windows.indices[:, 0] == 4 * slot].unique(dim=0).tolist() == [expected]
+    start, frames = learner._sample_imagination_starts(1024)
+    slot, env_id = starts.indices[:, -1] // 4, starts.indices[:, -1] % 4
     torch.testing.assert_close(start["state"], data["state"][slot, env_id], rtol=0, atol=0)
     torch.testing.assert_close(frames, torch.stack(histories)[slot, env_id], rtol=0, atol=0)
 
@@ -507,15 +527,15 @@ def test_nonzero_crouch_reset_actions_seed_both_predecessors() -> None:
     env = ScalarEnv(reset_action=0.4)
     learner = _learner(env)
     _collect(learner, env, 5)
-    torch.testing.assert_close(learner.actor.previous_actions, torch.full((4, 2, 1), 0.4))
+    torch.testing.assert_close(learner.actor.action_history, torch.full((4, 2, 1), 0.4))
     learner.act(env.get_observations())
-    torch.testing.assert_close(learner._last_previous_actions, torch.full((4, 2, 1), 0.4))
-    assert learner.actor.history[:, -1, -1].eq(0.4).all()
+    torch.testing.assert_close(learner._transition_action_history, torch.full((4, 2, 1), 0.4))
+    assert learner.actor.obs_history[:, -1, -1].eq(0.4).all()
 
 
 def test_lambda_returns_terminal_reward_and_bootstrap() -> None:
     """A terminal transition retains its reward and excludes future values."""
-    actual = lambda_returns(
+    actual = compute_lambda_returns(
         torch.tensor([[1.0, 1.0], [2.0, 2.0], [3.0, torch.nan]]),
         torch.tensor([[0.0, 0.0], [1.0, 1.0], [0.0, 0.0]]),
         torch.tensor([[7.0], [8.0], [9.0], [10.0]]).expand(-1, 2),
@@ -533,14 +553,14 @@ def test_value_cap_bounds_policy_bootstrap_and_critic_targets() -> None:
         for parameter in learner.critic.parameters():
             parameter.zero_()
         learner.critic.mlp.output_layer.bias.fill_(10.0)
-    metrics = learner._fit_policy()
+    metrics = learner._update_actor_and_critic()
     assert metrics["policy_loss"].item() == pytest.approx(-metrics["imagined_reward"].item() - 1.0)
     assert metrics["terminal_saturation"].item() == 1.0
 
     with torch.no_grad():
         learner.critic.mlp.output_layer.bias.fill_(10.0)
     features = torch.zeros(2, 2, learner.critic.obs_dim)
-    metrics = learner._fit_critic(features, torch.tensor([[0.0, 4.0]]), torch.zeros(1, 2), torch.ones(1, 2))
+    metrics = learner._update_critic(features, torch.tensor([[0.0, 4.0]]), torch.zeros(1, 2), torch.ones(1, 2))
     assert metrics["critic_loss"].item() == pytest.approx((9.0**2 + 8.0**2) / 2)
     assert 2.0 < learner.critic.mlp.output_layer.bias.item() < 10.0
 
@@ -554,7 +574,7 @@ def test_critic_targets_use_terminations_lambda_and_reach_weights() -> None:
         learner.critic.mlp.output_layer.bias.fill_(4.0)
     features = torch.zeros(3, 1, learner.critic.obs_dim)
     rewards, terminals, reach = torch.tensor([[1.0], [2.0]]), torch.full((2, 1), 0.5), torch.tensor([[1.0], [0.5]])
-    metrics = learner._fit_critic(features, rewards, terminals, reach)
+    metrics = learner._update_critic(features, rewards, terminals, reach)
     assert metrics["critic_loss"].item() == pytest.approx((1.0 * (4 - 1.875) ** 2 + 0.5 * (4 - 3.0) ** 2) / 1.5)
 
 
@@ -565,29 +585,29 @@ def test_imagined_objective_matches_a_step_by_step_rollout(monkeypatch: pytest.M
     _collect(learner, env, 8)
     task, actor, seen = learner.task, learner.actor, {}
     with torch.no_grad():
-        learner.world_model.net.output_layer.weight.normal_(0, 0.5)
+        learner.world_model.dynamics_mlp.output_layer.weight.normal_(0, 0.5)
         actor.policy.decoder.output_layer.weight.normal_(0, 0.5)
     monkeypatch.setattr(task, "termination_prob", lambda successor, *args, **kwargs: torch.sigmoid(successor[0][:, 0]))
     monkeypatch.setattr(task, "advance", lambda successor, goal, context: (goal + 0.1 * successor[0], context + 0.05))
-    start, frames = learner._starts(4)
-    monkeypatch.setattr(learner, "_starts", lambda batch_size: (start, frames))
-    monkeypatch.setattr(learner, "_fit_critic", lambda *args: seen.update(reach=args[3]) or {})
-    state, goal, context, previous = (start["state"],), start["goal"], start["context"], start["prev_actions"]
+    start, frames = learner._sample_imagination_starts(4)
+    monkeypatch.setattr(learner, "_sample_imagination_starts", lambda batch_size: (start, frames))
+    monkeypatch.setattr(learner, "_update_critic", lambda *args: seen.update(reach=args[3]) or {})
+    state, goal, context, previous = (start["state"],), start["goal"], start["context"], start["action_history"]
     history, reach, objective = frames, [torch.ones(4)], torch.zeros(4)
     for step in range(5):
-        action = actor.forward_history(history, task.actor_goal(state, goal))
-        successor, _, labels = learner._predict(state, action, context, previous)
+        action = actor.policy(history, task.actor_goal(state, goal))
+        successor, _, labels = learner._predict_transition(state, action, context, previous)
         objective = objective + 0.9**step * reach[-1] * task.reward(state, action, successor, goal, previous, labels)
         reach.append(reach[-1] * (1 - task.termination_prob(successor, goal, labels)))
         goal, context = task.advance(successor, goal, context)
         previous = torch.cat((previous[:, 1:], action[:, None]), dim=1)
         history = torch.cat((history[:, 1:], task.actor_obs(successor, goal, context, previous)[:, None]), dim=1)
         state = successor
-    objective = objective + 0.9**5 * reach[-1] * learner._value(
+    objective = objective + 0.9**5 * reach[-1] * learner._predict_values(
         task.critic_obs(state, goal, context, previous, history)
     )
     gradient = torch.autograd.grad(-objective.mean(), list(actor.parameters()))
-    metrics = learner._fit_policy()
+    metrics = learner._update_actor_and_critic()
     torch.testing.assert_close(metrics["policy_loss"], -objective.mean().detach())
     torch.testing.assert_close(metrics["policy_grad_norm"], torch.cat([g.flatten() for g in gradient]).norm())
     torch.testing.assert_close(seen["reach"], torch.stack(reach[:-1]).detach())
@@ -608,9 +628,9 @@ def test_checkpoint_normalized_jit_and_onnx(
     runner.save(checkpoint)
     restored = OffPolicyRunner(ScalarEnv(goal_dim=goal_dim), _cfg(actor_ema_halflife=halflife))
     restored.load(checkpoint, load_cfg={**restored.alg.get_default_load_cfg(), "optimizer": load_optimizer})
-    assert restored.alg.iteration == runner.alg.iteration
+    assert restored.alg.num_learner_updates == runner.alg.num_learner_updates
     assert restored.alg.learning_rate == runner.alg.learning_rate
-    assert restored.alg.storage.num_steps == 0 and not restored.alg.actor.history.any()
+    assert restored.alg.storage.num_steps == 0 and not restored.alg.actor.obs_history.any()
     for key in runner.alg.optimizers:
         assert bool(restored.alg.optimizers[key].state) is load_optimizer
     policy = restored.get_inference_policy()
@@ -660,7 +680,7 @@ def test_actor_ema_cpu_inference_survives_exports_from_cuda_runner(tmp_path: Pat
         torch.testing.assert_close(runner.alg.get_policy().output_std, runner.alg.actor.output_std.cpu())
         assert policy(sample).shape == (4, 1)
     assert all(p.device.type == "cpu" and not p.is_inference() for p in policy.parameters())
-    assert runner.alg.actor.history.device.type == "cuda"
+    assert runner.alg.actor.obs_history.device.type == "cuda"
 
 
 class OffsetScalarTask(ScalarTask):
@@ -723,7 +743,7 @@ def test_failed_policy_update_restores_frozen_parameters() -> None:
 
     learner.task.reward = fail
     with pytest.raises(RuntimeError, match="task failure"):
-        learner._fit_policy()
+        learner._update_actor_and_critic()
     assert all(
         parameter.requires_grad for module in (learner.world_model, learner.critic) for parameter in module.parameters()
     )
@@ -736,7 +756,7 @@ def test_fractional_cadence_and_distributed_initialization_validation() -> None:
     for _ in range(5):
         _collect(learner, env, 1)
         learner.update()
-        counts.append(learner.iteration)
+        counts.append(learner.num_learner_updates)
     assert counts == [0, 0, 1, 1, 2]
     cfg = _cfg()
     missing_state_cfg = _cfg()
@@ -766,7 +786,7 @@ def test_collection_schedule_keeps_fractional_credit_through_warmup() -> None:
     for _ in range(13):
         _collect(learner, env, 1)
         learner.update()
-        counts.append(learner.iteration)
+        counts.append(learner.num_learner_updates)
     assert counts == [0, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4]
     for optimizer in learner.optimizers.values():
         assert optimizer.param_groups[0]["lr"] == pytest.approx(2e-4 * 0.03)
@@ -778,12 +798,12 @@ def test_collection_schedule_keeps_fractional_credit_through_warmup() -> None:
         num_schedule_updates=10,
     )
     restored.load(copy.deepcopy(learner.save()), None, True)
-    assert restored.env_steps == 13
+    assert restored.num_env_steps == 13
     resumed_counts = []
     for _ in range(6):
         _collect(restored, env, 1)
         restored.update()
-        resumed_counts.append(restored.iteration)
+        resumed_counts.append(restored.num_learner_updates)
     assert resumed_counts == [4, 4, 4, 4, 4, 5]
 
 
@@ -795,7 +815,7 @@ def test_restored_update_credit_matches_the_running_learner() -> None:
         _collect(learner, env, 1)
         learner.update()
         restored.load(copy.deepcopy(learner.save()), None, True)
-        assert restored._update_debt == pytest.approx(learner._update_debt, abs=1e-6)
+        assert restored._update_credit == pytest.approx(learner._update_credit, abs=1e-6)
 
 
 @pytest.mark.parametrize("schedule", ["after_warmup", "from_start"])
@@ -805,7 +825,7 @@ def test_warmup_credits_only_steps_that_can_train(schedule: str) -> None:
     learner = _learner(env, update_schedule=schedule)
     _collect(learner, env, learner.num_warmup_steps + 1)
     learner.update()
-    assert learner.iteration == 2
+    assert learner.num_learner_updates == 2
 
 
 def test_collection_can_select_actions_before_updating_moments() -> None:
@@ -816,12 +836,12 @@ def test_collection_can_select_actions_before_updating_moments() -> None:
     actor = learner.actor
     obs = env.get_observations()
     state = learner.task.representation.unflatten(obs["state"])
-    frame = learner.task.actor_obs(state, obs["goal"], obs["context"], actor.previous_actions)
+    frame = learner.task.actor_obs(state, obs["goal"], obs["context"], actor.action_history)
     with torch.no_grad():
         expected = actor.policy(frame[:, None].expand(-1, actor.policy.history_length, -1), obs["goal"])
         actual = actor(obs)
     torch.testing.assert_close(actual, expected)
-    assert actor.policy.obs_norm.count == env.num_envs
+    assert actor.policy.obs_normalizer.count == env.num_envs
 
 
 def test_task_analytic_successors_follow_labels_in_fitting_and_imagination() -> None:
@@ -853,17 +873,17 @@ def test_task_analytic_successors_follow_labels_in_fitting_and_imagination() -> 
     learner.task.reward = checked_reward
     learner.task.dynamics_actions = lambda actions: 2 * actions
     state, actions, context = (torch.ones(4, 1),), torch.zeros(4, 1), torch.zeros(4, 1)
-    successor, logits, labels = learner._predict(state, actions, context, torch.zeros(4, 2, 1))
+    successor, logits, labels = learner._predict_transition(state, actions, context, torch.zeros(4, 2, 1))
     assert torch.equal(labels, torch.sigmoid(logits))
     assert post_inputs[0][0] is actions and post_inputs[0][1] is context
     torch.testing.assert_close(torch.autograd.grad(successor[0].sum(), labels)[0], torch.ones_like(labels))
     _collect(learner, env, 4)
     post_calls.clear()
-    learner._fit_world_model()
-    assert len(post_calls) == learner.world_model_window
+    learner._update_world_model()
+    assert len(post_calls) == learner.num_world_model_steps
     post_calls.clear()
-    assert learner._fit_policy()["policy_grad_norm"] > 0
-    assert len(post_calls) == learner.horizon
+    assert learner._update_actor_and_critic()["policy_grad_norm"] > 0
+    assert len(post_calls) == learner.num_imagined_steps
 
 
 def test_task_curriculum_sees_each_collected_step_with_its_pre_step_goal() -> None:
@@ -892,9 +912,9 @@ def test_collection_owns_start_observations() -> None:
     obs["context"].fill_(300)
     successor, rewards, dones, extras = env.step(actions)
     learner.process_env_step(successor, rewards, dones, extras)
-    assert learner.storage.data["state"][0].eq(0).all()
-    assert learner.storage.data["goal"][0].eq(1).all()
-    assert learner.storage.data["context"][0].eq(0).all()
+    assert learner.storage.transitions["state"][0].eq(0).all()
+    assert learner.storage.transitions["goal"][0].eq(1).all()
+    assert learner.storage.transitions["context"][0].eq(0).all()
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA.")
@@ -982,13 +1002,13 @@ def test_checkpoint_load_discards_collection_state() -> None:
     checkpoint = copy.deepcopy(learner.save())
     learner._nonfinite_final_obs.fill_(True)
     multiplier = learner.actor_learning_rate_multiplier
-    multiplier.episode_return.fill_(4.0)
-    multiplier.completed_episodes.copy_(torch.tensor([1.0, 1.0]))
+    multiplier.episode_returns.fill_(4.0)
+    multiplier.completed_return_stats.copy_(torch.tensor([1.0, 1.0]))
 
     learner.load(checkpoint, None, True)
     learner.update()
-    assert multiplier.decay_from is None
-    assert not multiplier.episode_return.any()
+    assert multiplier.decay_start_update is None
+    assert not multiplier.episode_returns.any()
 
 
 def test_critic_ignores_states_after_imagined_termination(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -996,22 +1016,24 @@ def test_critic_ignores_states_after_imagined_termination(monkeypatch: pytest.Mo
     env, learner = ScalarEnv(), _learner()
     _collect(learner, env, 4)
     monkeypatch.setattr(learner.task, "termination_prob", lambda *args, **kwargs: torch.ones(4))
-    monkeypatch.setattr(learner, "_predict", lambda state, *_: ((torch.ones_like(state[0]),), None, None))
+    monkeypatch.setattr(learner, "_predict_transition", lambda state, *_: ((torch.ones_like(state[0]),), None, None))
     monkeypatch.setattr(
         learner.task,
         "reward",
         lambda state, action, *args, **kwargs: torch.where(state[0][:, 0] == 1, torch.nan, action[:, 0]),
     )
     count = int(learner.critic.obs_normalizer.count)
-    metrics = learner._fit_policy()
+    metrics = learner._update_actor_and_critic()
     assert torch.isfinite(metrics["policy_loss"]) and torch.isfinite(metrics["policy_grad_norm"])
     assert int(learner.critic.obs_normalizer.count) - count == learner.policy_batch_size
-    features = torch.randn(learner.horizon + 1, 4, learner.critic.obs_normalizer.mean.shape[-1])
-    rewards, terminals = torch.ones(learner.horizon, 4), torch.ones(learner.horizon, 4)
-    reach = torch.zeros(learner.horizon, 4)
+    features = torch.randn(learner.num_imagined_steps + 1, 4, learner.critic.obs_normalizer.mean.shape[-1])
+    rewards, terminals = torch.ones(learner.num_imagined_steps, 4), torch.ones(learner.num_imagined_steps, 4)
+    reach = torch.zeros(learner.num_imagined_steps, 4)
     reach[0] = 1.0
     features[1:] = torch.nan
-    assert torch.isfinite(torch.tensor(learner._fit_critic(features, rewards, terminals, reach)["critic_loss"].item()))
+    assert torch.isfinite(
+        torch.tensor(learner._update_critic(features, rewards, terminals, reach)["critic_loss"].item())
+    )
 
 
 def test_fixed_critic_shuffle_samples_the_entire_rollout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1019,7 +1041,7 @@ def test_fixed_critic_shuffle_samples_the_entire_rollout(monkeypatch: pytest.Mon
     learner = _learner(num_critic_epochs=2, critic_shuffle_each_epoch=False)
     monkeypatch.setattr(torch, "randperm", lambda size, device: torch.arange(size - 1, -1, -1, device=device))
     features = torch.arange(12.0).view(4, 3, 1).expand(-1, -1, learner.critic.obs_normalizer.mean.numel())
-    value = learner._value
+    value = learner._predict_values
     batches = []
 
     def record_minibatch(features: torch.Tensor) -> torch.Tensor:
@@ -1027,8 +1049,8 @@ def test_fixed_critic_shuffle_samples_the_entire_rollout(monkeypatch: pytest.Mon
             batches.append(features[:, 0])
         return value(features)
 
-    monkeypatch.setattr(learner, "_value", record_minibatch)
-    learner._fit_critic(features, torch.zeros(3, 3), torch.zeros(3, 3), torch.ones(3, 3))
+    monkeypatch.setattr(learner, "_predict_values", record_minibatch)
+    learner._update_critic(features, torch.zeros(3, 3), torch.zeros(3, 3), torch.ones(3, 3))
     torch.testing.assert_close(torch.cat(batches), torch.arange(8.0, 0.0, -1).repeat(2))
 
 
@@ -1041,8 +1063,8 @@ def test_event_labels_condition_on_the_applied_action() -> None:
     state = learner.task.representation.unflatten(torch.zeros(4, 1))
     context, previous = torch.zeros(4, 1), torch.zeros(4, learner.task.action_history_length, 1)
     with torch.no_grad():
-        _, low, _ = learner._predict(state, torch.full((4, 1), -1.0), context, previous)
-        _, high, _ = learner._predict(state, torch.full((4, 1), 1.0), context, previous)
+        _, low, _ = learner._predict_transition(state, torch.full((4, 1), -1.0), context, previous)
+        _, high, _ = learner._predict_transition(state, torch.full((4, 1), 1.0), context, previous)
     assert not torch.allclose(low, high)
 
 
@@ -1068,9 +1090,11 @@ def test_cuda_graph_collection_matches_eager_across_resets_and_pushes() -> None:
     assert graphs and all(graph.graph is not None for graph in graphs)
     torch.testing.assert_close(graphed_actions, eager_actions, rtol=0, atol=0)
     assert graphed.storage.num_steps == eager.storage.num_steps == 12
-    torch.testing.assert_close(graphed.storage.data[:12].to_dict(), eager.storage.data[:12].to_dict(), rtol=0, atol=0)
-    assert eager.storage.data["dones"][:12].any() and eager.storage.data["window_break"][:12].any()
-    for name in ("history", "previous_actions", "fresh"):
+    torch.testing.assert_close(
+        graphed.storage.transitions[:12].to_dict(), eager.storage.transitions[:12].to_dict(), rtol=0, atol=0
+    )
+    assert eager.storage.transitions["dones"][:12].any() and eager.storage.transitions["window_break"][:12].any()
+    for name in ("obs_history", "action_history", "needs_history_reset"):
         torch.testing.assert_close(getattr(graphed.actor, name), getattr(eager.actor, name), rtol=0, atol=0)
     torch.testing.assert_close(graphed.world_model.state_dict(), eager.world_model.state_dict(), rtol=0, atol=0)
     torch.testing.assert_close(graphed._window_break_sum, eager._window_break_sum, rtol=0, atol=0)
@@ -1088,7 +1112,10 @@ def test_cuda_graph_collection_follows_mode_switches(first: str, second: str) ->
         for mode in (first, second, first):
             getattr(learner, mode)()
             _collect(learner, env, 4)
-            result.append((int(learner.world_model.in_norm.count), int(learner.world_model.out_norm.count)))
+            result.append((
+                int(learner.world_model.input_normalizer.count),
+                int(learner.world_model.increment_normalizer.count),
+            ))
         return result
 
     assert counts(True) == counts(False)
@@ -1129,15 +1156,15 @@ def test_cuda_graph_matches_eager_and_resumes(option: str) -> None:
     eager, _, eager_metrics = train(False)
     graphed, env, graphed_metrics = train(True)
     assert set(graphed.muon_optimizers) == ({"actor", "world_model"} if option == "muon" else set())
-    assert graphed._graph_updates and graphed_metrics == eager_metrics
+    assert graphed._update_graphs and graphed_metrics == eager_metrics
     for key in ("actor_state_dict", "critic_state_dict", "world_model_state_dict", "actor_ema_state_dict"):
         torch.testing.assert_close(graphed.save()[key], eager.save()[key], rtol=0, atol=0)
     graphed.load(eager.save(), None, strict=True)
-    assert not graphed._graph_updates
+    assert not graphed._update_graphs
     for _ in range(5):
         _collect(graphed, env, 3)
         losses, _ = graphed.update()
-    assert graphed._graph_updates and math.isfinite(losses["world_model"])
+    assert graphed._update_graphs and math.isfinite(losses["world_model"])
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for graph capture")
@@ -1149,7 +1176,7 @@ def test_cuda_graph_of_world_model_warmup_is_released_at_the_first_policy_update
     for _ in range(14):
         _collect(learner, env, 1)
         learner.update()
-        captured.append({key: graph.graph is not None for key, graph in learner._graph_updates.items()})
+        captured.append({key: graph.graph is not None for key, graph in learner._update_graphs.items()})
     assert {False: True} in captured and captured[-1] == {True: True}
 
 
@@ -1205,7 +1232,7 @@ def test_muon_trains_hidden_matrices_and_resumes() -> None:
     )
     assert set(learner.muon_optimizers) == {"world_model", "actor"}
     muon = {id(p) for group in learner.muon_optimizers["world_model"].param_groups for p in group["params"]}
-    assert muon == {id(learner.world_model.net[3].weight), id(learner.world_model.label_head[3].weight)}
+    assert muon == {id(learner.world_model.dynamics_mlp[3].weight), id(learner.world_model.label_head[3].weight)}
     adam = {id(p) for group in learner.optimizers["world_model"].param_groups for p in group["params"]}
     assert not muon & adam and len(muon | adam) == len(list(learner.world_model.parameters()))
     _collect(learner, env, 8)
@@ -1229,8 +1256,8 @@ def test_actor_learning_rate_follows_the_shared_schedule() -> None:
     """A separate actor learning rate keeps its ratio to the shared rate through the cosine schedule."""
     learner = _learner(actor_learning_rate=8e-4, num_schedule_updates=10)
     for _ in range(4):
-        learner.iteration += 1
-        learner._update_learning_rate()
+        learner.num_learner_updates += 1
+        learner._set_learning_rates()
         actor_lr = learner.optimizers["actor"].param_groups[0]["lr"]
         assert actor_lr == pytest.approx(4 * learner.optimizers["critic"].param_groups[0]["lr"])
         assert learner.learning_rate == learner.optimizers["world_model"].param_groups[0]["lr"]
@@ -1250,29 +1277,31 @@ def test_actor_learning_rate_multiplier_decays_after_return_or_iteration() -> No
         actor_learning_rate_decay_start=50,
     )
     assert _actor_ratio(learner) == pytest.approx(4.0)
-    learner.iteration = 51
-    learner._update_learning_rate()
-    assert learner.actor_learning_rate_multiplier.decay_from == 50 and _actor_ratio(learner) == pytest.approx(2.5)
-    learner.iteration = 60
-    learner._update_learning_rate()
+    learner.num_learner_updates = 51
+    learner._set_learning_rates()
+    assert learner.actor_learning_rate_multiplier.decay_start_update == 50 and _actor_ratio(learner) == pytest.approx(
+        2.5
+    )
+    learner.num_learner_updates = 60
+    learner._set_learning_rates()
     assert _actor_ratio(learner) == pytest.approx(1.0)
 
     learner = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_return=float("-inf"))
     _collect(learner, env, 6)
     learner.update()
-    start = learner.actor_learning_rate_multiplier.decay_from
-    assert start is not None and start <= learner.iteration
-    learner.iteration = start + 1
-    learner._update_learning_rate()
+    start = learner.actor_learning_rate_multiplier.decay_start_update
+    assert start is not None and start <= learner.num_learner_updates
+    learner.num_learner_updates = start + 1
+    learner._set_learning_rates()
     assert _actor_ratio(learner) == pytest.approx(4.0 + (1.0 - 4.0) / 300)
     restored = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_return=float("-inf"))
     restored.load(learner.save(), None, strict=True)
-    assert restored.actor_learning_rate_multiplier.decay_from == start
+    assert restored.actor_learning_rate_multiplier.decay_start_update == start
 
     never = _learner(env, actor_learning_rate_multiplier=4.0, actor_learning_rate_decay_return=float("inf"))
     _collect(never, env, 6)
     _, stats = never.update()
-    assert never.actor_learning_rate_multiplier.decay_from is None and _actor_ratio(never) == pytest.approx(4.0)
+    assert never.actor_learning_rate_multiplier.decay_start_update is None and _actor_ratio(never) == pytest.approx(4.0)
     assert stats["Optimizer/actor_learning_rate"] == pytest.approx(4.0 * stats["Optimizer/learning_rate"])
     with pytest.raises(ValueError, match="decay"):
         _learner(env, actor_learning_rate_multiplier=4.0)
@@ -1306,7 +1335,7 @@ def test_actor_learning_rate_decay_return_counts_short_episodes_low(
     )
     _collect(learner, env, 24)
     learner.update()
-    assert (learner.actor_learning_rate_multiplier.decay_from is not None) is starts
+    assert (learner.actor_learning_rate_multiplier.decay_start_update is not None) is starts
 
 
 def test_per_environment_episode_lengths_are_only_read_for_the_decay_return() -> None:
@@ -1353,11 +1382,11 @@ def test_world_model_mirror_augmentation_replaces_a_fixed_share_of_windows() -> 
     assert learner.num_mirrored_windows == 2
     _collect(learner, env, 8)
     torch.manual_seed(0)
-    mirrored, mirrored_mask = learner._windows(8)
+    mirrored, mirrored_mask = learner._sample_world_model_windows(8)
     learner.num_mirrored_windows = 0
     torch.manual_seed(0)
-    window, mask = learner._windows(8)
-    for key in ("state", "next_state", "actions", "prev_actions", "context"):
+    window, mask = learner._sample_world_model_windows(8)
+    for key in ("state", "next_state", "actions", "action_history", "context"):
         torch.testing.assert_close(mirrored[key][:2], -window[key][:2])
     torch.testing.assert_close(mirrored["labels"], window["labels"])
     torch.testing.assert_close(mirrored[2:], window[2:])
@@ -1386,7 +1415,7 @@ def test_reference_action_offsets_collection_imagination_and_exports(tmp_path: P
     with torch.no_grad():
         actor.eval()
         action = actor(obs)
-        torch.testing.assert_close(action, actor.policy(actor.history, obs["goal"]) + obs["goal"])
+        torch.testing.assert_close(action, actor.policy(actor.obs_history, obs["goal"]) + obs["goal"])
         actor.train()
     runner.learn(2)
     assert math.isfinite(runner.alg.update()[1]["SuperMimic/learner_updates"])
@@ -1410,7 +1439,7 @@ def test_reference_action_is_ignored_unless_enabled() -> None:
     with torch.no_grad():
         learner.actor.eval()
         action = learner.actor(obs)
-    torch.testing.assert_close(action, learner.actor.policy(learner.actor.history, obs["goal"]))
+    torch.testing.assert_close(action, learner.actor.policy(learner.actor.obs_history, obs["goal"]))
 
 
 def test_reference_action_requires_a_task_reference_at_construction() -> None:
@@ -1427,7 +1456,9 @@ def test_dynamics_actions_may_change_the_action_width(monkeypatch: pytest.Monkey
     monkeypatch.setattr(ScalarTask, "dynamics_actions", lambda self, actions: torch.cat((actions, -actions), dim=-1))
     env, learner = ScalarEnv(), _learner()
     _collect(learner, env, 4)
-    assert learner.world_model.num_actions == 2 and math.isfinite(learner.update()[0]["policy"])
+    model = learner.world_model
+    assert model._context_start == model.feature_dim + 2
+    assert math.isfinite(learner.update()[0]["policy"])
 
 
 def test_task_model_loss_uses_integrated_coordinates_and_valid_mean(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1441,7 +1472,7 @@ def test_task_model_loss_uses_integrated_coordinates_and_valid_mean(monkeypatch:
         return coordinate * 0 + 2.75
 
     monkeypatch.setattr(learner.task, "world_model_loss", integrated_loss)
-    result = learner._fit_world_model()
+    result = learner._update_world_model()
     assert result["world_model_loss"].item() == pytest.approx(2.75)
     assert result["world_model_error"].item() == pytest.approx(2.75)
 
@@ -1451,23 +1482,23 @@ def test_world_model_loss_sums_scaled_rollout_errors_over_valid_positions(monkey
     torch.manual_seed(0)
     env, learner = ScalarEnv(), _learner(action_noise=1.0)
     _collect(learner, env, 6)
-    window, mask = learner._windows(64)
+    window, mask = learner._sample_world_model_windows(64)
     assert not mask.all() and mask[:, 1:].any()
-    monkeypatch.setattr(learner, "_windows", lambda batch_size: (window, mask))
-    monkeypatch.setattr(learner, "_apply", lambda *args, **kwargs: None)
+    monkeypatch.setattr(learner, "_sample_world_model_windows", lambda *_: (window, mask))
+    monkeypatch.setattr(learner, "_step_model_optimizers", lambda loss, *_: loss.new_zeros(()))
     with torch.no_grad():
         learner.world_model.label_head.output_layer.weight.zero_()
         learner.world_model.label_head.output_layer.bias.fill_(1.0)
     entropy = math.log1p(math.e) - window["labels"][..., 0]
-    data = learner.storage.data[:6]
+    data = learner.storage.transitions[:6]
     increments = data["next_state"] - data["state"]
     rollout = window["state"][:, :1] + increments.mean() * torch.arange(1, 4)[:, None]
     for floor in (0.01, 1.0):
         learner.error_floor.fill_(floor)
         errors = ((rollout - window["next_state"]) / increments.std(unbiased=False).clamp(min=floor)).square()[..., 0]
-        metrics = learner._fit_world_model()
+        metrics = learner._update_world_model()
         assert metrics["label_loss"].item() == pytest.approx(((entropy * mask).sum() / mask.sum()).item())
-        expected = ((errors * mask).sum(dim=1).mean() + metrics["label_loss"]) / learner.world_model_window
+        expected = ((errors * mask).sum(dim=1).mean() + metrics["label_loss"]) / learner.num_world_model_steps
         assert metrics["world_model_loss"].item() == pytest.approx(expected.item(), rel=1e-4)
 
 
@@ -1485,12 +1516,12 @@ def test_raw_world_model_preserves_task_normalized_context() -> None:
         zero_initialize_output=False,
     )
     state, action, context = torch.ones(4, 1), torch.ones(4, 1) * 2, torch.ones(4, 1) * 0.75
-    model.observe((state,), action, context, (state + 7,))
+    model.update_normalization((state,), action, context, (state + 7,))
     seen = []
-    handle = model.net.register_forward_pre_hook(lambda module, inputs: seen.append(inputs[0].detach()))
+    handle = model.dynamics_mlp.register_forward_pre_hook(lambda module, inputs: seen.append(inputs[0].detach()))
     with torch.no_grad():
-        model.net.output_layer.weight.zero_()
-        model.net.output_layer.bias.fill_(3.0)
+        model.dynamics_mlp.output_layer.weight.zero_()
+        model.dynamics_mlp.output_layer.bias.fill_(3.0)
     result = model((state,), action, context)[0]
     handle.remove()
     torch.testing.assert_close(result, state + 3)
@@ -1502,19 +1533,19 @@ def test_default_world_model_normalizes_inputs_and_rescales_increments() -> None
     """Dynamics and event inputs use the moments of the observed inputs; outputs are scaled by increment moments."""
     model = WorldModel(EuclideanStateRepresentation(1), 1, 1, 1, hidden_dims=(8,), num_labels=1, label_hidden_dims=(8,))
     state, action, context = torch.tensor([[0.0], [2.0]]), torch.tensor([[1.0], [3.0]]), torch.tensor([[10.0], [30.0]])
-    model.observe((state,), action, context, (state + torch.tensor([[1.0], [5.0]]),))
+    model.update_normalization((state,), action, context, (state + torch.tensor([[1.0], [5.0]]),))
     inputs = torch.cat((state, action, context), -1)
-    normalized = (inputs - inputs.mean(0)) / (inputs.std(0, unbiased=False) + model.in_norm.eps)
+    normalized = (inputs - inputs.mean(0)) / (inputs.std(0, unbiased=False) + model.input_normalizer.eps)
     seen = []
-    model.net.register_forward_pre_hook(lambda module, args: seen.append(args[0]))
+    model.dynamics_mlp.register_forward_pre_hook(lambda module, args: seen.append(args[0]))
     model.label_head.register_forward_pre_hook(lambda module, args: seen.append(args[0]))
     with torch.no_grad():
-        model.net.output_layer.bias.fill_(2.0)
+        model.dynamics_mlp.output_layer.bias.fill_(2.0)
         result = model((state,), action, context)[0]
-        model.label_logits((state,), context)
+        model.predict_label_logits((state,), context)
     torch.testing.assert_close(seen[0], normalized)
     torch.testing.assert_close(seen[1], normalized[:, [0, 2]])
-    torch.testing.assert_close(result, state + 3 + 2 * (2 + model.out_norm.eps))
+    torch.testing.assert_close(result, state + 3 + 2 * (2 + model.increment_normalizer.eps))
 
 
 class HistoryCriticScalarTask(ScalarTask):
@@ -1536,7 +1567,7 @@ def test_critic_reads_the_actor_history_of_each_imagined_state() -> None:
     """Critic widths include the history, and each imagined state is valued with the history the actor acts on."""
     env = ScalarEnv()
     learner = _learner(env, task_cfg={"class_name": HistoryCriticScalarTask})
-    assert learner.critic.obs_dim == 5 + learner.actor.history_length * learner.actor.obs_dim
+    assert learner.critic.obs_dim == 5 + learner.actor.policy.history_length * learner.actor.policy.obs_dim
     _collect(learner, env, 4)
     critic_histories, actor_histories = [], []
     critic_obs, actor_forward = learner.task.critic_obs, learner._actor_forward
@@ -1551,8 +1582,8 @@ def test_critic_reads_the_actor_history_of_each_imagined_state() -> None:
         return actor_forward(history, goal)
 
     learner.task.critic_obs, learner._actor_forward = recorded_critic_obs, recorded_actor
-    learner._fit_policy()
-    assert len(critic_histories) == len(actor_histories) + 1 == learner.horizon + 1
+    learner._update_actor_and_critic()
+    assert len(critic_histories) == len(actor_histories) + 1 == learner.num_imagined_steps + 1
     assert all(critic is actor for critic, actor in zip(critic_histories, actor_histories))
     assert torch.equal(critic_histories[-1][:, :-1], actor_histories[-1][:, 1:])
     assert critic_histories[-1].requires_grad
@@ -1576,10 +1607,10 @@ def test_task_label_hooks_define_label_values_and_their_masked_loss() -> None:
     env = ScalarEnv()
     learner = _learner(env, task_cfg={"class_name": LoadScalarTask})
     state = learner.task.representation.unflatten(torch.ones(4, 1))
-    _, logits, labels = learner._predict(state, torch.ones(4, 1), torch.zeros(4, 1), torch.zeros(4, 2, 1))
+    _, logits, labels = learner._predict_transition(state, torch.ones(4, 1), torch.zeros(4, 1), torch.zeros(4, 2, 1))
     torch.testing.assert_close(labels, logits, rtol=0, atol=0)
     _collect(learner, env, 4)
-    window, mask = learner._windows(64)
+    window, mask = learner._sample_world_model_windows(64)
     assert not mask.all()
     losses = []
     label_loss = learner.task.label_loss
@@ -1588,9 +1619,9 @@ def test_task_label_hooks_define_label_values_and_their_masked_loss() -> None:
         losses.append(label_loss(logits, labels))
         return losses[-1]
 
-    learner._windows = lambda batch_size: (window, mask)
+    learner._sample_world_model_windows = lambda *_: (window, mask)
     learner.task.label_loss = recorded_label_loss
-    metrics = learner._fit_world_model()
+    metrics = learner._update_world_model()
     expected = (losses[0] * mask).sum() / mask.sum()
     torch.testing.assert_close(metrics["label_loss"], expected.detach())
 
@@ -1602,10 +1633,10 @@ def test_model_losses_must_return_a_loss_per_replay_position() -> None:
     _collect(learner, env, 4)
     learner.task.label_loss = lambda logits, labels: (logits - labels).square().mean()
     with pytest.raises(ValueError, match="label_loss must return one value per replay position"):
-        learner._fit_world_model()
+        learner._update_world_model()
     learner.task.world_model_loss = lambda prediction, target, scale: torch.zeros((), requires_grad=True)
     with pytest.raises(ValueError, match="world_model_loss must return one value per replay position"):
-        learner._fit_world_model()
+        learner._update_world_model()
 
 
 class ImpulseScalarTask(ReferenceScalarTask):
@@ -1641,13 +1672,18 @@ def test_pre_dynamics_edits_the_start_of_statistics_fitted_and_imagined_transiti
     learner = _learner(env, task_cfg={"class_name": ImpulseScalarTask})
     learner.actor.use_reference_action = True
     _collect(learner, env, 4)
-    data = learner.storage.data[:4]
+    data = learner.storage.transitions[:4]
     assert torch.equal(data["state"][1:], data["next_state"][:-1])
     for column in (0, 2):
-        torch.testing.assert_close(learner.world_model.in_norm.mean[column], (data["state"] + data["context"]).mean())
-    window, mask = learner._windows(learner.world_model_batch_size)
-    start, history = learner._starts(learner.policy_batch_size)
-    learner._windows, learner._starts = lambda batch_size: (window, mask), lambda batch_size: (start, history)
+        torch.testing.assert_close(
+            learner.world_model.input_normalizer.mean[column], (data["state"] + data["context"]).mean()
+        )
+    window, mask = learner._sample_world_model_windows(learner.world_model_batch_size)
+    start, history = learner._sample_imagination_starts(learner.policy_batch_size)
+    learner._sample_world_model_windows, learner._sample_imagination_starts = (
+        lambda *_: (window, mask),
+        lambda batch_size: (start, history),
+    )
     seen = {"critic_obs": [], "actor_goal": [], "reference_action": [], "post_dynamics": [], "reward": []}
 
     def record(name: str) -> None:
@@ -1661,9 +1697,9 @@ def test_pre_dynamics_edits_the_start_of_statistics_fitted_and_imagined_transiti
 
     for name in seen:
         record(name)
-    learner._fit_world_model()
-    learner._fit_policy()
-    steps, horizon = learner.world_model_window, learner.horizon
+    learner._update_world_model()
+    learner._update_actor_and_critic()
+    steps, horizon = learner.num_world_model_steps, learner.num_imagined_steps
     fitted, imagined = seen["post_dynamics"][:steps], seen["post_dynamics"][steps:]
     observed = [window["state"][:, 0], *(successor[0] for _, successor in fitted[:-1])]
     observed += [state[0] for state, _ in seen["critic_obs"][:-1]]
@@ -1676,7 +1712,7 @@ def test_pre_dynamics_edits_the_start_of_statistics_fitted_and_imagined_transiti
     for step in range(horizon):
         assert seen["actor_goal"][step][0] is seen["reference_action"][step][0] is seen["critic_obs"][step][0]
         assert seen["reward"][step][0] is imagined[step][0]
-        assert seen["critic_obs"][step + 1][0] is imagined[step][1]
+        torch.testing.assert_close(seen["critic_obs"][step + 1][0], imagined[step][1])
 
 
 def test_default_transition_hooks_keep_the_given_states() -> None:

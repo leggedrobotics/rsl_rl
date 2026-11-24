@@ -12,12 +12,12 @@ import math
 import torch
 import torch.distributed as dist
 import warnings
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from tensordict import TensorDict
 from torch import nn
 
-from rsl_rl.algorithms.supermimic_optim import ActorEMA, ActorLearningRateMultiplier, hidden_matrices
+from rsl_rl.algorithms.supermimic_optim import ActorEMA, ActorLearningRateMultiplier, select_hidden_weight_matrices
 from rsl_rl.algorithms.supermimic_task import DifferentiableTask, State
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
@@ -34,7 +34,7 @@ from rsl_rl.utils import (
 )
 
 
-def lambda_returns(
+def compute_lambda_returns(
     rewards: torch.Tensor, dones: torch.Tensor, values: torch.Tensor, gamma: float, lam: float
 ) -> torch.Tensor:
     """Compute TD(lambda) targets, retaining terminal rewards and the final bootstrap state."""
@@ -190,6 +190,7 @@ class SuperMimic:
                 raise ValueError("Distributed SuperMimic can only capture CUDA graphs with the NCCL backend.")
         if critic.is_recurrent:
             raise ValueError("SuperMimic requires a feed-forward critic.")
+
         if world_model_full_windows and num_warmup_steps <= world_model_window:
             raise ValueError("Complete replay windows need world_model_window + 1 stored states before learning.")
         if world_model_loss_reduction not in ("sum", "mean"):
@@ -202,14 +203,17 @@ class SuperMimic:
             raise ValueError("A reward-based value cap requires a discount below one.")
         if not set(muon_models) <= {"actor", "world_model"}:
             raise ValueError("muon_models may only contain 'actor' and 'world_model'.")
-        mirror_hooks = ["mirror_state", "mirror_actions", "mirror_context"]
-        if task.num_labels:
-            mirror_hooks.append("mirror_labels")
-        missing_hooks = [name for name in mirror_hooks if not _overrides(task, name)]
-        if world_model_mirror_fraction and missing_hooks:
-            raise ValueError(f"Mirror augmentation requires a task that implements {', '.join(missing_hooks)}.")
-        if actor.use_reference_action and not _overrides(task, "reference_action"):
+
+        if world_model_mirror_fraction:
+            mirror_hooks = ["mirror_state", "mirror_actions", "mirror_context"]
+            if task.num_labels:
+                mirror_hooks.append("mirror_labels")
+            missing_hooks = [name for name in mirror_hooks if not _implements_task_hook(task, name)]
+            if missing_hooks:
+                raise ValueError(f"Mirror augmentation requires a task that implements {', '.join(missing_hooks)}.")
+        if actor.use_reference_action and not _implements_task_hook(task, "reference_action"):
             raise ValueError("use_reference_action requires a task that implements reference_action.")
+
         if use_cuda_graph and torch.device(device).type != "cuda":
             raise ValueError("CUDA graphs require a CUDA device.")
         error_floor = task.representation.error_floor.to(device)
@@ -230,20 +234,21 @@ class SuperMimic:
         self.critic = critic.to(device)
         self.task = task
         self.obs_groups = obs_groups
-        self.actor.noise_std.fill_(action_noise)
+        self.error_floor = error_floor
+        self.actor.action_noise_std.fill_(action_noise)
 
         # Observation groups read during collection, so captured collection calls receive fixed inputs
-        def groups(*names: str) -> list[str]:
+        def select_observation_keys(*names: str) -> list[str]:
             return list(dict.fromkeys(key for name in names for key in obs_groups.get(name, ())))
 
-        self._actor_keys = groups("state", "goal", "context", "prev_action", "prev_prev_action")
-        self._start_keys = groups("state", "goal", "context")
-        self._successor_keys = groups("state", "prev_action", "prev_prev_action")
-        self._final_keys = groups("state", "labels")
+        self._actor_obs_keys = select_observation_keys("state", "goal", "context", "prev_action", "prev_prev_action")
+        self._transition_obs_keys = select_observation_keys("state", "goal", "context")
+        self._next_obs_keys = select_observation_keys("state", "prev_action", "prev_prev_action")
+        self._final_obs_keys = select_observation_keys("state", "labels")
+
         self._act_graphs: dict[bool, CudaGraphCallable] = {}
         self._process_env_step_graphs: dict[bool, CudaGraphCallable] = {}
-        self._graph_updates: dict[bool, CudaGraphCallable] = {}
-        self.error_floor = error_floor
+        self._update_graphs: dict[bool, CudaGraphCallable] = {}
 
         # The uncompiled critic for state_dict operations, and the forwards that compile() replaces
         self._raw_critic = self.critic
@@ -261,7 +266,7 @@ class SuperMimic:
         self.optimizers: dict[str, torch.optim.Optimizer] = {}
         self.muon_optimizers: dict[str, Muon] = {}
         for name, module in modules.items():
-            matrices = hidden_matrices(module) if name in muon_models else []
+            matrices = select_hidden_weight_matrices(module) if name in muon_models else []
             if matrices:
                 self.muon_optimizers[name] = Muon(matrices, lr=self._base_learning_rates[name])
             muon_parameters = set(matrices)
@@ -278,14 +283,12 @@ class SuperMimic:
         # Update cadence parameters
         self.updates_per_step = updates_per_step
         self.update_schedule = update_schedule
-        self.learning_rate_schedule_unit = learning_rate_schedule_unit
-        self.env_steps = 0
         self.num_warmup_steps = num_warmup_steps
         self.num_world_model_warmup_iterations = num_world_model_warmup_iterations
 
         # World model parameters
         self.num_world_model_updates = num_world_model_updates
-        self.world_model_window = world_model_window
+        self.num_world_model_steps = world_model_window
         self.world_model_batch_size = world_model_batch_size
         self.num_mirrored_windows = round(world_model_mirror_fraction * world_model_batch_size)
         self.world_model_loss_reduction = world_model_loss_reduction
@@ -293,7 +296,7 @@ class SuperMimic:
 
         # Policy parameters
         self.num_policy_updates = num_policy_updates
-        self.horizon = horizon
+        self.num_imagined_steps = horizon
         self.policy_batch_size = policy_batch_size
         self.gamma = gamma
         self.value_cap = None if max_step_reward is None else max_step_reward / (1 - gamma)
@@ -312,6 +315,7 @@ class SuperMimic:
 
         # Learning rate schedule parameters
         self.num_schedule_updates = num_schedule_updates
+        self.learning_rate_schedule_unit = learning_rate_schedule_unit
         self.final_learning_rate_ratio = final_learning_rate_ratio
         self.actor_learning_rate_multiplier = ActorLearningRateMultiplier(
             actor_learning_rate_multiplier,
@@ -324,37 +328,39 @@ class SuperMimic:
         )
 
         # Initialize update counters and collection state
-        self.iteration = 0
-        self._reset_update_debt()
-        self._last_obs: TensorDict | None = None
-        self._last_actions: torch.Tensor | None = None
-        self._last_previous_actions: torch.Tensor | None = None
-        self._collected_steps = 0
+        self.num_learner_updates = 0
+        self.num_env_steps = 0
+        self._restore_update_credit()
+        self._transition_observations: TensorDict | None = None
+        self._transition_actions: torch.Tensor | None = None
+        self._transition_action_history: torch.Tensor | None = None
+        self._num_steps_since_update = 0
         self._window_break_sum = torch.zeros((), device=device)
         self._nonfinite_final_obs = torch.zeros(2, dtype=torch.bool, device=device)
-        self._update_learning_rate()
+        self._set_learning_rates()
 
     @torch.no_grad()
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Record the physical start and choose a noisy actor action; update actor moments now."""
-        obs = obs.select(*self._actor_keys)
+        obs = obs.select(*self._actor_obs_keys)
         act = self.actor.act
         if self.use_cuda_graph:
             if self.actor.training not in self._act_graphs:
                 self._act_graphs[self.actor.training] = CudaGraphCallable(self.actor.act, self.device)
             act = self._act_graphs[self.actor.training]
         outputs = act(obs)
-        self._last_obs = obs.select(*self._start_keys).clone()
-        self._last_actions = outputs["actions"]
-        self._last_previous_actions = outputs["previous_actions"]
-        return self._last_actions
+
+        self._transition_observations = obs.select(*self._transition_obs_keys).clone()
+        self._transition_actions = outputs["actions"]
+        self._transition_action_history = outputs["action_history"]
+        return self._transition_actions
 
     @torch.no_grad()
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict
     ) -> dict[str, torch.Tensor]:
         """Record physical successors captured before resets or interval edits on every step."""
-        if self._last_obs is None or self._last_actions is None:
+        if self._transition_observations is None or self._transition_actions is None:
             raise RuntimeError("act() must precede process_env_step().")
         if extras.get("final_obs") is None or extras.get("final_obs_every_step") is not True:
             raise ValueError("SuperMimic requires every-step extras['final_obs'] with final_obs_every_step=True.")
@@ -369,27 +375,29 @@ class SuperMimic:
                 )
             process = self._process_env_step_graphs[self.world_model.training]
         process(
-            self._last_obs,
-            self._last_actions,
-            self._last_previous_actions,
-            obs.select(*self._successor_keys).to(self.device),
-            extras["final_obs"].select(*self._final_keys).to(self.device),
+            self._transition_observations,
+            self._transition_actions,
+            self._transition_action_history,
+            obs.select(*self._next_obs_keys).to(self.device),
+            extras["final_obs"].select(*self._final_obs_keys).to(self.device),
             step_dones,
             step_rewards,
         )
         self.storage.advance()
-        self._collected_steps += 1
-        self.env_steps += 1
+        self._num_steps_since_update += 1
+        self.num_env_steps += 1
+
         replay_ready = self.storage.num_steps >= self.num_warmup_steps
         if replay_ready or self.update_schedule == "from_start":
-            self._update_debt += self.updates_per_step
+            self._update_credit += self.updates_per_step
             if not replay_ready:
-                self._update_debt -= max(int(self._update_debt + 1e-9), 0)
-        goal = concatenate_observation_set(self._last_obs, self.obs_groups, "goal")
+                self._update_credit -= max(int(self._update_credit + 1e-9), 0)
+        goal = concatenate_observation_set(self._transition_observations, self.obs_groups, "goal")
         self.task.update_curriculum(goal, step_rewards, step_dones, extras)
-        self._last_obs = None
-        self._last_actions = None
-        self._last_previous_actions = None
+
+        self._transition_observations = None
+        self._transition_actions = None
+        self._transition_action_history = None
         return {"Training/mean_reward": rewards}
 
     def compute_returns(self, obs: TensorDict) -> None:
@@ -398,51 +406,59 @@ class SuperMimic:
 
     def update(self) -> tuple[dict[str, float], dict[str, float]]:
         """Run accumulated learner updates and return mean losses and statistics."""
-        collected = torch.cat((
+        collection_stats = torch.cat((
             self._nonfinite_final_obs.float(),
-            self.actor_learning_rate_multiplier.completed_episodes,
+            self.actor_learning_rate_multiplier.completed_return_stats,
         ))
         if self.is_multi_gpu:
-            dist.all_reduce(collected)
-        nonfinite_state, nonfinite_labels, return_sum, episodes = collected.tolist()
-        self.actor_learning_rate_multiplier.update_decay_from_returns(return_sum, episodes, self.iteration)
+            dist.all_reduce(collection_stats)
+        nonfinite_state, nonfinite_labels, normalized_return_sum, num_completed_episodes = collection_stats.tolist()
+        self.actor_learning_rate_multiplier.update_decay_from_returns(
+            normalized_return_sum, num_completed_episodes, self.num_learner_updates
+        )
         if nonfinite_state or nonfinite_labels:
             sets = [name for name, flag in (("state", nonfinite_state), ("labels", nonfinite_labels)) if flag]
             raise ValueError(f"SuperMimic received nonfinite final_obs in the observation sets {sets}.")
+
         totals: dict[str, list[torch.Tensor]] = {}
-        if self._collected_steps:
-            totals["window_break_fraction"] = [self._window_break_sum / self._collected_steps]
+        if self._num_steps_since_update:
+            totals["window_break_fraction"] = [self._window_break_sum / self._num_steps_since_update]
             self._window_break_sum.zero_()
-            self._collected_steps = 0
-        count, cumulative_counts = self._take_updates()
-        for _ in range(count):
+            self._num_steps_since_update = 0
+
+        num_updates, cumulative_counts = self._consume_update_credit()
+        for _ in range(num_updates):
             if self.learning_rate_schedule_unit == "env_steps":
-                self._update_learning_rate()
-            update_policy = self.iteration >= self.num_world_model_warmup_iterations
+                self._set_learning_rates()
+
+            update_policy = self.num_learner_updates >= self.num_world_model_warmup_iterations
             if self.use_cuda_graph:
                 if update_policy:
                     # Policy updates continue once they begin, so release the warmup graph and its memory pool
-                    self._graph_updates.pop(False, None)
-                if update_policy not in self._graph_updates:
-                    self._graph_updates[update_policy] = CudaGraphCallable(
-                        functools.partial(self._run_iteration, update_policy), self.device
+                    self._update_graphs.pop(False, None)
+                if update_policy not in self._update_graphs:
+                    self._update_graphs[update_policy] = CudaGraphCallable(
+                        functools.partial(self._run_learner_update, update_policy), self.device
                     )
-                graph = self._graph_updates[update_policy]
+                graph = self._update_graphs[update_policy]
                 stats = graph() if cumulative_counts is None else graph(cumulative_counts)
             else:
-                stats = self._run_iteration(update_policy, cumulative_counts)
+                stats = self._run_learner_update(update_policy, cumulative_counts)
+
             for key, value in stats.items():
                 totals.setdefault(key, []).append(value)
-            self.iteration += 1
+            self.num_learner_updates += 1
             if self.learning_rate_schedule_unit == "learner_updates":
-                self._update_learning_rate()
-        metrics = {"learner_updates": float(self.iteration)}
+                self._set_learning_rates()
+
+        metrics = {"learner_updates": float(self.num_learner_updates)}
         if totals:
             means = torch.stack([torch.stack(values).float().mean() for values in totals.values()])
             if self.is_multi_gpu:
                 dist.all_reduce(means)
                 means /= self.gpu_world_size
             metrics.update(zip(totals, means.tolist()))
+
         losses = {key.removesuffix("_loss"): value for key, value in metrics.items() if key.endswith("_loss")}
         stats = {f"SuperMimic/{key}": value for key, value in metrics.items() if not key.endswith("_loss")}
         stats["Optimizer/learning_rate"] = self.learning_rate
@@ -469,8 +485,8 @@ class SuperMimic:
             "world_model_state_dict": self.world_model.state_dict(),
             **{f"{key}_optimizer_state_dict": optimizer.state_dict() for key, optimizer in self.optimizers.items()},
             **{f"{key}_muon_optimizer_state_dict": muon.state_dict() for key, muon in self.muon_optimizers.items()},
-            "iteration": self.iteration,
-            "env_steps": self.env_steps,
+            "iteration": self.num_learner_updates,
+            "env_steps": self.num_env_steps,
         }
         saved.update(self.actor_learning_rate_multiplier.state_dict())
         if self.actor_ema is not None:
@@ -492,11 +508,13 @@ class SuperMimic:
             raise ValueError("Actor-only loading cannot restore optimizer or iteration state.")
         if not actor_only and "world_model_state_dict" not in loaded_dict:
             raise ValueError("A full SuperMimic checkpoint must explicitly contain world_model.")
+
         self.actor.load_state_dict(loaded_dict["actor_state_dict"], strict=strict)
         if self.actor_ema is not None:
             self.actor_ema.load_state_dict(loaded_dict, strict)
         elif "actor_ema_state_dict" in loaded_dict:
             warnings.warn("Checkpoint contains an actor EMA; set actor_ema_halflife to deploy it.", stacklevel=2)
+
         if not actor_only:
             self._raw_critic.load_state_dict(loaded_dict["critic_state_dict"], strict=strict)
             self.world_model.load_state_dict(loaded_dict["world_model_state_dict"], strict=strict)
@@ -507,20 +525,22 @@ class SuperMimic:
                     self.muon_optimizers[key].load_state_dict(loaded_dict[f"{key}_muon_optimizer_state_dict"])
                 self._configure_optimizer_capture()
             if load_cfg.get("iteration"):
-                self.iteration = loaded_dict["iteration"]
+                self.num_learner_updates = loaded_dict["iteration"]
                 self.actor_learning_rate_multiplier.load_state_dict(loaded_dict)
-                self.env_steps = loaded_dict.get("env_steps", 0)
+                self.num_env_steps = loaded_dict.get("env_steps", 0)
+
         self.storage.clear()
         self.actor.reset()
-        self._last_obs = None
-        self._last_actions = None
-        self._last_previous_actions = None
-        self._reset_update_debt()
+        self._transition_observations = None
+        self._transition_actions = None
+        self._transition_action_history = None
+        self._restore_update_credit()
         self._window_break_sum.zero_()
         self._nonfinite_final_obs.zero_()
         self.actor_learning_rate_multiplier.reset_episode_returns()
-        self._collected_steps = 0
-        self._update_learning_rate()
+        self._num_steps_since_update = 0
+
+        self._set_learning_rates()
         return bool(load_cfg.get("iteration"))
 
     def get_policy(self) -> SuperMimicActor:
@@ -539,53 +559,56 @@ class SuperMimic:
         """Resolve the task and explicit network configs, inferring synthetic feature widths once."""
         alg_class, alg_cfg = resolve_class(cfg["algorithm"])
         task_class, task_cfg = resolve_class(alg_cfg.pop("task_cfg"))
+        actor_class, actor_cfg = resolve_class(cfg["actor"])
+        world_model_class, world_model_cfg = resolve_class(cfg["world_model"])
+        critic_class, critic_cfg = resolve_class(cfg["critic"])
+
         if "critic" in cfg["obs_groups"]:
             raise ValueError("SuperMimic critic observations are synthetic; omit 'critic' from obs_groups.")
         allowed = ("state", "goal", "context", "labels", "prev_action", "prev_prev_action")
-        groups = resolve_obs_groups(obs, cfg["obs_groups"], ["state"], fallback_to_policy=False)
-        if set(groups) - set(allowed):
+        obs_groups = resolve_obs_groups(obs, cfg["obs_groups"], ["state"], fallback_to_policy=False)
+        if set(obs_groups) - set(allowed):
             raise ValueError("Unknown SuperMimic observation set.")
-        cfg["obs_groups"] = groups
-        task = task_class(env=env, device=device, **task_cfg)
+        cfg["obs_groups"] = obs_groups
         example = obs.to(device)
-        example_set = functools.partial(concatenate_observation_set, example, groups)
-        for name in groups:
-            if any(example[key].ndim != 2 for key in groups[name]):
-                raise ValueError("SuperMimic observation groups must be flat noise-free vectors.")
-        previous = torch.zeros(env.num_envs, task.action_history_length, env.num_actions, device=device)
+        if any(example[key].ndim != 2 for keys in obs_groups.values() for key in keys):
+            raise ValueError("SuperMimic observation groups must be flat noise-free vectors.")
+
+        task = task_class(env=env, device=device, **task_cfg)
+        read_example_set = functools.partial(concatenate_observation_set, example, obs_groups)
+        action_history = torch.zeros(env.num_envs, task.action_history_length, env.num_actions, device=device)
         for name, offset in (("prev_action", -1), ("prev_prev_action", -2)):
-            if name in groups:
-                action = example_set(name)
+            if name in obs_groups:
+                action = read_example_set(name)
                 if action.shape[-1] != env.num_actions or task.action_history_length < -offset:
                     raise ValueError("Previous-action observation width/history is incompatible.")
-                previous[:, offset] = action
-        state, goal, context = (
-            task.representation.unflatten(example_set("state")),
-            example_set("goal"),
-            example_set("context"),
-        )
-        actor_obs, actor_goal = task.actor_obs(state, goal, context, previous), task.actor_goal(state, goal)
-        dynamics_context = task.dynamics_context(state, context, previous)
-        if example_set("labels").shape[-1] != task.num_labels:
+                action_history[:, offset] = action
+        if read_example_set("labels").shape[-1] != task.num_labels:
             raise ValueError("Label observation width must equal task.num_labels.")
-        actor_class, actor_cfg = resolve_class(cfg["actor"])
-        model_class, model_cfg = resolve_class(cfg["world_model"])
-        critic_class, critic_cfg = resolve_class(cfg["critic"])
+
+        state = task.representation.unflatten(read_example_set("state"))
+        goal = read_example_set("goal")
+        context = read_example_set("context")
+        actor_obs = task.actor_obs(state, goal, context, action_history)
+        actor_goal = task.actor_goal(state, goal)
+        dynamics_context = task.dynamics_context(state, context, action_history)
+
         actor = actor_class(
-            task, groups, actor_obs.shape[-1], actor_goal.shape[-1], env.num_envs, env.num_actions, **actor_cfg
+            task, obs_groups, actor_obs.shape[-1], actor_goal.shape[-1], env.num_envs, env.num_actions, **actor_cfg
         )
-        history = actor_obs[:, None].repeat(1, actor.policy.history_length, 1)
-        critic_features = task.critic_obs(state, goal, context, previous, history)
-        world_model = model_class(
+        obs_history = actor_obs[:, None].repeat(1, actor.policy.history_length, 1)
+        critic_features = task.critic_obs(state, goal, context, action_history, obs_history)
+        world_model = world_model_class(
             task.representation,
             task.representation.features(state).shape[-1],
-            task.dynamics_actions(previous[:, -1]).shape[-1],
+            task.dynamics_actions(action_history[:, -1]).shape[-1],
             dynamics_context.shape[-1],
             num_labels=task.num_labels,
-            **model_cfg,
+            **world_model_cfg,
         )
         critic_obs = TensorDict({"critic": critic_features}, batch_size=[env.num_envs])
         critic = critic_class(critic_obs, {"critic": ["critic"]}, "critic", 1, **critic_cfg)
+
         storage = SequenceReplayBuffer(
             env.num_envs,
             alg_cfg.pop("replay_buffer_capacity", 1_000_000),
@@ -599,7 +622,7 @@ class SuperMimic:
             critic,
             storage,
             task,
-            groups,
+            obs_groups,
             device=device,
             multi_gpu_cfg=cfg["multi_gpu"],
             max_episode_length=(
@@ -617,17 +640,19 @@ class SuperMimic:
         """Synchronize learned model state while preserving each rank's local collection histories."""
         if not self.is_multi_gpu:
             return
+
         for model in (self.actor, self.world_model, self._raw_critic):
             for tensor in model.state_dict().values():
                 dist.broadcast(tensor, src=0)
         if self.actor_ema is not None:
-            self.actor_ema.broadcast()
+            self.actor_ema.broadcast_parameters()
 
     def release_cuda_graphs(self) -> None:
         """Release graphs containing NCCL collectives before process-group teardown."""
         self._act_graphs.clear()
         self._process_env_step_graphs.clear()
-        self._graph_updates.clear()
+        self._update_graphs.clear()
+
         if self.use_cuda_graph:
             torch.cuda.synchronize(self.device)
 
@@ -635,7 +660,7 @@ class SuperMimic:
         self,
         start: TensorDict,
         actions: torch.Tensor,
-        previous_actions: torch.Tensor,
+        action_history: torch.Tensor,
         obs: TensorDict,
         final: TensorDict,
         done: torch.Tensor,
@@ -658,92 +683,105 @@ class SuperMimic:
                 "context": context,
                 "labels": labels,
                 "actions": actions,
-                "prev_actions": previous_actions,
+                "action_history": action_history,
                 "dones": done,
                 "window_break": window_break,
             },
             batch_size=[self.storage.num_envs],
             device=self.device,
         )
+
         # Record nonfinite consumed final observations without synchronizing; update() rejects them before training
         self._nonfinite_final_obs.logical_or_(
             torch.stack((~torch.isfinite(successor).all(), ~torch.isfinite(labels).all()))
         )
         self.actor_learning_rate_multiplier.record_rewards(rewards, done)
-        self.storage.write(transition)
+        self.storage.write_transition(transition)
+
         physical = self.task.pre_dynamics(self.task.representation.unflatten(state), context)
-        self.world_model.observe(
+        self.world_model.update_normalization(
             physical,
             self.task.dynamics_actions(actions),
-            self.task.dynamics_context(physical, context, previous_actions),
+            self.task.dynamics_context(physical, context, action_history),
             self.task.representation.unflatten(successor),
         )
+
         reset_action = concatenate_observation_set(obs, groups, "prev_action") if "prev_action" in groups else None
         reset_previous = (
             concatenate_observation_set(obs, groups, "prev_prev_action") if "prev_prev_action" in groups else None
         )
         self.actor.reset(done, reset_action, reset_previous)
         self._window_break_sum.add_(window_break.float().mean())
+
         return {}
 
-    def _take_updates(self) -> tuple[int, torch.Tensor | None]:
+    def _consume_update_credit(self) -> tuple[int, torch.Tensor | None]:
         """Consume accrued updates and prepare complete windows when every rank can train."""
-        count = max(int(self._update_debt + 1e-9), 0) if self.storage.num_steps >= self.num_warmup_steps else 0
-        self._update_debt -= count
+        replay_ready = self.storage.num_steps >= self.num_warmup_steps
+        num_updates = max(int(self._update_credit + 1e-9), 0) if replay_ready else 0
+        self._update_credit -= num_updates
+
         cumulative_counts = None
-        if count and self.world_model_full_windows:
-            cumulative_counts = self.storage.complete_window_counts(self.world_model_window + 1)
+        if num_updates and self.world_model_full_windows:
+            cumulative_counts = self.storage.compute_complete_window_counts(self.num_world_model_steps + 1)
+
         if self.is_multi_gpu or cumulative_counts is not None:
-            ready_count = torch.tensor(count, device=self.device)
+            ready_count = torch.tensor(num_updates, device=self.device)
             if cumulative_counts is not None:
                 ready_count *= cumulative_counts[-1] > 0
             if self.is_multi_gpu:
                 dist.all_reduce(ready_count, op=dist.ReduceOp.MIN)
-            count = int(ready_count)
-        return count, cumulative_counts
+            num_updates = int(ready_count)
 
-    def _reset_update_debt(self) -> None:
+        return num_updates, cumulative_counts
+
+    def _restore_update_credit(self) -> None:
         """Restore the fractional update credit that collection would have accrued over ``env_steps``.
 
         The from-start schedule begins with ``1 - updates_per_step`` credit, so the first collected step yields one
         update; whole updates already ran, so only the fraction of the accrued credit remains.
         """
         if self.update_schedule == "after_warmup":
-            self._update_debt = 0.0
+            self._update_credit = 0.0
             return
-        accrued = 1.0 - self.updates_per_step + self.env_steps * self.updates_per_step
-        self._update_debt = accrued - int(accrued + 1e-9) if self.env_steps else accrued
 
-    def _run_iteration(
+        accrued = 1.0 - self.updates_per_step + self.num_env_steps * self.updates_per_step
+        self._update_credit = accrued - int(accrued + 1e-9) if self.num_env_steps else accrued
+
+    def _run_learner_update(
         self, update_policy: bool, cumulative_counts: torch.Tensor | None = None
     ) -> dict[str, torch.Tensor]:
         """Run one learner iteration and return the mean of each metric over its updates."""
         totals: dict[str, list[torch.Tensor]] = {}
         for _ in range(self.num_world_model_updates):
-            for key, value in self._fit_world_model(cumulative_counts).items():
+            for key, value in self._update_world_model(cumulative_counts).items():
                 totals.setdefault(key, []).append(value)
+
         if update_policy:
             for _ in range(self.num_policy_updates):
-                for key, value in self._fit_policy().items():
+                for key, value in self._update_actor_and_critic().items():
                     totals.setdefault(key, []).append(value)
+
         return {key: torch.stack(values).float().mean() for key, values in totals.items()}
 
-    def _fit_world_model(self, cumulative_counts: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
-        """Fit autoregressive physical successors and their labels on valid replay positions."""
-        window, mask = self._windows(self.world_model_batch_size, cumulative_counts)
+    def _update_world_model(self, cumulative_counts: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
+        """Fit autoregressive physical successors and event labels on valid replay positions."""
+        window, mask = self._sample_world_model_windows(self.world_model_batch_size, cumulative_counts)
         state = self.task.representation.unflatten(window["state"][:, 0])
         predictions, logits = [], []
-        for step in range(self.world_model_window):
+
+        for step in range(self.num_world_model_steps):
             state = self.task.pre_dynamics(state, window["context"][:, step])
-            state, event_logits, _ = self._predict(
-                state, window["actions"][:, step], window["context"][:, step], window["prev_actions"][:, step]
+            state, event_logits, _ = self._predict_transition(
+                state, window["actions"][:, step], window["context"][:, step], window["action_history"][:, step]
             )
             predictions.append(state)
             if event_logits is not None:
                 logits.append(event_logits)
+
         prediction = tuple(torch.stack(values, dim=1) for values in zip(*predictions))
         target = self.task.representation.unflatten(window["next_state"])
-        scale = torch.maximum(self.world_model.out_norm.std, self.error_floor)
+        scale = torch.maximum(self.world_model.increment_normalizer.std, self.error_floor)
         errors = self.task.world_model_loss(prediction, target, scale)
         if errors.shape != mask.shape:
             raise ValueError(
@@ -752,9 +790,10 @@ class SuperMimic:
             )
         masked_errors = errors * mask
         valid_count = mask.sum()
-        mean_error = self._globally_normalized_loss(masked_errors.sum(), valid_count)
+        mean_error = self._normalize_loss_across_ranks(masked_errors.sum(), valid_count)
         loss = mean_error if self.world_model_loss_reduction == "mean" else masked_errors.sum(dim=1).mean()
         metrics = {"world_model_error": mean_error.detach()}
+
         if self.task.num_labels:
             label_errors = self.task.label_loss(torch.stack(logits, 1).float(), window["labels"].float())
             if label_errors.shape != mask.shape:
@@ -762,140 +801,162 @@ class SuperMimic:
                     f"label_loss must return one value per replay position, with shape {tuple(mask.shape)}, "
                     f"not {tuple(label_errors.shape)}."
                 )
-            label_loss = self._globally_normalized_loss((label_errors * mask).sum(), valid_count)
+            label_loss = self._normalize_loss_across_ranks((label_errors * mask).sum(), valid_count)
             loss = loss + label_loss
             metrics["label_loss"] = label_loss.detach()
-        metrics["world_model_grad_norm"] = self._apply(loss, "world_model", self.world_model)
+
+        metrics["world_model_grad_norm"] = self._step_model_optimizers(loss, "world_model", self.world_model)
         metrics["world_model_loss"] = loss.detach() / (
-            self.world_model_window if self.world_model_loss_reduction == "sum" else 1
+            self.num_world_model_steps if self.world_model_loss_reduction == "sum" else 1
         )
         return metrics
 
-    def _windows(
+    def _sample_world_model_windows(
         self, batch_size: int, cumulative_counts: torch.Tensor | None = None
     ) -> tuple[TensorDict, torch.Tensor]:
         """Gather dynamics training windows and mirror the configured share."""
         if self.world_model_full_windows:
-            index = self.storage.sample_sequences(batch_size, self.world_model_window + 1, cumulative_counts)
-            ids, valid = index.ids[:, :-1], index.valid[:, :-1]
+            batch = self.storage.sample_complete_windows(batch_size, self.num_world_model_steps + 1, cumulative_counts)
+            indices, valid = batch.indices[:, :-1], batch.valid[:, :-1]
         else:
-            index = self.storage.sample(batch_size, length=self.world_model_window)
-            ids, valid = index.ids, index.valid
-        keys = ("state", "next_state", "actions", "context", "labels", "prev_actions")
-        window = self.storage.gather(keys, ids)
+            batch = self.storage.sample(batch_size, length=self.num_world_model_steps)
+            indices, valid = batch.indices, batch.valid
+
+        keys = ("state", "next_state", "actions", "context", "labels", "action_history")
+        window = self.storage.gather_transitions(keys, indices)
+
         if self.num_mirrored_windows:
-            head = window[: self.num_mirrored_windows]
+            to_mirror = window[: self.num_mirrored_windows]
             task = self.task
             mirrored = TensorDict(
                 {
-                    "state": task.mirror_state(head["state"]),
-                    "next_state": task.mirror_state(head["next_state"]),
-                    "actions": task.mirror_actions(head["actions"]),
-                    "prev_actions": task.mirror_actions(head["prev_actions"]),
-                    "context": task.mirror_context(head["context"]),
-                    "labels": task.mirror_labels(head["labels"]) if task.num_labels else head["labels"],
+                    "state": task.mirror_state(to_mirror["state"]),
+                    "next_state": task.mirror_state(to_mirror["next_state"]),
+                    "actions": task.mirror_actions(to_mirror["actions"]),
+                    "action_history": task.mirror_actions(to_mirror["action_history"]),
+                    "context": task.mirror_context(to_mirror["context"]),
+                    "labels": task.mirror_labels(to_mirror["labels"]) if task.num_labels else to_mirror["labels"],
                 },
-                batch_size=head.batch_size,
+                batch_size=to_mirror.batch_size,
             )
             window = torch.cat((mirrored, window[self.num_mirrored_windows :]))
+
         return window, valid.float()
 
-    def _predict(
-        self, state: State, actions: torch.Tensor, context: torch.Tensor, previous_actions: torch.Tensor
+    def _predict_transition(
+        self, state: State, actions: torch.Tensor, context: torch.Tensor, action_history: torch.Tensor
     ) -> tuple[State, torch.Tensor | None, torch.Tensor | None]:
         """Apply learned dynamics, successor labels and task-owned analytic state."""
         with self._autocast():
             raw_next = self._world_model_forward(
-                state, self.task.dynamics_actions(actions), self.task.dynamics_context(state, context, previous_actions)
+                state, self.task.dynamics_actions(actions), self.task.dynamics_context(state, context, action_history)
             )
+
             # Successor events depend on the action just applied, so their history includes it
             logits = None
             if self.task.num_labels:
-                next_previous_actions = torch.cat((previous_actions[..., 1:, :], actions.unsqueeze(-2)), dim=-2)
-                logits = self.world_model.label_logits(
-                    raw_next, self.task.dynamics_context(raw_next, context, next_previous_actions)
+                next_action_history = torch.cat((action_history[..., 1:, :], actions.unsqueeze(-2)), dim=-2)
+                logits = self.world_model.predict_label_logits(
+                    raw_next, self.task.dynamics_context(raw_next, context, next_action_history)
                 )
+
         labels = self.task.label_activation(logits.float()) if logits is not None else None
         return self.task.post_dynamics(state, raw_next, labels, actions, context), logits, labels
 
-    def _fit_policy(self) -> dict[str, torch.Tensor]:
+    def _update_actor_and_critic(self) -> dict[str, torch.Tensor]:
         """Backpropagate imagined returns through frozen dynamics and fit a TD(lambda) critic."""
         with torch.no_grad():
-            start, history = self._starts(self.policy_batch_size)
-        state = self.task.representation.unflatten(start["state"])
-        goal, context, previous = start["goal"], start["context"], start["prev_actions"]
-        rewards, terminals, features, reaches = [], [], [], []
-        survival = start["state"].new_ones(start.batch_size)
+            starts, obs_history = self._sample_imagination_starts(self.policy_batch_size)
+        state = self.task.representation.unflatten(starts["state"])
+        goal = starts["goal"]
+        context = starts["context"]
+        action_history = starts["action_history"]
+
+        imagined_rewards, termination_probs, critic_features, reach_probs = [], [], [], []
+        survival = starts["state"].new_ones(starts.batch_size)
         reachable = survival > 0
-        with _frozen(self.world_model, self.critic):
-            for _ in range(self.horizon):
-                reaches.append(survival)
-                features.append(self.task.critic_obs(state, goal, context, previous, history))
+
+        with _freeze_parameters(self.world_model, self.critic):
+            for _ in range(self.num_imagined_steps):
+                reach_probs.append(survival)
+                critic_features.append(self.task.critic_obs(state, goal, context, action_history, obs_history))
                 with self._autocast():
-                    action = self._actor_forward(history, self.task.actor_goal(state, goal)).float()
+                    action = self._actor_forward(obs_history, self.task.actor_goal(state, goal)).float()
                 if self.actor.use_reference_action:
                     action = action + self.task.reference_action(state, goal)
+
                 transition_start = self.task.pre_dynamics(state, context)
-                successor, _, labels = self._predict(transition_start, action, context, previous)
-                reward = self.task.reward(transition_start, action, successor, goal, previous, labels=labels)
+                successor, _, labels = self._predict_transition(transition_start, action, context, action_history)
+                reward = self.task.reward(transition_start, action, successor, goal, action_history, labels=labels)
                 terminal = self.task.termination_prob(successor, goal, labels=labels)
-                rewards.append(torch.where(reachable, reward, 0.0))
+                imagined_rewards.append(torch.where(reachable, reward, 0.0))
                 terminal = torch.where(reachable, terminal, 1.0)
-                terminals.append(terminal)
+                termination_probs.append(terminal)
                 survival = survival * (1 - terminal)
                 reachable = survival > 0
-                state = tuple(_keep_reachable(reachable, new, old) for new, old in zip(successor, state))
+
+                state = tuple(_advance_reachable_rows(reachable, new, old) for new, old in zip(successor, state))
                 next_goal, next_context = self.task.advance(state, goal, context)
-                goal = _keep_reachable(reachable, next_goal, goal)
-                context = _keep_reachable(reachable, next_context, context)
-                previous = _keep_reachable(reachable, torch.cat((previous[:, 1:], action[:, None]), dim=1), previous)
-                frame = self.task.add_noise(self.task.actor_obs(state, goal, context, previous))
-                history = _keep_reachable(reachable, torch.cat((history[:, 1:], frame[:, None]), dim=1), history)
-            features.append(self.task.critic_obs(state, goal, context, previous, history))
-            reward, terminal = torch.stack(rewards), torch.stack(terminals)
-            reach = torch.stack(reaches)
-            weights = reach * self.gamma ** torch.arange(self.horizon, device=self.device)[:, None]
-            value = self._value(features[-1])
-            bootstrap = torch.where(reachable, self._cap(value), 0.0)
-            objective = (weights * reward).sum(dim=0) + self.gamma**self.horizon * survival * bootstrap
+                goal = _advance_reachable_rows(reachable, next_goal, goal)
+                context = _advance_reachable_rows(reachable, next_context, context)
+                action_history = _advance_reachable_rows(
+                    reachable, torch.cat((action_history[:, 1:], action[:, None]), dim=1), action_history
+                )
+                frame = self.task.add_noise(self.task.actor_obs(state, goal, context, action_history))
+                obs_history = _advance_reachable_rows(
+                    reachable, torch.cat((obs_history[:, 1:], frame[:, None]), dim=1), obs_history
+                )
+
+            critic_features.append(self.task.critic_obs(state, goal, context, action_history, obs_history))
+            rewards = torch.stack(imagined_rewards)
+            terminals = torch.stack(termination_probs)
+            reach = torch.stack(reach_probs)
+            weights = reach * self.gamma ** torch.arange(self.num_imagined_steps, device=self.device)[:, None]
+            value = self._predict_values(critic_features[-1])
+            bootstrap = torch.where(reachable, self._cap_values(value), 0.0)
+            objective = (weights * rewards).sum(dim=0) + self.gamma**self.num_imagined_steps * survival * bootstrap
             policy_loss = -objective.mean()
-            gradient = self._apply(policy_loss, "actor", self.actor, clip_value=0.1)
-        features_tensor = torch.stack(features).detach()
+
+            gradient = self._step_model_optimizers(policy_loss, "actor", self.actor, clip_value=0.1)
+
+        features = torch.stack(critic_features).detach()
         metrics = {
             "policy_loss": policy_loss.detach(),
             "policy_grad_norm": gradient,
             "imagined_survival": survival.mean().detach(),
-            "imagined_reward": reward.detach().sum() / (reach > 0).sum(),
+            "imagined_reward": rewards.detach().sum() / (reach > 0).sum(),
         }
         if self.value_cap is not None:
             metrics["terminal_saturation"] = ((value.detach() > self.value_cap) & reachable).sum() / (
                 reachable.sum().clamp_min(1)
             )
-        metrics.update(self._fit_critic(features_tensor, reward.detach(), terminal.detach(), reach.detach()))
+        metrics.update(self._update_critic(features, rewards.detach(), terminals.detach(), reach.detach()))
         return metrics
 
-    def _starts(self, batch_size: int) -> tuple[TensorDict, torch.Tensor]:
+    def _sample_imagination_starts(self, batch_size: int) -> tuple[TensorDict, torch.Tensor]:
         """Build reset-aware actor histories, repeating the earliest available frame when needed."""
-        index = self.storage.sample(batch_size, history=self.actor.policy.history_length - 1)
-        history = self.storage.gather(("state", "goal", "context", "prev_actions"), index.ids)
+        index = self.storage.sample(batch_size, history_length=self.actor.policy.history_length - 1)
+        history = self.storage.gather_transitions(("state", "goal", "context", "action_history"), index.indices)
+
         state = self.task.representation.unflatten(history["state"])
         frames = self.task.add_noise(
-            self.task.actor_obs(state, history["goal"], history["context"], history["prev_actions"])
+            self.task.actor_obs(state, history["goal"], history["context"], history["action_history"])
         )
-        first = index.valid.long().argmax(dim=1)
-        first_frame = frames[torch.arange(batch_size, device=frames.device), first]
+
+        first_valid_offset = index.valid.long().argmax(dim=1)
+        first_frame = frames[torch.arange(batch_size, device=frames.device), first_valid_offset]
         frames = torch.where(index.valid[..., None], frames, first_frame[:, None])
         return history[:, -1], frames
 
-    def _value(self, features: torch.Tensor) -> torch.Tensor:
+    def _predict_values(self, features: torch.Tensor) -> torch.Tensor:
         """Read scalar values through the standard synthetic critic observation set."""
         return self.critic(TensorDict({"critic": features}, batch_size=features.shape[:-1])).squeeze(-1)
 
-    def _cap(self, values: torch.Tensor) -> torch.Tensor:
+    def _cap_values(self, values: torch.Tensor) -> torch.Tensor:
         """Clamp values above ``value_cap`` when set; there is no lower bound."""
         return values if self.value_cap is None else values.clamp(max=self.value_cap)
 
-    def _fit_critic(
+    def _update_critic(
         self, features: torch.Tensor, rewards: torch.Tensor, terminals: torch.Tensor, reach: torch.Tensor
     ) -> dict[str, torch.Tensor]:
         """Fit scalar values on detached imagined features with TD(lambda) targets.
@@ -909,38 +970,45 @@ class SuperMimic:
             self.critic.update_normalization(
                 TensorDict({"critic": replay_start_features}, batch_size=replay_start_features.shape[:1])
             )
+
             reachable = reach > 0
             final_reachable = reachable[-1:] & (terminals[-1:] < 1)
             reachable_states = torch.cat((reachable, final_reachable))
             features = torch.where(reachable_states[..., None], features, features[:1])
-            values = self._value(features)
+            values = self._predict_values(features)
             if self.critic_bootstrap_clipping:
-                values = self._cap(values)
-            targets = lambda_returns(rewards, terminals, values, self.gamma, self.lam)
-            targets = torch.where(reachable, self._cap(targets), 0.0).flatten()
+                values = self._cap_values(values)
+
+            targets = compute_lambda_returns(rewards, terminals, values, self.gamma, self.lam)
+            targets = torch.where(reachable, self._cap_values(targets), 0.0).flatten()
+
         features = features[:-1].flatten(0, 1)
         if not self.critic_survival_weighting:
             reach = reachable.to(reach.dtype)
         reach = reach.flatten()
+        num_samples = features.shape[0]
+
         losses = []
         permutation = None
         for _ in range(self.num_critic_epochs):
             if self.critic_shuffle_each_epoch:
-                permutation = torch.rand(features.shape[0], device=self.device).argsort()
+                permutation = torch.rand(num_samples, device=self.device).argsort()
             elif permutation is None:
-                size = features.shape[0] // self.num_critic_mini_batches * self.num_critic_mini_batches
-                permutation = torch.randperm(features.shape[0], device=self.device)[:size]
+                num_batch_samples = num_samples // self.num_critic_mini_batches * self.num_critic_mini_batches
+                permutation = torch.randperm(num_samples, device=self.device)[:num_batch_samples]
+
             for indices in permutation.chunk(self.num_critic_mini_batches):
                 with self._autocast():
-                    squared_errors = (self._value(features[indices]) - targets[indices]).square()
-                    loss = self._globally_normalized_loss(
+                    squared_errors = (self._predict_values(features[indices]) - targets[indices]).square()
+                    loss = self._normalize_loss_across_ranks(
                         (reach[indices] * squared_errors).sum(), reach[indices].sum(), 1e-6
                     )
-                self._apply(loss, "critic", self.critic)
+                self._step_model_optimizers(loss, "critic", self.critic)
                 losses.append(loss.detach())
+
         return {"critic_loss": torch.stack(losses).mean()}
 
-    def _globally_normalized_loss(
+    def _normalize_loss_across_ranks(
         self, total: torch.Tensor, weight: torch.Tensor, minimum: float = 1.0
     ) -> torch.Tensor:
         """Divide a local loss sum by its weight summed over all ranks, pre-multiplied by the world size.
@@ -952,52 +1020,66 @@ class SuperMimic:
             dist.all_reduce(weight)
         return total * self.gpu_world_size / weight.clamp(min=minimum)
 
-    def _apply(self, loss: torch.Tensor, name: str, module: nn.Module, clip_value: float | None = None) -> torch.Tensor:
+    def _step_model_optimizers(
+        self, loss: torch.Tensor, model_name: str, module: nn.Module, clip_value: float | None = None
+    ) -> torch.Tensor:
         """Apply finite gradients with optional value clipping.
 
         Fused optimizers skip nonfinite steps on the device; other optimizers check the gradient norm on the host.
         """
-        optimizers = [self.optimizers[name], *([self.muon_optimizers[name]] if name in self.muon_optimizers else [])]
+        adam = self.optimizers[model_name]
+        muon = self.muon_optimizers.get(model_name)
+        optimizers = (adam,) if muon is None else (adam, muon)
         module.zero_grad(set_to_none=True)
         loss.backward()
         if self.is_multi_gpu:
             reduce_gradients_in_buckets(module.parameters(), self.gpu_world_size, bucket_mb=25.0)
-        norm = nn.utils.clip_grad_norm_(module.parameters(), self.max_grad_norm)
+
+        grad_norm = nn.utils.clip_grad_norm_(module.parameters(), self.max_grad_norm)
         if clip_value is not None:
             nn.utils.clip_grad_value_(module.parameters(), clip_value)
-        finite = torch.isfinite(norm)
-        if optimizers[0].defaults.get("fused"):
+        finite = torch.isfinite(grad_norm)
+
+        if adam.defaults.get("fused"):
             for optimizer in optimizers:
                 optimizer.found_inf = (~finite).float()
                 optimizer.step()
         elif finite:
             for optimizer in optimizers:
                 optimizer.step()
-        if name == "actor" and self.actor_ema is not None:
-            self.actor_ema.update(finite)
-        return norm.detach()
 
-    def _update_learning_rate(self) -> None:
+        if model_name == "actor" and self.actor_ema is not None:
+            self.actor_ema.update_parameters(finite)
+        return grad_norm.detach()
+
+    def _set_learning_rates(self) -> None:
         """Set all optimizer rates for the next learner iteration, clamping at the cosine floor."""
-        step = max(self.env_steps - 1, 0) if self.learning_rate_schedule_unit == "env_steps" else self.iteration
+        step = (
+            max(self.num_env_steps - 1, 0)
+            if self.learning_rate_schedule_unit == "env_steps"
+            else self.num_learner_updates
+        )
         progress = min(step / self.num_schedule_updates, 1.0)
         factor = self.final_learning_rate_ratio + (1 - self.final_learning_rate_ratio) * 0.5 * (
             1 + math.cos(math.pi * progress)
         )
+
         rates = {name: base * factor for name, base in self._base_learning_rates.items()}
-        rates["actor"] *= self.actor_learning_rate_multiplier(self.iteration)
+        rates["actor"] *= self.actor_learning_rate_multiplier(self.num_learner_updates)
         self.learning_rate = rates["world_model"]
         self.actor_learning_rate = rates["actor"]
-        for name, optimizer in self._all_optimizers():
+
+        for name, optimizer in self._iter_model_optimizers():
             for group in optimizer.param_groups:
                 if isinstance(group["lr"], torch.Tensor):
                     group["lr"].fill_(rates[name])
                 else:
                     group["lr"] = rates[name]
 
-    def _all_optimizers(self) -> list[tuple[str, torch.optim.Optimizer]]:
-        """Return each Adam and Muon optimizer with the name of the model it trains."""
-        return [*self.optimizers.items(), *self.muon_optimizers.items()]
+    def _iter_model_optimizers(self) -> Iterator[tuple[str, torch.optim.Optimizer]]:
+        """Yield each Adam and Muon optimizer with the name of the model it trains."""
+        yield from self.optimizers.items()
+        yield from self.muon_optimizers.items()
 
     def _configure_optimizer_capture(self) -> None:
         """Configure optimizers for the learner device and CUDA graphs, and discard stale graphs.
@@ -1005,7 +1087,7 @@ class SuperMimic:
         Loaded optimizer states may come from another device, so their fused flags and Adam step counters are reset to
         this learner's configuration. Graphs need capturable optimizers with device learning rates.
         """
-        for _, optimizer in self._all_optimizers():
+        for _, optimizer in self._iter_model_optimizers():
             fused = bool(optimizer.defaults.get("fused"))
             for group in optimizer.param_groups:
                 lr = float(group["lr"])
@@ -1017,27 +1099,28 @@ class SuperMimic:
                     state = optimizer.state.get(param, {})
                     if "step" in state:
                         state["step"] = state["step"].to(param.device if fused or self.use_cuda_graph else "cpu")
-        self._graph_updates.clear()
+
+        self._update_graphs.clear()
 
 
-def _overrides(task: DifferentiableTask, name: str) -> bool:
+def _implements_task_hook(task: DifferentiableTask, name: str) -> bool:
     """Return whether a task implements an optional hook of :class:`DifferentiableTask`."""
     return getattr(type(task), name) is not getattr(DifferentiableTask, name)
 
 
-def _keep_reachable(reachable: torch.Tensor, successor: torch.Tensor, current: torch.Tensor) -> torch.Tensor:
+def _advance_reachable_rows(reachable: torch.Tensor, successor: torch.Tensor, current: torch.Tensor) -> torch.Tensor:
     """Advance only the rows that can reach the successor."""
     return torch.where(reachable.reshape(-1, *([1] * (successor.ndim - 1))), successor, current)
 
 
 @contextmanager
-def _frozen(*modules: nn.Module) -> Generator[None, None, None]:
+def _freeze_parameters(*modules: nn.Module) -> Generator[None, None, None]:
     """Freeze parameters while preserving input derivatives and restoring flags after failures."""
-    previous = [(parameter, parameter.requires_grad) for module in modules for parameter in module.parameters()]
+    grad_flags = [(parameter, parameter.requires_grad) for module in modules for parameter in module.parameters()]
     try:
-        for parameter, _ in previous:
+        for parameter, _ in grad_flags:
             parameter.requires_grad_(False)
         yield
     finally:
-        for parameter, enabled in previous:
+        for parameter, enabled in grad_flags:
             parameter.requires_grad_(enabled)

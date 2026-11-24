@@ -379,12 +379,14 @@ state returned by ``pre_dynamics``, which is ``observed`` by default, and ``succ
 ``ScalarTask`` in ``tests/algorithms/test_supermimic.py`` is a minimal complete task.
 
 Full checkpoints contain ``actor_state_dict``, ``critic_state_dict``, ``world_model_state_dict``, each model's
-``*_optimizer_state_dict``, the learner iteration and ``env_steps``, the number of collected steps. Replay, collection
-history, simulator state and task-owned state such as curricula are excluded.
+``*_optimizer_state_dict`` and the counters ``iteration`` and ``env_steps``. They count learner updates and
+collected environment steps, respectively.
+Replay, collection history, simulator state and task-owned state such as curricula are excluded.
 ``runner.load(path, load_cfg={"actor": True, "critic": True, "world_model": True, "iteration": True})`` loads all
 models and counters with fresh optimizers. For deployment use ``runner.load(path, load_cfg={"actor": True})``; other
 partial model selections are rejected. Model state-dict loading checks tensor shapes. Task coordinate meaning must
 match the training configuration.
+The loader accepts earlier actor and world-model checkpoint keys.
 
 With ``actor_ema_halflife`` enabled, checkpoints also contain ``actor_ema_state_dict`` and ``actor_ema_updates``.
 Full and actor-only loads restore the averaged parameters and successful actor-step count.

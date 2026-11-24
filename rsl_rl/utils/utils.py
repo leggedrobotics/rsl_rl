@@ -11,7 +11,8 @@ import importlib
 import pkgutil
 import torch
 import warnings
-from collections.abc import Iterable
+from collections import OrderedDict
+from collections.abc import Iterable, Mapping
 from tensordict import TensorDict
 from typing import Any, Callable
 
@@ -300,6 +301,7 @@ def find_nonfinite(
     flags = {f"observation group '{key}'": ~torch.isfinite(tensor).all() for key, tensor in obs.items()}
     flags["rewards"] = ~torch.isfinite(rewards).all()
     flags["dones"] = ~torch.isfinite(dones).all()
+
     final_obs = extras.get("final_obs") if extras is not None else None
     if final_obs is not None:
         done_mask = dones.reshape(-1).bool()
@@ -315,6 +317,7 @@ def raise_if_nonfinite(flags: dict[str, torch.Tensor], distributed_device: str |
     """Raise for flagged environment outputs on every rank when a collective device is supplied."""
     if not flags and distributed_device is None:
         return
+
     device = distributed_device if distributed_device is not None else next(iter(flags.values())).device
     values = (
         torch.stack([flag.to(device) for flag in flags.values()])
@@ -326,6 +329,7 @@ def raise_if_nonfinite(flags: dict[str, torch.Tensor], distributed_device: str |
         torch.distributed.all_reduce(invalid, op=torch.distributed.ReduceOp.MAX)
         if not invalid:
             return
+
     sources = [source for source, value in zip(flags, values.tolist()) if value]
     if sources:
         raise ValueError(
@@ -334,6 +338,24 @@ def raise_if_nonfinite(flags: dict[str, torch.Tensor], distributed_device: str |
         )
     if distributed_device is not None:
         raise ValueError("The environment on another rank returned NaN or Inf values.")
+
+
+def remap_state_dict_prefixes(
+    state_dict: Mapping[str, torch.Tensor], prefixes: Mapping[str, str]
+) -> Mapping[str, torch.Tensor]:
+    """Rename module prefixes in checkpoint keys and PyTorch's per-module metadata."""
+
+    def remap_key(key: str) -> str:
+        for old_prefix, new_prefix in prefixes.items():
+            if key == old_prefix or key.startswith(f"{old_prefix}."):
+                return new_prefix + key[len(old_prefix) :]
+        return key
+
+    remapped = OrderedDict((remap_key(key), value) for key, value in state_dict.items())
+    metadata = getattr(state_dict, "_metadata", None)
+    if metadata is not None:
+        remapped._metadata = {remap_key(key): value for key, value in metadata.items()}
+    return remapped
 
 
 def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.Module:

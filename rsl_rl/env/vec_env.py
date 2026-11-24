@@ -107,7 +107,7 @@ class VecEnv(ABC):
 
             - "final_obs_every_step" (bool): Set to True when ``final_obs`` contains pre-event successors from every
               environment on every step. SuperMimic requires this flag and reads the noise-free state and label groups.
-              Without this flag, entries for environments that are not done are ignored.
+              By default, only the final observations of finished environments are read.
 
             - "log" (dict[str, float | torch.Tensor]): Additional information for logging and debugging purposes.
                The key should be a string and start with "/" for namespacing. The value can be a scalar or a

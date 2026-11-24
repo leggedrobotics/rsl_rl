@@ -482,7 +482,7 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
             for value in alg.actor_ema.averaged_parameters:
                 _assert_close_across_ranks(value)
             _assert_close_across_ranks(alg.actor_ema.num_updates)
-            for _, optimizer in alg._all_optimizers():
+            for _, optimizer in alg._iter_model_optimizers():
                 for state in optimizer.state.values():
                     for value in state.values():
                         if isinstance(value, torch.Tensor):
@@ -499,7 +499,7 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
         expected_gradient = (2 * (0.5 * ranks - 1)[:, None] * global_inputs).mean(dim=0)
         expected_gradient *= min(learner.max_grad_norm / (expected_gradient.norm().item() + 1e-6), 1.0)
         expected_gradient.clamp_(-0.7, 0.7)
-        learner._apply((probe(inputs) - 1).square().mean(), "probe", probe, clip_value=0.7)
+        learner._step_model_optimizers((probe(inputs) - 1).square().mean(), "probe", probe, clip_value=0.7)
         torch.testing.assert_close(probe.weight[0], 0.5 - 0.1 * expected_gradient)
         del learner.optimizers["probe"]
         initial = {
@@ -511,10 +511,10 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
             )
         }
         _collect(learner, env, 1)
-        obs_norm = learner.actor.policy.obs_norm
+        obs_norm = learner.actor.policy.obs_normalizer
         torch.testing.assert_close(obs_norm.mean[0], torch.tensor(float(world_size - 1), device=device))
         assert obs_norm.count == 4 * world_size
-        _assert_not_close_across_ranks(learner.storage.data["state"][0])
+        _assert_not_close_across_ranks(learner.storage.transitions["state"][0])
         for _ in range(8):
             _collect(learner, env, 1)
             learner.update()
@@ -527,46 +527,49 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
         if cuda_graph:
             assert all(graph.graph is not None for graph in learner._act_graphs.values())
             assert all(graph.graph is not None for graph in learner._process_env_step_graphs.values())
-            assert learner._graph_updates[True].graph is not None
+            assert learner._update_graphs[True].graph is not None
 
-        learner.actor_learning_rate_multiplier.completed_episodes.copy_(
+        learner.actor_learning_rate_multiplier.completed_return_stats.copy_(
             torch.tensor([20.0, 1.0] if rank == 0 else [0.0, 0.0], device=device)
         )
-        expected = learner.iteration
+        expected = learner.num_learner_updates
         learner.update()
-        assert learner.actor_learning_rate_multiplier.decay_from == expected
+        assert learner.actor_learning_rate_multiplier.decay_start_update == expected
         checkpoint = copy.deepcopy(learner.save())
         restored = SuperMimic.construct_algorithm(env.get_observations(), env, cfg, device)
         restored.load(checkpoint, None, True)
         restored.broadcast_parameters()
-        assert restored.iteration == learner.iteration and restored.env_steps == learner.env_steps
-        assert restored.actor_learning_rate_multiplier.decay_from == expected
+        assert (
+            restored.num_learner_updates == learner.num_learner_updates
+            and restored.num_env_steps == learner.num_env_steps
+        )
+        assert restored.actor_learning_rate_multiplier.decay_start_update == expected
         assert_synchronized(restored)
         _collect(restored, env, 8)
         restored.update()
-        assert restored.iteration > expected
+        assert restored.num_learner_updates > expected
         assert_synchronized(restored)
 
         value = torch.tensor(2.0, device=device, requires_grad=True)
         weight = torch.tensor(float(rank), device=device)
-        restored._globally_normalized_loss((value - rank).square() * weight, weight).backward()
+        restored._normalize_loss_across_ranks((value - rank).square() * weight, weight).backward()
         torch.distributed.all_reduce(value.grad)
         value.grad /= world_size
         ranks = torch.arange(world_size, device=device, dtype=torch.float32)
         torch.testing.assert_close(value.grad, (2 * (2 - ranks) * ranks).sum() / ranks.sum())
 
-        window_breaks = restored.storage.data["window_break"]
+        window_breaks = restored.storage.transitions["window_break"]
         previous_breaks = window_breaks.clone()
         if rank == 0:
             window_breaks.fill_(True)
-        restored._update_debt = 1.0
-        expected = restored.iteration
-        assert restored.update()[0] == {} and restored.iteration == expected
+        restored._update_credit = 1.0
+        expected = restored.num_learner_updates
+        assert restored.update()[0] == {} and restored.num_learner_updates == expected
         window_breaks.copy_(previous_breaks)
 
         before = copy.deepcopy(restored.save())
         loss = sum(parameter.sum() for parameter in restored.actor.parameters())
-        restored._apply(loss * (float("nan") if rank == 0 else 1.0), "actor", restored.actor)
+        restored._step_model_optimizers(loss * (float("nan") if rank == 0 else 1.0), "actor", restored.actor)
         for key, value in restored.actor.state_dict().items():
             torch.testing.assert_close(value, before["actor_state_dict"][key])
         assert int(restored.actor_ema.num_updates) == before["actor_ema_updates"]

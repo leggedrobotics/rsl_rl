@@ -10,7 +10,7 @@ import torch
 from collections.abc import Callable, Iterable
 
 
-def orthogonalize(matrix: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
+def orthogonalize_matrix(matrix: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
     """Approximately orthogonalize a matrix with the quintic Newton-Schulz iteration in BF16.
 
     The singular values of the result lie roughly in [0.5, 1.5], as in the reference Muon implementation.
@@ -21,6 +21,7 @@ def orthogonalize(matrix: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> to
     if transposed:
         x = x.T
     x = x / x.norm().clamp(min=eps)
+
     for _ in range(steps):
         gram = x @ x.T
         x = torch.addmm(x, torch.addmm(gram, gram, gram, beta=b, alpha=c), x, beta=a)
@@ -63,15 +64,18 @@ class Muon(torch.optim.Optimizer):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
+
         skip = None if self.found_inf is None else self.found_inf.bool()
         for group in self.param_groups:
             if not group["params"]:
                 continue
             momentum = group["momentum"]
             lr = torch.as_tensor(group["lr"], dtype=torch.float32, device=group["params"][0].device)
+
             for param in group["params"]:
                 if param.grad is None:
                     continue
+
                 state = self.state[param]
                 if "momentum_buffer" not in state:
                     state["momentum_buffer"] = torch.zeros_like(param)
@@ -79,12 +83,15 @@ class Muon(torch.optim.Optimizer):
                 grad = param.grad if skip is None else torch.where(skip, 0.0, param.grad)
                 updated = buffer.lerp(grad, 1 - momentum)
                 buffer.copy_(updated if skip is None else torch.where(skip, buffer, updated))
+
                 direction = grad.lerp(buffer, momentum) if group["nesterov"] else buffer
                 scale = lr * (0.2 * math.sqrt(max(param.shape)))
                 if skip is not None:
                     scale = scale * (~skip)
-                update = orthogonalize(direction, self.ns_steps).to(param.dtype)
+                update = orthogonalize_matrix(direction, self.ns_steps).to(param.dtype)
+
                 if group["weight_decay"]:
                     param.mul_(1 - lr * group["weight_decay"] * (1 if skip is None else ~skip))
                 param.sub_(scale * update)
+
         return loss

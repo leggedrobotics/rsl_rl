@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import copy
 import torch
 import torch.distributed as dist
 from torch import nn
@@ -16,14 +15,14 @@ from rsl_rl.models.supermimic_actor import SuperMimicActor
 from rsl_rl.modules.mlp import MLP
 
 
-def hidden_matrices(module: nn.Module) -> list[nn.Parameter]:
+def select_hidden_weight_matrices(module: nn.Module) -> list[nn.Parameter]:
     """Return the weights of the linear layers between the first and last layer of each MLP in a module."""
-    matrices = []
+    hidden_weights = []
     for mlp in module.modules():
         if isinstance(mlp, MLP):
-            linears = [layer for layer in mlp if isinstance(layer, nn.Linear)]
-            matrices += [layer.weight for layer in linears[1:-1]]
-    return matrices
+            linear_layers = [layer for layer in mlp if isinstance(layer, nn.Linear)]
+            hidden_weights.extend(layer.weight for layer in linear_layers[1:-1])
+    return hidden_weights
 
 
 class ActorLearningRateMultiplier:
@@ -46,60 +45,66 @@ class ActorLearningRateMultiplier:
             raise ValueError(
                 "actor_learning_rate_decay_return needs the environment's max_episode_length to normalize returns."
             )
+
         self.multiplier = multiplier
         self.decay_iterations = decay_iterations
-        self.decay_return = decay_return
-        self.decay_start = decay_start
+        self.decay_return_threshold = decay_return
+        self.scheduled_decay_start_update = decay_start
         self.max_episode_length = (
             max_episode_length.to(device) if isinstance(max_episode_length, torch.Tensor) else max_episode_length
         )
 
-        self.decay_from: int | None = None if multiplier > 1 else 0
-        self.episode_return = torch.zeros(num_envs, device=device)
-        self.completed_episodes = torch.zeros(2, device=device)
+        self.decay_start_update: int | None = None if multiplier > 1 else 0
+        self.episode_returns = torch.zeros(num_envs, device=device)
+        self.completed_return_stats = torch.zeros(2, device=device)
 
     def record_rewards(self, rewards: torch.Tensor, dones: torch.Tensor) -> None:
         """Accumulate the normalized returns of completed episodes using only device operations."""
-        if self.decay_return is None:
+        if self.decay_return_threshold is None:
             return
-        self.episode_return.add_(rewards)
-        normalized = torch.where(dones, self.episode_return / self.max_episode_length, 0.0)
-        self.completed_episodes.add_(torch.stack((normalized.sum(), dones.sum())))
-        self.episode_return.masked_fill_(dones, 0.0)
 
-    def update_decay_from_returns(self, return_sum: float, episodes: float, iteration: int) -> None:
+        self.episode_returns.add_(rewards)
+        normalized_returns = torch.where(dones, self.episode_returns / self.max_episode_length, 0.0)
+        self.completed_return_stats.add_(torch.stack((normalized_returns.sum(), dones.sum())))
+        self.episode_returns.masked_fill_(dones, 0.0)
+
+    def update_decay_from_returns(
+        self, normalized_return_sum: float, num_completed_episodes: float, num_learner_updates: int
+    ) -> None:
         """Start the decay once the reduced episodes completed since the previous update reach the return threshold."""
-        self.completed_episodes.zero_()
+        self.completed_return_stats.zero_()
         if (
-            self.decay_from is None
-            and self.decay_return is not None
-            and episodes
-            and return_sum / episodes >= self.decay_return
+            self.decay_start_update is None
+            and self.decay_return_threshold is not None
+            and num_completed_episodes
+            and normalized_return_sum / num_completed_episodes >= self.decay_return_threshold
         ):
-            self.decay_from = iteration
+            self.decay_start_update = num_learner_updates
 
     def reset_episode_returns(self) -> None:
         """Discard the accumulated returns of completed and in-progress episodes."""
-        self.episode_return.zero_()
-        self.completed_episodes.zero_()
+        self.episode_returns.zero_()
+        self.completed_return_stats.zero_()
 
-    def __call__(self, iteration: int) -> float:
+    def __call__(self, num_learner_updates: int) -> float:
         """Return the multiplier, starting its decay at the latest scheduled iteration."""
-        if self.decay_from is None and self.decay_start is not None and iteration >= self.decay_start:
-            self.decay_from = self.decay_start
-        if self.decay_from is None:
+        scheduled_start = self.scheduled_decay_start_update
+        if self.decay_start_update is None and scheduled_start is not None and num_learner_updates >= scheduled_start:
+            self.decay_start_update = scheduled_start
+        if self.decay_start_update is None:
             return self.multiplier
-        progress = min((iteration - self.decay_from) / self.decay_iterations, 1.0)
+
+        progress = min((num_learner_updates - self.decay_start_update) / self.decay_iterations, 1.0)
         return self.multiplier + (1 - self.multiplier) * progress
 
     def state_dict(self) -> dict:
         """Return the decay start under its checkpoint key while a multiplier is active."""
-        return {"actor_learning_rate_decay_from": self.decay_from} if self.multiplier > 1 else {}
+        return {"actor_learning_rate_decay_from": self.decay_start_update} if self.multiplier > 1 else {}
 
     def load_state_dict(self, loaded_dict: dict) -> None:
         """Restore the decay start of an active multiplier."""
         if self.multiplier > 1:
-            self.decay_from = loaded_dict.get("actor_learning_rate_decay_from")
+            self.decay_start_update = loaded_dict.get("actor_learning_rate_decay_from")
 
 
 class ActorEMA:
@@ -109,17 +114,19 @@ class ActorEMA:
         """Start the average at the current actor parameters."""
         self.actor = actor
         self.halflife = halflife
+
         self.averaged_parameters = [parameter.detach().clone() for parameter in actor.parameters()]
         self.num_updates = torch.zeros((), dtype=torch.long, device=self.averaged_parameters[0].device)
-        self._policy: SuperMimicActor | None = None
+        self._inference_policy: SuperMimicActor | None = None
 
     @torch.no_grad()
-    def update(self, finite: torch.Tensor) -> None:
+    def update_parameters(self, finite: torch.Tensor) -> None:
         """Average the actor after a successful step using the half-life and warm-start decay."""
         self.num_updates += finite.long()
         updates = self.num_updates.float()
         decay = torch.clamp((1 + updates) / (10 + updates), max=0.5 ** (1 / self.halflife))
         weight = (1 - decay) * finite.float()
+
         torch._foreach_lerp_(
             self.averaged_parameters, list(self.actor.parameters()), [weight] * len(self.averaged_parameters)
         )
@@ -130,15 +137,15 @@ class ActorEMA:
 
         The deployment actor shares the training task until it moves to another device and takes its own copy.
         """
-        if self._policy is None:
-            with torch.inference_mode(False):
-                self._policy = copy.deepcopy(self.actor, {id(self.actor.task): self.actor.task}).requires_grad_(False)
-            self._policy.owns_task = False
-        policy = self._policy.eval()
+        if self._inference_policy is None:
+            self._inference_policy = self.actor.copy_for_inference()
+
+        policy = self._inference_policy.eval()
         for parameter, average in zip(policy.parameters(), self.averaged_parameters):
             parameter.copy_(average)
         for target, source in zip(policy.buffers(), self.actor.buffers()):
             target.copy_(source)
+
         return policy
 
     def state_dict(self) -> dict:
@@ -161,7 +168,7 @@ class ActorEMA:
         self.num_updates.fill_(loaded_dict.get("actor_ema_updates", 0) if "actor_ema_state_dict" in loaded_dict else 0)
 
     @torch.no_grad()
-    def broadcast(self) -> None:
+    def broadcast_parameters(self) -> None:
         """Synchronize the average and its step count from rank 0."""
         for tensor in (*self.averaged_parameters, self.num_updates):
             dist.broadcast(tensor, src=0)
