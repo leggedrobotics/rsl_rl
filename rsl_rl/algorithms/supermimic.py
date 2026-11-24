@@ -40,7 +40,8 @@ def lambda_returns(
     """Compute TD(lambda) targets, retaining terminal rewards and the final bootstrap state."""
     target, targets = values[-1], []
     for index in reversed(range(rewards.shape[0])):
-        target = rewards[index] + gamma * (1 - dones[index]) * ((1 - lam) * values[index + 1] + lam * target)
+        continuation = (1 - lam) * values[index + 1] + lam * target
+        target = rewards[index] + gamma * torch.where(dones[index] == 1, 0.0, (1 - dones[index]) * continuation)
         targets.append(target)
     return torch.stack(targets[::-1])
 
@@ -150,7 +151,7 @@ class SuperMimic:
             lam: TD(lambda) mixing coefficient for value targets.
             num_critic_epochs: Epochs per critic fit.
             num_critic_mini_batches: Minibatches per critic epoch.
-            critic_survival_weighting: Weight value regression by imagined survival probabilities.
+            critic_survival_weighting: Weight reachable value targets by imagined survival probabilities.
             critic_bootstrap_clipping: Cap values before computing critic return targets.
             critic_shuffle_each_epoch: Draw new minibatches each epoch instead of reusing one permutation.
             learning_rate: Initial learning rate of the world model and critic, and of the actor unless overridden.
@@ -197,22 +198,6 @@ class SuperMimic:
                 raise ValueError("Distributed SuperMimic can only capture CUDA graphs with the NCCL backend.")
         if critic.is_recurrent:
             raise ValueError("SuperMimic requires a feed-forward critic.")
-        positive = (
-            num_world_model_updates,
-            num_policy_updates,
-            world_model_window,
-            world_model_batch_size,
-            horizon,
-            policy_batch_size,
-            num_schedule_updates,
-            num_critic_epochs,
-            num_critic_mini_batches,
-            num_warmup_steps,
-        )
-        if min(positive) < 1 or updates_per_step <= 0 or learning_rate <= 0 or max_grad_norm <= 0:
-            raise ValueError("Learning counts, cadence, learning rate and gradient limit must be positive.")
-        if num_warmup_steps < world_model_window or num_world_model_warmup_iterations < 0:
-            raise ValueError("num_warmup_steps must cover the model window; world-model warmup must be nonnegative.")
         if world_model_full_windows and num_warmup_steps <= world_model_window:
             raise ValueError("Complete replay windows need world_model_window + 1 stored states before learning.")
         if world_model_loss_reduction not in ("sum", "mean"):
@@ -221,14 +206,10 @@ class SuperMimic:
             raise ValueError("update_schedule must be 'after_warmup' or 'from_start'.")
         if learning_rate_schedule_unit not in ("learner_updates", "env_steps"):
             raise ValueError("learning_rate_schedule_unit must be 'learner_updates' or 'env_steps'.")
-        if not 0 <= gamma < 1 or not 0 <= lam <= 1 or not 0 <= final_learning_rate_ratio <= 1:
-            raise ValueError("Invalid discount, lambda or final learning-rate ratio.")
-        if actor_learning_rate is not None and actor_learning_rate <= 0:
-            raise ValueError("actor_learning_rate must be positive or None.")
+        if max_step_reward is not None and gamma == 1:
+            raise ValueError("A reward-based value cap requires a discount below one.")
         if not set(muon_models) <= {"actor", "world_model"}:
             raise ValueError("muon_models may only contain 'actor' and 'world_model'.")
-        if not 0 <= world_model_mirror_fraction <= 1:
-            raise ValueError("world_model_mirror_fraction must lie in [0, 1].")
         mirror_hooks = ["mirror_state", "mirror_actions", "mirror_context"]
         if task.num_labels:
             mirror_hooks.append("mirror_labels")
@@ -237,13 +218,11 @@ class SuperMimic:
             raise ValueError(f"Mirror augmentation requires a task that implements {', '.join(missing_hooks)}.")
         if actor.use_reference_action and not _overrides(task, "reference_action"):
             raise ValueError("use_reference_action requires a task that implements reference_action.")
-        if action_noise < 0:
-            raise ValueError("Action noise must be nonnegative.")
         if use_cuda_graph and torch.device(device).type != "cuda":
             raise ValueError("CUDA graphs require a CUDA device.")
         error_floor = task.representation.error_floor.to(device)
-        if error_floor.shape != (task.representation.increment_dim,) or (error_floor <= 0).any():
-            raise ValueError("State error_floor must contain one positive value per increment coordinate.")
+        if error_floor.shape != (task.representation.increment_dim,):
+            raise ValueError("State error_floor must contain one value per increment coordinate.")
 
         # Device-related parameters
         self.device = device
@@ -318,9 +297,6 @@ class SuperMimic:
         self.num_mirrored_windows = round(world_model_mirror_fraction * world_model_batch_size)
         self.world_model_loss_reduction = world_model_loss_reduction
         self.world_model_full_windows = world_model_full_windows
-        self.critic_survival_weighting = critic_survival_weighting
-        self.critic_bootstrap_clipping = critic_bootstrap_clipping
-        self.critic_shuffle_each_epoch = critic_shuffle_each_epoch
 
         # Policy parameters
         self.num_policy_updates = num_policy_updates
@@ -337,6 +313,9 @@ class SuperMimic:
         self.lam = lam
         self.num_critic_epochs = num_critic_epochs
         self.num_critic_mini_batches = num_critic_mini_batches
+        self.critic_survival_weighting = critic_survival_weighting
+        self.critic_bootstrap_clipping = critic_bootstrap_clipping
+        self.critic_shuffle_each_epoch = critic_shuffle_each_epoch
 
         # Learning rate schedule parameters
         self.num_schedule_updates = num_schedule_updates
@@ -362,10 +341,6 @@ class SuperMimic:
         self._nonfinite_final_obs = torch.zeros(2, dtype=torch.bool, device=device)
         self._update_learning_rate()
 
-    def _set(self, obs: TensorDict, name: str) -> torch.Tensor:
-        """Read an explicit observation set with no policy-group fallback."""
-        return observation_set(obs, self.obs_groups, name)
-
     @torch.no_grad()
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Record the physical start and choose a noisy actor action; update actor moments now."""
@@ -377,7 +352,8 @@ class SuperMimic:
             act = self._act_graphs[self.actor.training]
         outputs = act(obs)
         self._last_obs = obs.select(*self._start_keys).clone()
-        self._last_actions, self._last_previous_actions = outputs["actions"], outputs["previous_actions"]
+        self._last_actions = outputs["actions"]
+        self._last_previous_actions = outputs["previous_actions"]
         return self._last_actions
 
     def _act(self, obs: TensorDict) -> dict[str, torch.Tensor]:
@@ -416,8 +392,13 @@ class SuperMimic:
         self.storage.advance()
         self._collected_steps += 1
         self.env_steps += 1
-        self._update_debt += self.updates_per_step
-        self.task.update_curriculum(self._set(self._last_obs, "goal"), step_rewards, step_dones, extras)
+        replay_ready = self.storage.num_steps >= self.num_warmup_steps
+        if replay_ready or self.update_schedule == "from_start":
+            self._update_debt += self.updates_per_step
+            if not replay_ready:
+                self._update_debt -= max(int(self._update_debt + 1e-9), 0)
+        goal = observation_set(self._last_obs, self.obs_groups, "goal")
+        self.task.update_curriculum(goal, step_rewards, step_dones, extras)
         self._last_obs = self._last_actions = self._last_previous_actions = None
         return {"Training/mean_reward": rewards}
 
@@ -432,11 +413,14 @@ class SuperMimic:
         rewards: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """Store the transition, update dynamics statistics and reset finished histories on the device."""
-        state, successor = self._set(start, "state"), self._set(final, "state")
-        context, goal = self._set(start, "context"), self._set(start, "goal")
-        window_break = (self._set(obs, "state") != successor).any(dim=-1) & ~done
+        groups = self.obs_groups
+        state = observation_set(start, groups, "state")
+        successor = observation_set(final, groups, "state")
+        context = observation_set(start, groups, "context")
+        goal = observation_set(start, groups, "goal")
+        window_break = (observation_set(obs, groups, "state") != successor).any(dim=-1) & ~done
         # Tasks without event labels store an empty label set
-        labels = self._set(final, "labels")
+        labels = observation_set(final, groups, "labels")
         transition = TensorDict(
             {
                 "state": state,
@@ -465,8 +449,8 @@ class SuperMimic:
             self.task.dynamics_context(physical, context, previous_actions),
             self.task.representation.unflatten(successor),
         )
-        reset_action = self._set(obs, "prev_action") if "prev_action" in self.obs_groups else None
-        reset_previous = self._set(obs, "prev_prev_action") if "prev_prev_action" in self.obs_groups else None
+        reset_action = observation_set(obs, groups, "prev_action") if "prev_action" in groups else None
+        reset_previous = observation_set(obs, groups, "prev_prev_action") if "prev_prev_action" in groups else None
         self.actor.reset(done, reset_action, reset_previous)
         self._window_break_sum.add_(window_break.float().mean())
         return {}
@@ -475,15 +459,18 @@ class SuperMimic:
         """Replay and imagination construct their own return targets during update."""
         pass
 
-    def _windows(self, batch_size: int) -> tuple[TensorDict, torch.Tensor]:
+    def _windows(
+        self, batch_size: int, cumulative_counts: torch.Tensor | None = None
+    ) -> tuple[TensorDict, torch.Tensor]:
         """Sample uniform anchors, additionally cutting world-model targets after external state edits."""
         if self.world_model_full_windows:
-            index = self.storage.sample_sequences(batch_size, self.world_model_window + 1)
-            index.ids, index.valid = index.ids[:, :-1], index.valid[:, :-1]
+            index = self.storage.sample_sequences(batch_size, self.world_model_window + 1, cumulative_counts)
+            ids, valid = index.ids[:, :-1], index.valid[:, :-1]
         else:
             index = self.storage.sample(batch_size, length=self.world_model_window)
+            ids, valid = index.ids, index.valid
         keys = ["state", "next_state", "actions", "context", "labels", "prev_actions", "window_break"]
-        window = self.storage.gather(keys, index.ids)
+        window = self.storage.gather(keys, ids)
         if self.num_mirrored_windows:
             head, task = window[: self.num_mirrored_windows], self.task
             mirrored = TensorDict(
@@ -499,7 +486,7 @@ class SuperMimic:
                 batch_size=head.batch_size,
             )
             window = torch.cat((mirrored, window[self.num_mirrored_windows :]))
-        mask = index.valid.float()
+        mask = valid.float()
         if not self.world_model_full_windows and self.world_model_window > 1:
             mask[:, 1:] *= torch.cumprod((~window["window_break"][:, :-1]).long(), dim=1)
         return window, mask
@@ -537,9 +524,9 @@ class SuperMimic:
         labels = self.task.label_activation(logits.float()) if logits is not None else None
         return self.task.post_dynamics(state, raw_next, labels, actions, context), logits, labels
 
-    def _fit_world_model(self) -> dict[str, torch.Tensor]:
+    def _fit_world_model(self, cumulative_counts: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
         """Fit autoregressive physical successors and their labels on valid replay positions."""
-        window, mask = self._windows(self.world_model_batch_size)
+        window, mask = self._windows(self.world_model_batch_size, cumulative_counts)
         state = self.task.representation.unflatten(window["state"][:, 0])
         predictions, logits = [], []
         for step in range(self.world_model_window):
@@ -594,44 +581,53 @@ class SuperMimic:
             start, history = self._starts(self.policy_batch_size)
         state = self.task.representation.unflatten(start["state"])
         goal, context, previous = start["goal"], start["context"], start["prev_actions"]
-        rewards, terminals, features = [], [], []
+        rewards, terminals, features, reaches = [], [], [], []
+        survival = start["state"].new_ones(start.batch_size)
+        reachable = survival > 0
         with _frozen(self.world_model, self.critic):
             for _ in range(self.horizon):
+                reaches.append(survival)
                 features.append(self.task.critic_obs(state, goal, context, previous, history))
                 with self._autocast():
                     action = self._actor_forward(history, self.task.actor_goal(state, goal))
                 if self.actor.use_reference_action:
                     action = action + self.task.reference_action(state, goal)
-                state = self.task.pre_dynamics(state, context)
-                successor, _, labels = self._predict(state, action, context, previous)
-                rewards.append(self.task.reward(state, action, successor, goal, previous, labels=labels))
-                terminals.append(self.task.termination_prob(successor, goal, labels=labels))
-                goal, context = self.task.advance(successor, goal, context)
-                previous = torch.cat((previous[:, 1:], action[:, None]), dim=1)
-                frame = self.task.add_noise(self.task.actor_obs(successor, goal, context, previous))
-                history = torch.cat((history[:, 1:], frame[:, None]), dim=1)
-                state = successor
+                transition_start = self.task.pre_dynamics(state, context)
+                successor, _, labels = self._predict(transition_start, action, context, previous)
+                reward = self.task.reward(transition_start, action, successor, goal, previous, labels=labels)
+                terminal = self.task.termination_prob(successor, goal, labels=labels)
+                rewards.append(torch.where(reachable, reward, 0.0))
+                terminal = torch.where(reachable, terminal, 1.0)
+                terminals.append(terminal)
+                survival = survival * (1 - terminal)
+                reachable = survival > 0
+                state = tuple(_keep_reachable(reachable, new, old) for new, old in zip(successor, state))
+                next_goal, next_context = self.task.advance(state, goal, context)
+                goal = _keep_reachable(reachable, next_goal, goal)
+                context = _keep_reachable(reachable, next_context, context)
+                previous = _keep_reachable(reachable, torch.cat((previous[:, 1:], action[:, None]), dim=1), previous)
+                frame = self.task.add_noise(self.task.actor_obs(state, goal, context, previous))
+                history = _keep_reachable(reachable, torch.cat((history[:, 1:], frame[:, None]), dim=1), history)
             features.append(self.task.critic_obs(state, goal, context, previous, history))
             reward, terminal = torch.stack(rewards), torch.stack(terminals)
-            survival = [1 - terminal[0]]
-            for step_terminal in terminal[1:]:
-                survival.append(survival[-1] * (1 - step_terminal))
-            alive = torch.stack(survival)
-            reach = torch.cat((torch.ones_like(alive[:1]), alive[:-1]))
+            reach = torch.stack(reaches)
             weights = reach * self.gamma ** torch.arange(self.horizon, device=self.device)[:, None]
             value = self._value(features[-1])
-            objective = (weights * reward).sum(dim=0) + self.gamma**self.horizon * alive[-1] * self._cap(value)
+            bootstrap = torch.where(reachable, self._cap(value), 0.0)
+            objective = (weights * reward).sum(dim=0) + self.gamma**self.horizon * survival * bootstrap
             policy_loss = -objective.mean()
             gradient = self._apply(policy_loss, "actor", self.actor, clip_value=0.1)
         features_tensor = torch.stack(features).detach()
         metrics = {
             "policy_loss": policy_loss.detach(),
             "policy_grad_norm": gradient,
-            "imagined_survival": alive[-1].mean().detach(),
-            "imagined_reward": reward.detach().mean(),
+            "imagined_survival": survival.mean().detach(),
+            "imagined_reward": reward.detach().sum() / (reach > 0).sum(),
         }
         if self.value_cap is not None:
-            metrics["terminal_saturation"] = (value.detach() > self.value_cap).float().mean()
+            metrics["terminal_saturation"] = ((value.detach() > self.value_cap) & reachable).sum() / (
+                reachable.sum().clamp_min(1)
+            )
         metrics.update(self._fit_critic(features_tensor, reward.detach(), terminal.detach(), reach.detach()))
         return metrics
 
@@ -649,14 +645,19 @@ class SuperMimic:
             self.critic.update_normalization(
                 TensorDict({"critic": replay_start_features}, batch_size=replay_start_features.shape[:1])
             )
+            reachable = reach > 0
+            final_reachable = reachable[-1:] & (terminals[-1:] < 1)
+            reachable_states = torch.cat((reachable, final_reachable))
+            features = torch.where(reachable_states[..., None], features, features[:1])
             values = self._value(features)
             if self.critic_bootstrap_clipping:
                 values = self._cap(values)
             targets = lambda_returns(rewards, terminals, values, self.gamma, self.lam)
-            targets = self._cap(targets).flatten()
-        features, reach = features[:-1].flatten(0, 1), reach.flatten()
+            targets = torch.where(reachable, self._cap(targets), 0.0).flatten()
+        features = features[:-1].flatten(0, 1)
         if not self.critic_survival_weighting:
-            reach = torch.ones_like(reach)
+            reach = reachable.to(reach.dtype)
+        reach = reach.flatten()
         losses = []
         permutation = None
         for _ in range(self.num_critic_epochs):
@@ -664,7 +665,7 @@ class SuperMimic:
                 permutation = torch.rand(features.shape[0], device=self.device).argsort()
             elif permutation is None:
                 size = features.shape[0] // self.num_critic_mini_batches * self.num_critic_mini_batches
-                permutation = torch.randperm(size, device=self.device)
+                permutation = torch.randperm(features.shape[0], device=self.device)[:size]
             for indices in permutation.chunk(self.num_critic_mini_batches):
                 with self._autocast():
                     squared_errors = (self._value(features[indices]) - targets[indices]).square()
@@ -730,7 +731,8 @@ class SuperMimic:
             totals["window_break_fraction"] = [self._window_break_sum / self._collected_steps]
             self._window_break_sum.zero_()
             self._collected_steps = 0
-        for _ in range(self._take_updates()):
+        count, cumulative_counts = self._take_updates()
+        for _ in range(count):
             if self.learning_rate_schedule_unit == "env_steps":
                 self._update_learning_rate()
             update_policy = self.iteration >= self.num_world_model_warmup_iterations
@@ -742,9 +744,10 @@ class SuperMimic:
                     self._graph_updates[update_policy] = CudaGraphCallable(
                         functools.partial(self._run_iteration, update_policy), self.device
                     )
-                stats = self._graph_updates[update_policy]()
+                graph = self._graph_updates[update_policy]
+                stats = graph() if cumulative_counts is None else graph(cumulative_counts)
             else:
-                stats = self._run_iteration(update_policy)
+                stats = self._run_iteration(update_policy, cumulative_counts)
             for key, value in stats.items():
                 totals.setdefault(key, []).append(value)
             self.iteration += 1
@@ -763,19 +766,21 @@ class SuperMimic:
         stats["Optimizer/actor_learning_rate"] = self.actor_learning_rate
         return losses, stats
 
-    def _take_updates(self) -> int:
-        """Consume the whole accrued learner updates, running none until every rank holds the warmup steps."""
-        count = max(int(self._update_debt + 1e-9), 0)
+    def _take_updates(self) -> tuple[int, torch.Tensor | None]:
+        """Consume accrued updates and prepare complete windows when every rank can train."""
+        count = max(int(self._update_debt + 1e-9), 0) if self.storage.num_steps >= self.num_warmup_steps else 0
         self._update_debt -= count
-        if self.storage.num_steps < self.num_warmup_steps:
-            count = 0
-            if self.update_schedule == "after_warmup":
-                self._update_debt = 0.0
-        if self.is_multi_gpu:
+        cumulative_counts = None
+        if count and self.world_model_full_windows:
+            cumulative_counts = self.storage.complete_window_counts(self.world_model_window + 1)
+        if self.is_multi_gpu or cumulative_counts is not None:
             ready_count = torch.tensor(count, device=self.device)
-            dist.all_reduce(ready_count, op=dist.ReduceOp.MIN)
+            if cumulative_counts is not None:
+                ready_count *= cumulative_counts[-1] > 0
+            if self.is_multi_gpu:
+                dist.all_reduce(ready_count, op=dist.ReduceOp.MIN)
             count = int(ready_count)
-        return count
+        return count, cumulative_counts
 
     def _reset_update_debt(self) -> None:
         """Restore the fractional update credit that collection would have accrued over ``env_steps``.
@@ -789,11 +794,13 @@ class SuperMimic:
         accrued = 1.0 - self.updates_per_step + self.env_steps * self.updates_per_step
         self._update_debt = accrued - int(accrued + 1e-9) if self.env_steps else accrued
 
-    def _run_iteration(self, update_policy: bool) -> dict[str, torch.Tensor]:
+    def _run_iteration(
+        self, update_policy: bool, cumulative_counts: torch.Tensor | None = None
+    ) -> dict[str, torch.Tensor]:
         """Run one learner iteration and return the mean of each metric over its updates."""
         totals: dict[str, list[torch.Tensor]] = {}
         for _ in range(self.num_world_model_updates):
-            for key, value in self._fit_world_model().items():
+            for key, value in self._fit_world_model(cumulative_counts).items():
                 totals.setdefault(key, []).append(value)
         if update_policy:
             for _ in range(self.num_policy_updates):
@@ -931,6 +938,8 @@ class SuperMimic:
         self._last_obs = self._last_actions = self._last_previous_actions = None
         self._reset_update_debt()
         self._window_break_sum.zero_()
+        self._nonfinite_final_obs.zero_()
+        self.actor_learning_rate_multiplier.reset_episode_returns()
         self._collected_steps = 0
         self._update_learning_rate()
         return bool(load_cfg.get("iteration"))
@@ -1025,6 +1034,11 @@ class SuperMimic:
 def _overrides(task: DifferentiableTask, name: str) -> bool:
     """Return whether a task implements an optional hook of :class:`DifferentiableTask`."""
     return getattr(type(task), name) is not getattr(DifferentiableTask, name)
+
+
+def _keep_reachable(reachable: torch.Tensor, successor: torch.Tensor, current: torch.Tensor) -> torch.Tensor:
+    """Advance only the rows that can reach the successor."""
+    return torch.where(reachable.reshape(-1, *([1] * (successor.ndim - 1))), successor, current)
 
 
 @contextmanager

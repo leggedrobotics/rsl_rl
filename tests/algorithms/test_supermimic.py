@@ -288,13 +288,15 @@ def test_replay_start_padding_repeats_the_same_noisy_reset_frame(monkeypatch: py
     assert (frames[index.valid.all(dim=1), 0] != frames[index.valid.all(dim=1), -1]).any()
 
 
-def test_inference_device_moves_task_tensors() -> None:
+@pytest.mark.parametrize("halflife", [None, 500])
+def test_inference_device_moves_task_tensors(halflife: int | None) -> None:
     """Task observation constants move together with policy parameters and history."""
-    learner = _learner()
+    learner = _learner(actor_ema_halflife=halflife)
     learner.task.offset = torch.ones(1)
     policy = learner.get_policy().to("meta")
     assert policy.history.device.type == "meta"
-    assert learner.task.offset.device.type == "meta"
+    assert policy.task.offset.device.type == "meta"
+    assert learner.task.offset.device.type == ("meta" if halflife is None else "cpu")
 
 
 @pytest.mark.parametrize(
@@ -309,6 +311,7 @@ def test_actor_ema_is_passive_over_five_updates(device: str) -> None:
         env = ScalarEnv(device=device)
         learner = _learner(env, updates_per_step=0.25, actor_ema_halflife=halflife)
         result = []
+        _collect(learner, env, learner.num_warmup_steps - 1)
         for _ in range(5):
             _collect(learner, env, 4)
             metrics = learner.update()
@@ -349,7 +352,7 @@ def test_actor_ema_matches_closed_form_and_keeps_live_buffers() -> None:
     expected = sum((i + 1) * (1 - decay) * math.prod(decays[i + 1 :]) for i, decay in enumerate(decays))
     with torch.inference_mode():
         policy = learner.get_policy()
-    assert policy.task is learner.task
+    assert policy.task.handle is learner.task.handle
     for parameter in policy.parameters():
         torch.testing.assert_close(parameter, torch.full_like(parameter, expected))
         assert not parameter.is_inference()
@@ -397,6 +400,11 @@ def test_actor_ema_checkpoint_full_actor_only_and_no_ema_loads() -> None:
         else:
             assert not any(optimizer.state for optimizer in restored.optimizers.values())
             assert restored.iteration == 0
+    legacy = dict(saved)
+    for key in ("actor_state_dict", "actor_ema_state_dict"):
+        legacy[key] = {name.removeprefix("policy."): value for name, value in saved[key].items()}
+    restored.load(legacy, None, strict=True)
+    torch.testing.assert_close(restored.save(), saved, rtol=0, atol=0)
     disabled = _learner()
     with pytest.warns(UserWarning, match="actor EMA; set actor_ema_halflife"):
         disabled.load(saved, {"actor": True}, strict=True)
@@ -417,17 +425,10 @@ def test_actor_ema_checkpoint_full_actor_only_and_no_ema_loads() -> None:
         restored.load(malformed, {"actor": True}, strict=True)
 
 
-@pytest.mark.parametrize("halflife", [0, -1])
-def test_actor_ema_rejects_nonpositive_halflife(halflife: int) -> None:
-    """An enabled EMA requires a positive half-life."""
-    with pytest.raises(ValueError, match="actor_ema_halflife"):
-        _learner(actor_ema_halflife=halflife)
-
-
 def test_learning_rate_tracks_learner_iterations_and_resume() -> None:
     """All optimizers share one clamped schedule despite unequal update counts."""
     learner, env = _learner(num_schedule_updates=8, num_world_model_updates=2), ScalarEnv()
-    _collect(learner, env, 4)
+    _collect(learner, env, learner.num_warmup_steps + 3)
     learner.update()
     assert learner.iteration == 4
     expected = 2e-4 * (0.03 + 0.97 * 0.5)
@@ -513,13 +514,13 @@ def test_nonzero_crouch_reset_actions_seed_both_predecessors() -> None:
 def test_lambda_returns_terminal_reward_and_bootstrap() -> None:
     """A terminal transition retains its reward and excludes future values."""
     actual = lambda_returns(
-        torch.tensor([[1.0], [2.0], [3.0]]),
-        torch.tensor([[0.0], [1.0], [0.0]]),
-        torch.tensor([[7.0], [8.0], [9.0], [10.0]]),
+        torch.tensor([[1.0, 1.0], [2.0, 2.0], [3.0, torch.nan]]),
+        torch.tensor([[0.0, 0.0], [1.0, 1.0], [0.0, 0.0]]),
+        torch.tensor([[7.0], [8.0], [9.0], [10.0]]).expand(-1, 2),
         0.5,
         0.5,
     )
-    torch.testing.assert_close(actual, torch.tensor([[3.5], [2.0], [8.0]]))
+    torch.testing.assert_close(actual, torch.tensor([[3.5, 3.5], [2.0, 2.0], [8.0, torch.nan]]), equal_nan=True)
 
 
 def test_value_cap_bounds_policy_bootstrap_and_critic_targets() -> None:
@@ -681,7 +682,8 @@ def test_moving_the_actor_ema_policy_leaves_the_training_task_in_place(tmp_path:
     cfg = _cfg(actor_ema_halflife=500, task_cfg={"class_name": OffsetScalarTask})
     runner = OffPolicyRunner(ScalarEnv(device="cuda:0"), cfg, str(tmp_path), device="cuda:0")
     runner.learn(2)
-    runner.get_inference_policy(device="cpu")
+    policy = runner.get_inference_policy(device="cpu")
+    assert policy(runner.env.get_observations().cpu()).shape == (4, 1)
     assert runner.alg.task.offset.device.type == "cuda"
     runner.learn(2)
 
@@ -792,6 +794,16 @@ def test_restored_update_credit_matches_the_running_learner() -> None:
         learner.update()
         restored.load(copy.deepcopy(learner.save()), None, True)
         assert restored._update_debt == pytest.approx(learner._update_debt, abs=1e-6)
+
+
+@pytest.mark.parametrize("schedule", ["after_warmup", "from_start"])
+def test_warmup_credits_only_steps_that_can_train(schedule: str) -> None:
+    """A rollout that crosses warmup only earns updates for eligible steps."""
+    env = ScalarEnv()
+    learner = _learner(env, update_schedule=schedule)
+    _collect(learner, env, learner.num_warmup_steps + 1)
+    learner.update()
+    assert learner.iteration == 2
 
 
 def test_collection_can_select_actions_before_updating_moments() -> None:
@@ -964,20 +976,60 @@ def test_nonfinite_final_observations_are_rejected_before_training(group: str) -
     assert all(torch.equal(a, b) for a, b in zip(before, learner.world_model.parameters()))
 
 
+def test_checkpoint_load_discards_collection_state() -> None:
+    """Reloading a checkpoint with finite models clears flags and returns from the discarded rollout."""
+    learner = _learner(actor_learning_rate_multiplier=2.0, actor_learning_rate_decay_return=0.5)
+    checkpoint = copy.deepcopy(learner.save())
+    learner._nonfinite_final_obs.fill_(True)
+    multiplier = learner.actor_learning_rate_multiplier
+    multiplier.episode_return.fill_(4.0)
+    multiplier.completed_episodes.copy_(torch.tensor([1.0, 1.0]))
+
+    learner.load(checkpoint, None, True)
+    learner.update()
+    assert multiplier.decay_from is None
+    assert not multiplier.episode_return.any()
+
+
 def test_critic_ignores_states_after_imagined_termination(monkeypatch: pytest.MonkeyPatch) -> None:
     """After a certain termination, imagined states neither train the critic nor update its normalizer."""
     env, learner = ScalarEnv(), _learner()
     _collect(learner, env, 4)
     monkeypatch.setattr(learner.task, "termination_prob", lambda *args, **kwargs: torch.ones(4))
+    monkeypatch.setattr(learner, "_predict", lambda state, *_: ((torch.ones_like(state[0]),), None, None))
+    monkeypatch.setattr(
+        learner.task,
+        "reward",
+        lambda state, action, *args, **kwargs: torch.where(state[0][:, 0] == 1, torch.nan, action[:, 0]),
+    )
     count = int(learner.critic.obs_normalizer.count)
-    learner._fit_policy()
+    metrics = learner._fit_policy()
+    assert torch.isfinite(metrics["policy_loss"]) and torch.isfinite(metrics["policy_grad_norm"])
     assert int(learner.critic.obs_normalizer.count) - count == learner.policy_batch_size
     features = torch.randn(learner.horizon + 1, 4, learner.critic.obs_normalizer.mean.shape[-1])
     rewards, terminals = torch.ones(learner.horizon, 4), torch.ones(learner.horizon, 4)
     reach = torch.zeros(learner.horizon, 4)
     reach[0] = 1.0
-    features[1:] = 1e6
+    features[1:] = torch.nan
     assert torch.isfinite(torch.tensor(learner._fit_critic(features, rewards, terminals, reach)["critic_loss"].item()))
+
+
+def test_fixed_critic_shuffle_samples_the_entire_rollout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Even when minibatches drop a remainder, every rollout position is eligible for sampling."""
+    learner = _learner(num_critic_epochs=2, critic_shuffle_each_epoch=False)
+    monkeypatch.setattr(torch, "randperm", lambda size, device: torch.arange(size - 1, -1, -1, device=device))
+    features = torch.arange(12.0).view(4, 3, 1).expand(-1, -1, learner.critic.obs_normalizer.mean.numel())
+    value = learner._value
+    batches = []
+
+    def record_minibatch(features: torch.Tensor) -> torch.Tensor:
+        if features.ndim == 2:
+            batches.append(features[:, 0])
+        return value(features)
+
+    monkeypatch.setattr(learner, "_value", record_minibatch)
+    learner._fit_critic(features, torch.zeros(3, 3), torch.zeros(3, 3), torch.ones(3, 3))
+    torch.testing.assert_close(torch.cat(batches), torch.arange(8.0, 0.0, -1).repeat(2))
 
 
 def test_event_labels_condition_on_the_applied_action() -> None:

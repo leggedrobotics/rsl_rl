@@ -82,6 +82,7 @@ class OnPolicyRunner:
         # Start training
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
+        check_for_nan = self.cfg.get("check_for_nan", True)
         try:
             for it in range(start_it, total_it):
                 start = time.time()
@@ -94,7 +95,7 @@ class OnPolicyRunner:
                         # Step the environment
                         obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
                         # Record NaN or Inf values from the environment
-                        if self.cfg.get("check_for_nan", True):
+                        if check_for_nan:
                             for source, flag in find_nonfinite(obs, rewards, dones, extras).items():
                                 nonfinite[source] = nonfinite[source] | flag if source in nonfinite else flag
                         # Move to device
@@ -105,7 +106,8 @@ class OnPolicyRunner:
                         self.logger.process_env_step(dones, extras, step_dict)
 
                     # Raise if the environment returned NaN or Inf values
-                    raise_if_nonfinite(nonfinite)
+                    if check_for_nan:
+                        raise_if_nonfinite(nonfinite, self.device if self.is_distributed else None)
 
                     stop = time.time()
                     collect_time = stop - start

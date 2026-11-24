@@ -311,18 +311,29 @@ def find_nonfinite(
     return flags
 
 
-def raise_if_nonfinite(flags: dict[str, torch.Tensor]) -> None:
-    """Raise ``ValueError`` naming the environment outputs whose flag from :func:`find_nonfinite` is set."""
-    if not flags:
+def raise_if_nonfinite(flags: dict[str, torch.Tensor], distributed_device: str | None = None) -> None:
+    """Raise for flagged environment outputs on every rank when a collective device is supplied."""
+    if not flags and distributed_device is None:
         return
-    device = next(iter(flags.values())).device
-    values = torch.stack([flag.to(device) for flag in flags.values()]).tolist()
-    sources = [source for source, value in zip(flags, values) if value]
+    device = distributed_device if distributed_device is not None else next(iter(flags.values())).device
+    values = (
+        torch.stack([flag.to(device) for flag in flags.values()])
+        if flags
+        else torch.empty(0, dtype=torch.bool, device=device)
+    )
+    if distributed_device is not None:
+        invalid = values.any().to(torch.int32)
+        torch.distributed.all_reduce(invalid, op=torch.distributed.ReduceOp.MAX)
+        if not invalid:
+            return
+    sources = [source for source, value in zip(flags, values.tolist()) if value]
     if sources:
         raise ValueError(
             f"The {', '.join(sources)} returned by the environment contained NaN or Inf values. This usually indicates"
             " a bug in the environment's step() or reset() function."
         )
+    if distributed_device is not None:
+        raise ValueError("The environment on another rank returned NaN or Inf values.")
 
 
 def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.Module:

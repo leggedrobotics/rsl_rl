@@ -554,13 +554,14 @@ def _supermimic_worker(rank: int, world_size: int, store_file: str, blink: bool,
         ranks = torch.arange(world_size, device=device, dtype=torch.float32)
         torch.testing.assert_close(value.grad, (2 * (2 - ranks) * ranks).sum() / ranks.sum())
 
-        old_steps = restored.storage.num_steps
+        window_breaks = restored.storage.data["window_break"]
+        previous_breaks = window_breaks.clone()
         if rank == 0:
-            restored.storage.num_steps = 0
+            window_breaks.fill_(True)
         restored._update_debt = 1.0
         expected = restored.iteration
         assert restored.update()[0] == {} and restored.iteration == expected
-        restored.storage.num_steps = old_steps
+        window_breaks.copy_(previous_breaks)
 
         before = copy.deepcopy(restored.save())
         loss = sum(parameter.sum() for parameter in restored.actor.parameters())

@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import copy
 import torch
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from tensordict import TensorDict
 from torch import nn
+from torch.nn.modules.module import _IncompatibleKeys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -147,8 +148,12 @@ class SuperMimicActor(nn.Module):
         self.register_buffer("noise_std", torch.zeros(num_actions), persistent=False)
 
     def _apply(self, fn: Callable, recurse: bool = True) -> SuperMimicActor:
-        """Keep the observation tensors of an owned task on the actor device."""
+        """Keep task observation tensors on the actor device without moving a shared task."""
+        previous_device = self.history.device
         super()._apply(fn, recurse=recurse)
+        if not self.owns_task and self.history.device != previous_device:
+            self.task = self.task.copy_for_inference()
+            self.owns_task = True
         if self.owns_task:
             self.task.to(self.history.device)
         return self
@@ -218,6 +223,17 @@ class SuperMimicActor(nn.Module):
     def output_std(self) -> torch.Tensor:
         """Return the fixed Gaussian collection-noise standard deviation."""
         return self.noise_std
+
+    def load_state_dict(
+        self, state_dict: Mapping[str, torch.Tensor], strict: bool = True, assign: bool = False
+    ) -> _IncompatibleKeys:
+        """Load actor checkpoints saved before or after the policy became a submodule."""
+        policy_modules = ("encoder.", "decoder.", "obs_norm.", "goal_norm.")
+        if any(key.startswith(policy_modules) for key in state_dict):
+            state_dict = {
+                f"policy.{key}" if key.startswith(policy_modules) else key: value for key, value in state_dict.items()
+            }
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
 
     def as_jit(self) -> nn.Module:
         """Return a copy of the policy network with explicit deployable history, optional goal and reference inputs."""

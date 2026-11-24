@@ -44,10 +44,6 @@ class ActorLearningRateMultiplier:
         device: str,
     ) -> None:
         """Validate the triggers and allocate device accumulators for episode returns."""
-        if multiplier < 1 or decay_iterations < 1:
-            raise ValueError(
-                "The actor learning-rate multiplier must be at least 1 and decay over at least 1 iteration."
-            )
         if multiplier > 1 and decay_return is None and decay_start is None:
             raise ValueError("An actor learning-rate multiplier needs a decay return or a decay start iteration.")
         if decay_return is not None and max_episode_length is None:
@@ -85,6 +81,11 @@ class ActorLearningRateMultiplier:
         ):
             self.decay_from = iteration
 
+    def reset_episode_returns(self) -> None:
+        """Discard the accumulated returns of completed and in-progress episodes."""
+        self.episode_return.zero_()
+        self.completed_episodes.zero_()
+
     def __call__(self, iteration: int) -> float:
         """Return the multiplier, starting its decay at the latest scheduled iteration."""
         if self.decay_from is None and self.decay_start is not None and iteration >= self.decay_start:
@@ -113,8 +114,6 @@ class ActorEMA:
 
     def __init__(self, actor: SuperMimicActor, halflife: int) -> None:
         """Start the average at the current actor parameters."""
-        if halflife < 1:
-            raise ValueError("actor_ema_halflife must be positive or None.")
         self.actor = actor
         self.halflife = halflife
         self.params = [parameter.detach().clone() for parameter in actor.parameters()]
@@ -134,7 +133,7 @@ class ActorEMA:
     def policy(self) -> SuperMimicActor:
         """Return a deployment actor with the averaged parameters and the live normalization and noise buffers.
 
-        The deployment actor shares the training task; moving it to another device leaves the task in place.
+        The deployment actor shares the training task until it moves to another device and takes its own copy.
         """
         if self._policy is None:
             with torch.inference_mode(False):

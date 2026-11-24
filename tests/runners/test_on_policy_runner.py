@@ -385,3 +385,18 @@ def test_nonfinite_environment_outputs_raise_before_the_update() -> None:
     with pytest.raises(ValueError, match="rewards"):
         runner.learn(1)
     assert all(torch.equal(a, b) for a, b in zip(before, runner.alg.actor.parameters()))
+
+
+def test_learn_rejects_nonfinite_environment_outputs_on_another_rank(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A finite rank stops before the learner update when another rank reports nonfinite outputs."""
+    runner = OnPolicyRunner(DummyEnv(), _make_train_cfg())
+    runner.is_distributed = True
+    monkeypatch.setattr(runner.alg, "broadcast_parameters", lambda: None)
+
+    def report_invalid_peer(flag: torch.Tensor, op: torch.distributed.ReduceOp) -> None:
+        assert not flag and op == torch.distributed.ReduceOp.MAX
+        flag.fill_(1)
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", report_invalid_peer)
+    with pytest.raises(ValueError, match="another rank"):
+        runner.learn(1)

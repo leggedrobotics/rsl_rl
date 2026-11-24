@@ -161,14 +161,10 @@ class SequenceReplayBuffer:
             device=self.device,
         )
 
-    def sample_sequences(self, batch_size: int, length: int) -> ReplayIndex:
-        """Sample complete windows, uniformly over eligible environments and then their starts.
-
-        Interior transitions cannot terminate or contain external state edits. The last stored state may precede
-        a termination, but the terminating successor is not part of the window.
-        """
-        if batch_size < 1 or length < 1 or length > self.num_slots:
-            raise ValueError("Batch size must be positive and sequence length must fit replay capacity.")
+    def complete_window_counts(self, length: int) -> torch.Tensor:
+        """Return cumulative counts of valid starts ordered by environment and then age."""
+        if length > self.num_slots:
+            raise ValueError("Complete sequence length must fit replay capacity.")
         if self.num_steps < length:
             raise RuntimeError("Not enough stored states for a complete replay window.")
         ages = torch.arange(self.num_slots, device=self.device)
@@ -180,13 +176,29 @@ class SequenceReplayBuffer:
         prefix = torch.cat((ended.new_zeros((1, self.num_envs)), ended), dim=0).long().cumsum(0)
         last = (ages + length - 1).clamp(max=self.num_slots)
         valid = (prefix[last] == prefix[ages]) & (ages[:, None] + length <= self._num_steps_tensor)
-        cumulative = valid.T.contiguous().cumsum(1)
-        counts = cumulative[:, -1]
-        torch._assert_async((counts > 0).any(), "No complete replay windows remain within episode boundaries.")
+        return valid.T.flatten().cumsum(0)
+
+    def sample_sequences(
+        self, batch_size: int, length: int, cumulative_counts: torch.Tensor | None = None
+    ) -> ReplayIndex:
+        """Sample complete windows, uniformly over eligible environments and then their starts.
+
+        Interior transitions cannot terminate or contain external state edits. Pass counts from
+        :meth:`complete_window_counts` to reuse them across batches from the same replay contents.
+        """
+        if cumulative_counts is None:
+            cumulative_counts = self.complete_window_counts(length)
+            torch._assert_async(
+                cumulative_counts[-1] > 0, "No complete replay windows remain within episode boundaries."
+            )
+        ends = cumulative_counts[self.num_slots - 1 :: self.num_slots]
+        offsets = torch.nn.functional.pad(ends[:-1], (1, 0))
+        counts = ends - offsets
         env_ids = torch.multinomial((counts > 0).float(), batch_size, replacement=True)
         choice = (torch.rand(batch_size, device=self.device) * counts[env_ids]).long()
-        starts = torch.searchsorted(cumulative[env_ids], choice[:, None], right=True)
-        slots = (oldest + starts + torch.arange(length, device=self.device)) % self.num_slots
+        starts = torch.searchsorted(cumulative_counts, offsets[env_ids] + choice, right=True) % self.num_slots
+        oldest = (self._step_tensor - self._num_steps_tensor) % self.num_slots
+        slots = (oldest + starts[:, None] + torch.arange(length, device=self.device)) % self.num_slots
         ids = slots * self.num_envs + env_ids[:, None]
         return ReplayIndex(ids, torch.ones_like(ids, dtype=torch.bool))
 
