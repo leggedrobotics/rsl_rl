@@ -483,7 +483,8 @@ SuperMimic
 
 SuperMimic uses ``actor``, ``world_model`` and ``critic`` model configurations. ``task_cfg.class_name`` resolves a
 :class:`~rsl_rl.algorithms.supermimic_task.DifferentiableTask` with ``env``, ``device`` and the remaining task kwargs.
-The task supplies physical coordinates, rewards and feature construction.
+The task supplies physical coordinates, rewards and feature construction; :ref:`supermimic-contract` lists its hooks
+in call order.
 Actor Adam uses betas ``(0.9, 0.95)`` and clips each gradient value to ``[-0.1, 0.1]`` after global norm clipping.
 Policy updates keep the whole imagined rollout for the backward pass: GPU memory grows with ``policy_batch_size``,
 ``horizon`` and the network widths, and is first requested when policy updates begin after
@@ -1517,7 +1518,8 @@ Depending on the algorithm and extensions used, RSL-RL expects different observa
    * - ``context``
      - Optional noise-free privileged dynamics and critic context.
    * - ``labels``
-     - Optional binary successor events with ``task.num_labels`` columns.
+     - Optional successor labels with ``task.num_labels`` columns; binary events unless the task overrides
+       ``label_activation`` and ``label_loss``.
    * - ``prev_action`` / ``prev_prev_action``
      - Optional action vectors overriding SuperMimic's collection history, including nonzero reset commands.
 

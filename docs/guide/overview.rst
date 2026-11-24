@@ -336,7 +336,8 @@ SuperMimic environment and checkpoints
 The environment supplies flat, noise-free ``state`` and optional ``goal``, privileged ``context`` and event ``labels``
 sets. Every step must supply physical successors before resets and interval events in ``extras["final_obs"]``, with
 ``extras["final_obs_every_step"] = True``. Interval edits cut future model-fitting windows through ``window_break``;
-replay retains the original physical successor. Task features and ``post_dynamics`` preserve state and action gradients.
+replay retains the original physical successor.
+Task features, ``pre_dynamics`` and ``post_dynamics`` preserve state and action gradients.
 A window break is recorded whenever the ``state`` returned by ``step`` is not exactly equal to the one in ``final_obs``
 for a continuing environment, so compute both the same way; ``SuperMimic/window_break_fraction`` logs how often it
 happens.
@@ -352,11 +353,33 @@ The actor keeps a per-environment observation history, so a play loop must call 
 environment step.
 Tasks can also override ``dynamics_actions`` to map policy outputs to physical commands before the world model,
 ``world_model_loss`` to supervise further coordinates, such as integrated joint positions, and ``update_curriculum`` to
-update task curricula from each collected step. Checkpoints also contain ``env_steps``, the number of collected steps.
+update task curricula from each collected step.
+``label_activation`` and ``label_loss``, overridden together, replace the event probabilities and their binary
+cross-entropy, e.g. to regress contact forces. ``pre_dynamics`` edits a transition start after the actor has acted,
+e.g. with a velocity impulse scheduled in ``context``, as a deterministic function of the state and the context.
+
+The learner calls the task hooks in the following order. ``observed`` is the state the actor sees, ``start`` is the
+state returned by ``pre_dynamics``, which is ``observed`` by default, and ``successor`` is the state returned by
+``post_dynamics``:
+
+#. Collection step: ``actor_obs(observed)``, ``actor_goal(observed)``, ``add_noise`` and, if enabled,
+   ``reference_action(observed)`` yield the action, and replay stores ``observed``. Then ``pre_dynamics(observed)``,
+   ``dynamics_actions`` and ``dynamics_context(start)`` update the world-model statistics, and ``update_curriculum``
+   sees the step.
+#. Step of a world-model fit: ``pre_dynamics`` edits the replayed ``observed`` in the first step of a window and the
+   previous ``successor`` afterwards. ``dynamics_actions`` and ``dynamics_context(start)`` feed the world model,
+   ``dynamics_context`` of its integrated state feeds the label head and ``label_activation`` maps the logits to
+   labels. ``post_dynamics(start, integrated state, labels, actions, context)`` returns ``successor``. After the last
+   step, ``world_model_loss`` and ``label_loss`` compare all steps with replay.
+#. Imagined step: ``critic_obs(observed, ..., history)`` receives the observation history the actor acts on, and
+   ``actor_goal(observed)`` and ``reference_action(observed)`` yield the action. ``pre_dynamics(observed)`` and the
+   transition hooks run as in the fit, followed by ``reward(start, ..., successor)``, ``termination_prob(successor)``
+   and ``advance(successor)``. ``actor_obs(successor)`` and ``add_noise`` append the next frame to the history.
+   ``successor`` is the next ``observed``; after the last step it is only passed to ``critic_obs``.
 
 Full checkpoints contain ``actor_state_dict``, ``critic_state_dict``, ``world_model_state_dict``, each model's
-``*_optimizer_state_dict`` and the learner iteration. Replay, collection history, simulator state and task-owned state
-such as curricula are excluded.
+``*_optimizer_state_dict``, the learner iteration and ``env_steps``, the number of collected steps. Replay, collection
+history, simulator state and task-owned state such as curricula are excluded.
 ``runner.load(path, load_cfg={"actor": True, "critic": True, "world_model": True, "iteration": True})`` loads all
 models and counters with fresh optimizers. For deployment use ``runner.load(path, load_cfg={"actor": True})``; other
 partial model selections are rejected. Model state-dict loading checks tensor shapes. Task coordinate meaning must
