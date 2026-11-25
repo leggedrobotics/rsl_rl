@@ -1194,8 +1194,10 @@ Symmetry Augmentation
 Learned Dynamics
 ^^^^^^^^^^^^^^^^
 
-Set ``algorithm.world_model_cfg`` to train a world model from replay. On every step the environment must supply
-the physical successor before resets or other state edits, as described in :meth:`~rsl_rl.env.vec_env.VecEnv.step`.
+Set ``algorithm.world_model_cfg`` to train a world model from replay. As for SAC, steps with a done supply the final
+observations before resets, as described in :meth:`~rsl_rl.env.vec_env.VecEnv.step`. Environments that also capture
+physical successors before interval edits on every step set ``final_obs_every_step``; without it, edits such as pushes
+enter the world model's targets as dynamics.
 
 .. list-table::
    :header-rows: 1

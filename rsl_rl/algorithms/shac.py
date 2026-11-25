@@ -279,22 +279,16 @@ class SHAC:
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict
     ) -> dict[str, torch.Tensor]:
-        """Record physical successors captured before resets or interval edits on every step."""
+        """Record the transition and, with learned dynamics, its physical successor."""
         if self._transition is None:
             raise RuntimeError("act() must precede process_env_step().")
-        if self.learned_dynamics is not None and (
-            extras.get("final_obs") is None or extras.get("final_obs_every_step") is not True
-        ):
-            raise ValueError("Learned dynamics requires every-step extras['final_obs'] with final_obs_every_step=True.")
         step_rewards = rewards.reshape(-1).to(self.device)
         step_dones = dones.reshape(-1).to(self.device).bool()
         process = self._get_graph_callable(self._process_env_step, self._process_env_step_graphs, self.actor.training)
         process(
             self._transition,
             obs.select(*self._next_obs_keys).to(self.device),
-            extras["final_obs"].select(*self._final_obs_keys).to(self.device)
-            if self.learned_dynamics is not None
-            else obs.select(),
+            self._physical_successors(obs, step_dones, extras) if self.learned_dynamics is not None else obs.select(),
             step_dones,
             step_rewards,
         )
@@ -548,6 +542,30 @@ class SHAC:
         if phase not in graphs:
             graphs[phase] = CudaGraphCallable(function, self.device)
         return graphs[phase]
+
+    def _physical_successors(self, obs: TensorDict, dones: torch.Tensor, extras: dict) -> TensorDict:
+        """Return the final observations of done environments and the returned observations of the others.
+
+        Environments that capture ``final_obs`` on every step, signalled by ``extras["final_obs_every_step"]``, also
+        provide successors from before interval events, which cut model-fitting windows through ``window_break``.
+        """
+        final_obs = extras.get("final_obs")
+        every_step = extras.get("final_obs_every_step") is True
+        if final_obs is None:
+            if every_step or dones.any():
+                raise ValueError("Learned dynamics requires extras['final_obs'] on every step containing a done.")
+            final_obs = obs
+        final = final_obs.select(*self._final_obs_keys).to(self.device)
+        if every_step:
+            return final
+        returned = obs.select(*self._final_obs_keys).to(self.device)
+        return TensorDict(
+            {
+                key: torch.where(dones.reshape(-1, *([1] * (value.ndim - 1))), value, returned[key])
+                for key, value in final.items()
+            },
+            batch_size=final.batch_size,
+        )
 
     def _process_env_step(
         self,

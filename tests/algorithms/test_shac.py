@@ -96,6 +96,7 @@ class ScalarEnv(VecEnv):
         context_dim: int = 1,
         reset_action: float = 0.0,
         pushes: bool = False,
+        every_step: bool = True,
         history_length: int = 2,
         reference_actions: bool = False,
     ) -> None:
@@ -109,7 +110,7 @@ class ScalarEnv(VecEnv):
         self.context = torch.zeros(4, context_dim, device=device)
         self.previous = torch.full((4, 1), reset_action, device=device)
         self.previous_previous = self.previous.clone()
-        self.reset_action, self.pushes = reset_action, pushes
+        self.reset_action, self.pushes, self.every_step = reset_action, pushes, every_step
         self.reference_actions = reference_actions
         self.history = self.position.new_zeros(4, history_length - 1, 2)
         self.reset_history = torch.ones(4, dtype=torch.bool, device=device)
@@ -158,7 +159,7 @@ class ScalarEnv(VecEnv):
             self.get_observations(),
             rewards,
             dones,
-            {"final_obs": final, "final_obs_every_step": True, "time_outs": dones.clone()},
+            {"final_obs": final, "final_obs_every_step": self.every_step, "time_outs": dones.clone()},
         )
 
 
@@ -534,16 +535,27 @@ def test_learning_rate_tracks_learner_iterations_and_resume() -> None:
     )
 
 
-def test_missing_final_observations_fail_even_without_dones() -> None:
-    """Done-only producers cannot silently train a model on interval pushes."""
+def test_final_observations_are_required_for_dones_and_every_step_capture() -> None:
+    """A done or an every-step flag without final observations cannot record the physical successor."""
     env, learner = ScalarEnv(), _learner()
     learner.act(env.get_observations())
-    with pytest.raises(ValueError, match="every-step"):
-        learner.process_env_step(env.get_observations(), torch.zeros(4), torch.zeros(4), {})
-    with pytest.raises(ValueError, match="every-step"):
-        learner.process_env_step(
-            env.get_observations(), torch.zeros(4), torch.zeros(4), {"final_obs": env.get_observations()}
-        )
+    with pytest.raises(ValueError, match="final_obs"):
+        learner.process_env_step(env.get_observations(), torch.zeros(4), torch.ones(4), {})
+    with pytest.raises(ValueError, match="final_obs"):
+        learner.process_env_step(env.get_observations(), torch.zeros(4), torch.zeros(4), {"final_obs_every_step": True})
+
+
+def test_done_only_final_observations_use_returned_successors() -> None:
+    """Without every-step capture, done rows take final observations and pushes stay in the model targets."""
+    env = ScalarEnv(pushes=True, every_step=False)
+    learner = _learner(env)
+    _collect(learner, env, 6)
+    data = learner.learned_dynamics.storage.transitions
+    assert not data["window_break"][:6].any() and data["dones"][:6].any()
+    pushed = ~data["dones"][:4]
+    assert (data["next_state"][:4][pushed][:, 0] > data["state"][:4][pushed][:, 0] + 9).all()
+    done = data["dones"][:6]
+    assert ((data["next_state"][:6][done] - data["state"][:6][done]).abs() < 1).all()
 
 
 def test_interval_edits_cut_only_future_world_model_targets() -> None:
