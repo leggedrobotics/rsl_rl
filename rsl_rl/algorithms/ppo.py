@@ -21,6 +21,7 @@ from rsl_rl.utils import (
     resolve_class,
     resolve_obs_groups,
     resolve_optimizer,
+    unpad_trajectories,
 )
 
 
@@ -296,7 +297,14 @@ class PPO:
                 loss = surrogate_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
 
                 # RND loss
-                rnd_loss = self.rnd.compute_loss(batch.observations[:original_batch_size]) if self.rnd else None  # type: ignore
+                if self.rnd:
+                    rnd_obs = batch.observations[:original_batch_size]
+                    # Recurrent mini-batches hold zero-padded trajectories; only train the predictor on valid steps
+                    if batch.masks is not None:
+                        rnd_obs = unpad_trajectories(rnd_obs, batch.masks)  # type: ignore
+                    rnd_loss = self.rnd.compute_loss(rnd_obs)  # type: ignore
+                else:
+                    rnd_loss = None
 
                 # Symmetry loss
                 if self.symmetry:
