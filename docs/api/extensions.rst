@@ -16,3 +16,10 @@ Symmetry
    :members:
    :undoc-members:
 
+
+Learned Dynamics
+----------------
+
+.. automodule:: rsl_rl.extensions.learned_dynamics
+   :members:
+   :undoc-members:

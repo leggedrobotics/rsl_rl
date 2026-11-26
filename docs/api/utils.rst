@@ -40,3 +40,10 @@ Utils
    :members:
    :undoc-members:
 
+
+Muon
+----
+
+.. automodule:: rsl_rl.utils.muon
+   :members:
+   :undoc-members:

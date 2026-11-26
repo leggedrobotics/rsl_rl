@@ -5,12 +5,15 @@
 
 """Extensions for the learning algorithms."""
 
+from .learned_dynamics import LearnedDynamics, WorldModel
 from .rnd import RandomNetworkDistillation, resolve_rnd_config
 from .symmetry import Symmetry, resolve_symmetry_config
 
 __all__ = [
+    "LearnedDynamics",
     "RandomNetworkDistillation",
     "Symmetry",
+    "WorldModel",
     "resolve_rnd_config",
     "resolve_symmetry_config",
 ]

@@ -476,7 +476,7 @@ def test_ppo_can_learn_a_signal_present_only_in_the_last_transition() -> None:
         ppo.act(current_obs)
         ppo.process_env_step(obs, reward, torch.zeros(num_envs), {})
     ppo.compute_returns(obs)
-    losses = ppo.update()
+    losses, _ = ppo.update()
     assert all(torch.isfinite(torch.tensor(value)) for value in losses.values())
     assert next(critic.parameters()).abs().max().item() > 0
 

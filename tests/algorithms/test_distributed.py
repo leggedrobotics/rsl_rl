@@ -24,6 +24,7 @@ from rsl_rl.algorithms.global_advantage_ppo import GlobalAdvantagePPO
 from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import reduce_gradients_in_buckets
+from rsl_rl.utils.utils import normalize_loss_across_ranks
 from tests.algorithms.test_distillation import _fill_distillation_storage, _make_distillation_setup
 from tests.algorithms.test_ppo import NUM_ACTIONS, NUM_ENVS, NUM_STEPS, OBS_DIM, _build_ppo, _make_actor, _make_critic
 from tests.conftest import make_obs
@@ -341,3 +342,360 @@ class TestDistributedAlgorithms:
     def test_pooled_advantage_statistics(self) -> None:
         """Count weighting, constant data and singleton shards agree with pooled moments."""
         spawn_gloo(_pooled_statistics_worker)
+
+
+def _sac_worker(rank: int, world_size: int, store_file: str, categorical: bool, cnn: bool) -> None:
+    from rsl_rl.algorithms import SAC
+    from tests.algorithms.test_sac import _make_train_cfg
+    from tests.runners.test_on_policy_runner import DummyEnv
+
+    init_gloo(rank, world_size, store_file)
+    try:
+        torch.set_num_threads(1)
+        torch.manual_seed(rank + 10)
+        cfg = _make_train_cfg()
+        cfg["multi_gpu"] = {"global_rank": rank, "world_size": world_size}
+        cfg["algorithm"].update(
+            num_updates=3,
+            actor_update_interval=2,
+            reward_normalization=True,
+            critic_loss_type="categorical" if categorical else "mse",
+            num_bins=11,
+            max_grad_norm=0.1,
+            grad_reduce_bucket_mb=_TINY_BUCKET_MB,
+            learning_rate_schedule="cosine",
+            num_schedule_updates=20,
+        )
+        for role in ("actor", "critic"):
+            cfg[role]["network_cfg"] = {"class_name": "ResidualMLP", "hidden_dim": 16, "num_blocks": 1, "expansion": 2}
+        if cnn:
+            for role, model in (("actor", "CNNModel"), ("critic", "QCNNModel")):
+                cfg[role].update(class_name=model, cnn_cfg={"output_channels": [4], "kernel_size": 3, "stride": 2})
+                cfg["obs_groups"][role] = ["policy", "image"]
+        env = DummyEnv(include_image=cnn)
+        obs = env.get_observations()
+        alg = SAC.construct_algorithm(obs, env, cfg, "cpu")
+        alg.broadcast_parameters()
+
+        def assert_synchronized(learner: SAC) -> None:
+            for model in (learner.actor, learner.critics, learner.target_critics, learner._return_normalizer):
+                for value in model.state_dict().values():
+                    assert torch.isfinite(value).all()
+                    _assert_close_across_ranks(value)
+            _assert_close_across_ranks(learner.log_alpha.detach())
+            _assert_close_across_ranks(learner._max_abs_return)
+            for optimizer in (learner.actor_optimizer, learner.critic_optimizer, learner.alpha_optimizer):
+                for state in optimizer.state.values():
+                    for value in state.values():
+                        if isinstance(value, torch.Tensor):
+                            _assert_close_across_ranks(value)
+
+        assert_synchronized(alg)
+        reduced = []
+        reduce_parameters = alg.reduce_parameters
+
+        def check_reduction(optimizer: torch.optim.Optimizer) -> None:
+            parameters = [p for group in optimizer.param_groups for p in group["params"]]
+            expected = _clone_params_with_grads(parameters)
+            _reduce_with_full_concat(expected, world_size)
+            reduce_parameters(optimizer)
+            for parameter, reference in zip(parameters, expected):
+                if reference.grad is not None:
+                    torch.testing.assert_close(parameter.grad, reference.grad)
+            reduced.append(optimizer)
+
+        alg.reduce_parameters = check_reduction
+        obs["policy"] = torch.full_like(obs["policy"], float(rank * 4))
+        with torch.inference_mode():
+            for _ in range(2):
+                alg.act(obs)
+                alg.process_env_step(obs, torch.full((4,), float(rank + 1)), torch.zeros(4), {})
+        losses, _ = alg.update()
+        assert losses and all(torch.isfinite(torch.tensor(value)) for value in losses.values())
+        assert {id(opt) for opt in reduced} == {
+            id(alg.actor_optimizer),
+            id(alg.critic_optimizer),
+            id(alg.alpha_optimizer),
+        }
+        assert alg.num_critic_updates == 3
+        assert_synchronized(alg)
+        torch.testing.assert_close(alg.actor.obs_normalizer.mean, torch.full((8,), 2.0))
+        torch.testing.assert_close(alg.actor.obs_normalizer._var, torch.full((1, 8), 4.0))
+        assert alg.actor.obs_normalizer.count == 16
+        returns = torch.tensor([1.0, 1.0 + alg.gamma, 2.0, 2.0 * (1.0 + alg.gamma)])
+        torch.testing.assert_close(alg._return_normalizer.mean, returns.mean().reshape(1))
+        torch.testing.assert_close(alg._return_normalizer._var, returns.var(unbiased=False).reshape(1, 1))
+        torch.testing.assert_close(alg._max_abs_return, returns.max())
+        _assert_not_close_across_ranks(alg.storage.observations["policy"][0])
+
+        old_steps = alg.storage.num_steps
+        if rank == 0:
+            alg.storage.num_steps = 0
+        assert alg.update()[0] == {}
+        assert alg.num_critic_updates == 3
+        alg.storage.num_steps = old_steps
+
+        import io
+
+        checkpoint = io.BytesIO()
+        torch.save(alg.save(), checkpoint)
+        checkpoint.seek(0)
+        restored = SAC.construct_algorithm(obs, env, cfg, "cpu")
+        restored.load(torch.load(checkpoint, weights_only=False), None, True)
+        restored.broadcast_parameters()
+        assert restored.num_critic_updates == 3
+        assert restored._actor_loaded
+        assert int(restored._num_critic_updates_tensor) == 3
+        assert_synchronized(restored)
+        restored.act(obs)
+        restored.process_env_step(obs, torch.ones(4), torch.zeros(4), {})
+        assert restored.update()[0]
+        assert restored.num_critic_updates == 6
+        assert_synchronized(restored)
+
+        cfg["algorithm"]["use_cuda_graph"] = True
+        with pytest.raises(ValueError, match="CUDA graph capture requires a CUDA device"):
+            SAC.construct_algorithm(obs, env, cfg, "cpu")
+        with pytest.raises(ValueError, match="only capture CUDA graphs with the NCCL backend"):
+            SAC(
+                alg.actor,
+                alg.critics,
+                alg.storage,
+                device="cuda:0",
+                use_cuda_graph=True,
+                multi_gpu_cfg=cfg["multi_gpu"],
+            )
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+@pytest.mark.skipif(not _GLOO_AVAILABLE, reason="torch.distributed gloo backend is required")
+@pytest.mark.parametrize(("categorical", "cnn"), [(False, False), (True, True)])
+def test_sac_distributed_updates_and_resume(categorical: bool, cnn: bool) -> None:
+    """Different local replay data must preserve globally synchronized learner state and normalization."""
+    spawn_gloo(_sac_worker, categorical, cnn)
+
+
+_NCCL_GPUS_AVAILABLE = (
+    torch.distributed.is_available() and torch.distributed.is_nccl_available() and torch.cuda.device_count() >= 2
+)
+
+
+def _sac_cuda_graph_worker(rank: int, world_size: int, store_file: str) -> None:
+    from rsl_rl.algorithms import SAC
+    from tests.algorithms.test_sac import _make_train_cfg
+    from tests.runners.test_on_policy_runner import DummyEnv
+
+    device = f"cuda:{rank}"
+    torch.cuda.set_device(device)
+    store = torch.distributed.FileStore(store_file, world_size)
+    torch.distributed.init_process_group(
+        backend="nccl", store=store, rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=60)
+    )
+    torch.manual_seed(rank + 10)
+    cfg = _make_train_cfg()
+    cfg["multi_gpu"] = {"global_rank": rank, "world_size": world_size}
+    cfg["algorithm"].update(use_cuda_graph=True, num_updates=4, actor_update_interval=2, reward_normalization=True)
+    for role in ("actor", "critic"):
+        cfg[role]["network_cfg"] = {"class_name": "ResidualMLP", "hidden_dim": 16, "num_blocks": 1, "expansion": 2}
+    env = DummyEnv(device=device)
+    obs = env.get_observations()
+    alg = SAC.construct_algorithm(obs, env, cfg, device)
+    alg.broadcast_parameters()
+    for _ in range(6):
+        with torch.inference_mode():
+            for _ in range(3):
+                obs, rewards, dones, extras = env.step(alg.act(obs))
+                alg.process_env_step(obs, rewards + rank, dones, {**extras, "final_obs": obs})
+        alg.update()
+    assert alg._update_graphs and all(graph.graph is not None for graph in alg._update_graphs.values())
+    assert alg._act_graphs and all(graph.graph is not None for graph in alg._act_graphs.values())
+    assert alg._process_env_step_graph is not None and alg._process_env_step_graph.graph is not None
+    for model in (alg._raw_actor, alg._raw_critics, alg.target_critics, alg._return_normalizer):
+        for tensor in model.state_dict().values():
+            _assert_close_across_ranks(tensor.float())
+    _assert_close_across_ranks(alg.log_alpha.detach())
+    # Captured NCCL collectives must be released before the process group is destroyed, which otherwise hangs
+    alg.release_cuda_graphs()
+    torch.distributed.destroy_process_group()
+
+
+@pytest.mark.skipif(not _NCCL_GPUS_AVAILABLE, reason="NCCL and at least two GPUs are required")
+def test_sac_distributed_cuda_graphs_stay_synchronized_and_shut_down() -> None:
+    """Captured NCCL updates keep learner state identical across ranks, and released graphs allow a clean shutdown."""
+    spawn_gloo(_sac_cuda_graph_worker)
+
+
+def _shac_worker(rank: int, world_size: int, store_file: str, blink: bool, cuda_graph: bool = False) -> None:
+    import copy
+
+    from rsl_rl.algorithms import SHAC
+    from tests.algorithms.test_shac import MirroredScalarTask, ScalarEnv, _cfg, _collect
+
+    device = f"cuda:{rank}" if cuda_graph else "cpu"
+    if cuda_graph:
+        torch.cuda.set_device(device)
+        torch.distributed.init_process_group(
+            backend="nccl",
+            store=torch.distributed.FileStore(store_file, world_size),
+            rank=rank,
+            world_size=world_size,
+            timeout=datetime.timedelta(seconds=60),
+        )
+    else:
+        init_gloo(rank, world_size, store_file)
+    learner = restored = None
+    try:
+        torch.set_num_threads(1)
+        torch.manual_seed(rank + 10)
+        cfg = _cfg(
+            actor_ema_halflife=10,
+            num_warmup_iterations=1,
+            actor_learning_rate_multiplier=4.0,
+            actor_learning_rate_decay_return=10.0,
+            full_windows=True,
+            loss_reduction="mean",
+            update_schedule="from_start",
+            learning_rate_schedule_unit="env_steps",
+            use_cuda_graph=cuda_graph,
+        )
+        cfg["multi_gpu"] = {"global_rank": rank, "world_size": world_size}
+        if blink:
+            cfg["algorithm"].update(
+                muon_models=("actor", "world_model"),
+                task_cfg={"class_name": MirroredScalarTask},
+            )
+            cfg["actor"].update(hidden_dims=(8, 8, 8))
+            cfg["algorithm"]["world_model_cfg"]["mirror_fraction"] = 0.5
+            cfg["algorithm"]["world_model_cfg"]["model"]["hidden_dims"] = (16, 16, 16)
+        env = ScalarEnv(device=device)
+        env.position.fill_(rank * 2)
+        learner = SHAC.construct_algorithm(env.get_observations(), env, cfg, device)
+        learner.broadcast_parameters()
+
+        def assert_synchronized(alg: SHAC) -> None:
+            for model in (alg.actor, alg.learned_dynamics.world_model, alg.critic):
+                for value in model.state_dict().values():
+                    assert torch.isfinite(value).all()
+                    _assert_close_across_ranks(value)
+            for value in alg.actor_ema.averaged_parameters:
+                _assert_close_across_ranks(value)
+            _assert_close_across_ranks(alg.actor_ema.num_updates)
+            for optimizer in alg.optimizers.values():
+                for state in optimizer.state.values():
+                    for value in state.values():
+                        if isinstance(value, torch.Tensor):
+                            _assert_close_across_ranks(value.to(device))
+
+        assert_synchronized(learner)
+        probe = nn.Linear(2, 1, bias=False, device=device)
+        with torch.no_grad():
+            probe.weight.fill_(0.5)
+        learner.optimizers["probe"] = torch.optim.SGD(probe.parameters(), lr=0.1)
+        inputs = torch.tensor([[float(rank + 1), -1.0]], device=device)
+        ranks = torch.arange(world_size, device=device, dtype=torch.float32)
+        global_inputs = torch.stack((ranks + 1, -torch.ones_like(ranks)), dim=1)
+        expected_gradient = (2 * (0.5 * ranks - 1)[:, None] * global_inputs).mean(dim=0)
+        expected_gradient *= min(learner.max_grad_norm / (expected_gradient.norm().item() + 1e-6), 1.0)
+        expected_gradient.clamp_(-0.7, 0.7)
+        learner._step_model_optimizers((probe(inputs) - 1).square().mean(), "probe", probe, clip_value=0.7)
+        torch.testing.assert_close(probe.weight[0], 0.5 - 0.1 * expected_gradient)
+        del learner.optimizers["probe"]
+        initial = {
+            name: copy.deepcopy(model.state_dict())
+            for name, model in (
+                ("actor", learner.actor),
+                ("world_model", learner.learned_dynamics.world_model),
+                ("critic", learner.critic),
+            )
+        }
+        _collect(learner, env, 1)
+        obs_norm = learner.actor.obs_normalizer
+        torch.testing.assert_close(obs_norm.mean[0], torch.tensor(float(world_size - 1), device=device))
+        assert obs_norm.count == 4 * world_size
+        _assert_not_close_across_ranks(learner.learned_dynamics.storage.transitions["state"][0])
+        for _ in range(8):
+            _collect(learner, env, 1)
+            learner.update()
+        assert_synchronized(learner)
+        for name, model in (
+            ("actor", learner.actor),
+            ("world_model", learner.learned_dynamics.world_model),
+            ("critic", learner.critic),
+        ):
+            assert any(not torch.equal(initial[name][key], value) for key, value in model.named_parameters())
+        if blink:
+            assert set(learner.optimizers) == {"actor", "critic", "world_model", "actor_muon", "world_model_muon"}
+            assert all(optimizer.state for optimizer in learner.optimizers.values())
+        if cuda_graph:
+            assert all(graph.graph is not None for graph in learner._act_graphs.values())
+            assert all(graph.graph is not None for graph in learner._process_env_step_graphs.values())
+            assert learner._update_graphs[True].graph is not None
+
+        learner.actor_learning_rate_multiplier.completed_return_stats.copy_(
+            torch.tensor([20.0, 1.0] if rank == 0 else [0.0, 0.0], device=device)
+        )
+        expected = learner.num_learner_updates
+        learner.update()
+        assert learner.actor_learning_rate_multiplier.decay_start_update == expected
+        checkpoint = copy.deepcopy(learner.save())
+        restored = SHAC.construct_algorithm(env.get_observations(), env, cfg, device)
+        restored.load(checkpoint, None, True)
+        restored.broadcast_parameters()
+        assert (
+            restored.num_learner_updates == learner.num_learner_updates
+            and restored.num_env_steps == learner.num_env_steps
+        )
+        assert restored.actor_learning_rate_multiplier.decay_start_update == expected
+        assert_synchronized(restored)
+        _collect(restored, env, 8)
+        restored.update()
+        assert restored.num_learner_updates > expected
+        assert_synchronized(restored)
+
+        value = torch.tensor(2.0, device=device, requires_grad=True)
+        weight = torch.tensor(float(rank), device=device)
+        normalize_loss_across_ranks((value - rank).square() * weight, weight, world_size).backward()
+        torch.distributed.all_reduce(value.grad)
+        value.grad /= world_size
+        ranks = torch.arange(world_size, device=device, dtype=torch.float32)
+        torch.testing.assert_close(value.grad, (2 * (2 - ranks) * ranks).sum() / ranks.sum())
+
+        window_breaks = restored.learned_dynamics.storage.transitions["window_break"]
+        previous_breaks = window_breaks.clone()
+        if rank == 0:
+            window_breaks.fill_(True)
+        restored._update_credit = 1.0
+        expected = restored.num_learner_updates
+        assert restored.update()[0] == {} and restored.num_learner_updates == expected
+        window_breaks.copy_(previous_breaks)
+
+        before = copy.deepcopy(restored.save())
+        loss = sum(parameter.sum() for parameter in restored.actor.parameters())
+        restored._step_model_optimizers(loss * (float("nan") if rank == 0 else 1.0), "actor", restored.actor)
+        for key, value in restored.actor.state_dict().items():
+            torch.testing.assert_close(value, before["actor_state_dict"][key])
+        assert int(restored.actor_ema.num_updates) == before["actor_ema_updates"]
+        assert_synchronized(restored)
+        if rank == 0:
+            restored.learned_dynamics.nonfinite_final_obs[0] = True
+        with pytest.raises(ValueError, match="nonfinite final_obs"):
+            restored.update()
+    finally:
+        for alg in (learner, restored):
+            if alg is not None:
+                alg.release_cuda_graphs()
+        torch.distributed.destroy_process_group()
+
+
+@pytest.mark.skipif(not _GLOO_AVAILABLE, reason="torch.distributed gloo backend is required")
+@pytest.mark.parametrize("blink", [False, True])
+def test_shac_distributed_updates_and_resume(blink: bool) -> None:
+    """Rank-local replay trains identical models, optimizer moments and EMA through restart and failures."""
+    spawn_gloo(_shac_worker, blink, world_size=4 if blink else 2)
+
+
+@pytest.mark.skipif(not _NCCL_GPUS_AVAILABLE, reason="NCCL and at least two GPUs are required")
+def test_shac_distributed_cuda_graphs_stay_synchronized_and_shut_down() -> None:
+    """Collective operations remain synchronized during captured BlinkMimic collection, learning and restart."""
+    spawn_gloo(_shac_worker, True, True)

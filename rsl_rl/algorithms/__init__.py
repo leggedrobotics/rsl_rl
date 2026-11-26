@@ -8,5 +8,7 @@
 from .distillation import Distillation
 from .global_advantage_ppo import GlobalAdvantagePPO
 from .ppo import PPO
+from .sac import SAC
+from .shac import SHAC
 
-__all__ = ["PPO", "Distillation", "GlobalAdvantagePPO"]
+__all__ = ["PPO", "SAC", "SHAC", "Distillation", "GlobalAdvantagePPO"]

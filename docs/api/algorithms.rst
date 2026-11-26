@@ -17,6 +17,14 @@ GlobalAdvantagePPO
    :undoc-members:
 
 
+SAC
+---
+
+.. automodule:: rsl_rl.algorithms.sac
+   :members:
+   :undoc-members:
+
+
 Distillation
 ------------
 
@@ -24,3 +32,10 @@ Distillation
    :members:
    :undoc-members:
 
+
+SHAC
+----
+
+.. automodule:: rsl_rl.algorithms.shac
+   :members:
+   :undoc-members:

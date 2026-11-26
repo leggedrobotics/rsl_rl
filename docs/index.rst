@@ -46,8 +46,18 @@ This is the documentation for the ``extras`` branch of RSL-RL, which contains ad
 the core library. These features, mostly contributed by the community, are listed below and described in the
 :ref:`overview <library-features>`.
 
+- **Short-Horizon Actor-Critic (SHAC)** trains policies through differentiable dynamics supplied by the task or learned
+  from simulator experience.
 - **Equivariant MLP model** that enforces robot symmetries (e.g. left-right mirroring) by construction.
 - **Global-advantage PPO** that optionally normalizes advantages across all distributed rollout shards.
+
+Key Features
+------------
+
+- **Minimal, readable codebase** with clear extension points for rapid prototyping.
+- **Robotics-first methods** including PPO, SAC, and Student-Teacher Distillation.
+- **High-throughput training** with native Multi-GPU support.
+- **Proven performance** in numerous research publications.
 
 Learning Environments
 ---------------------

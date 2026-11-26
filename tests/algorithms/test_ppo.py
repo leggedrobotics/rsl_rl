@@ -133,7 +133,7 @@ class TestGAEComputation:
             ppo.compute_returns(obs)
 
         torch.testing.assert_close(storage.advantages, torch.full((1, 1, 1), 2.0))
-        losses = ppo.update()
+        losses, _ = ppo.update()
         assert all(torch.isfinite(torch.tensor(value)) for value in losses.values())
         assert losses["surrogate"] == pytest.approx(-2.0)
 
@@ -312,7 +312,9 @@ class TestTimeoutBootstrapping:
         time_outs = torch.zeros(NUM_ENVS)
         time_outs[0] = 1.0  # Only env 0 times out
 
-        ppo.process_env_step(obs, raw_reward, dones, {"time_outs": time_outs})
+        step_dict = ppo.process_env_step(obs, raw_reward, dones, {"time_outs": time_outs})
+        assert set(step_dict) == {"Training/mean_reward"}
+        torch.testing.assert_close(step_dict["Training/mean_reward"], raw_reward)
 
         # The stored reward for env 0 should be: 1.0 + gamma * value[0]
         stored_reward_env0 = ppo.storage.rewards[0, 0, 0].item()
@@ -322,6 +324,25 @@ class TestTimeoutBootstrapping:
         # Env 1 should have raw reward only
         stored_reward_env1 = ppo.storage.rewards[0, 1, 0].item()
         assert abs(stored_reward_env1 - 1.0) < 1e-5
+
+    def test_rnd_step_metrics_exclude_timeout_bootstrap(self) -> None:
+        """Logged rewards include RND contributions without the value bootstrap used for training."""
+        ppo, obs = _build_ppo(rnd_cfg=RND_CFG)
+        ppo.act(obs)
+        intrinsic_rewards = torch.arange(NUM_ENVS, dtype=torch.float)
+        ppo.rnd.get_intrinsic_reward = lambda _obs: intrinsic_rewards
+        rewards = torch.ones(NUM_ENVS)
+        step_dict = ppo.process_env_step(obs, rewards, torch.ones(NUM_ENVS), {"time_outs": torch.ones(NUM_ENVS)})
+
+        assert set(step_dict) == {
+            "Training/mean_reward",
+            "Rnd/mean_extrinsic_reward",
+            "Rnd/mean_intrinsic_reward",
+        }
+        torch.testing.assert_close(step_dict["Training/mean_reward"], rewards + intrinsic_rewards)
+        torch.testing.assert_close(step_dict["Rnd/mean_extrinsic_reward"], rewards)
+        torch.testing.assert_close(step_dict["Rnd/mean_intrinsic_reward"], intrinsic_rewards)
+        torch.testing.assert_close(rewards, torch.ones(NUM_ENVS))
 
 
 class TestNormalizationUpdates:
@@ -414,8 +435,12 @@ class TestPPOLosses:
         ).mean()
         expected_loss.backward()
 
-        losses = ppo.update()
+        losses, stats = ppo.update()
         torch.testing.assert_close(losses["surrogate"], expected_loss.item(), atol=1e-6, rtol=1e-5)
+        assert "entropy" in losses
+        assert "Model/mean_policy_entropy" not in stats
+        assert stats["Optimizer/learning_rate"] == ppo.learning_rate
+        assert stats["Model/mean_policy_std"] == ppo.actor.output_std.mean().item()
         for actual, expected in zip(actor.parameters(), reference.parameters()):
             torch.testing.assert_close(actual.grad, expected.grad)
 
@@ -427,7 +452,7 @@ class TestPPOLosses:
         ppo.storage.actions_log_prob.sub_(torch.log(torch.tensor(ratio)))
         ppo.storage.advantages.fill_(advantage)
 
-        losses = ppo.update()
+        losses, _ = ppo.update()
 
         assert losses["surrogate"] == pytest.approx(expected)
 
@@ -441,7 +466,7 @@ class TestPPOLosses:
         ppo.storage.returns.copy_(ppo.storage.values + return_offset)
         ppo.storage.values.sub_(1.0)
 
-        losses = ppo.update()
+        losses, _ = ppo.update()
 
         assert losses["value"] == pytest.approx(expected, abs=1e-6)
 
@@ -492,7 +517,7 @@ class TestMixedPrecision:
         ppo.compute_returns(obs)
 
         before = [p.clone() for p in ppo.actor.parameters()]
-        loss_dict = ppo.update()
+        loss_dict, _ = ppo.update()
 
         assert all(torch.isfinite(torch.tensor(v)) for v in loss_dict.values())
         after = list(ppo.actor.parameters())
@@ -512,6 +537,25 @@ class TestCheckpoint:
         assert restored.rnd.update_counter == 3
         restored.rnd.get_intrinsic_reward(obs)
         assert restored.rnd.weight == 0.25
+
+    def test_selected_rnd_restores_its_optimizer_with_fresh_policy_optimizer(self) -> None:
+        """The policy optimizer flag preserves the existing independent RND selection semantics."""
+        source, _ = _build_ppo(rnd_cfg=RND_CFG)
+        for optimizer in (source.optimizer, source.rnd.optimizer):
+            for group in optimizer.param_groups:
+                for parameter in group["params"]:
+                    parameter.grad = torch.ones_like(parameter)
+            optimizer.step()
+        checkpoint = source.save()
+        restored, _ = _build_ppo(rnd_cfg=RND_CFG)
+        load_cfg = restored.get_default_load_cfg()
+        load_cfg["optimizer"] = False
+        restored.load(checkpoint, load_cfg, strict=True)
+        assert not restored.optimizer.state
+        assert len(restored.rnd.optimizer.state) == len(source.rnd.optimizer.state) > 0
+        for actual, expected in zip(restored.rnd.optimizer.state.values(), source.rnd.optimizer.state.values()):
+            for key in expected:
+                torch.testing.assert_close(actual[key], expected[key], rtol=0, atol=0)
 
     def test_legacy_checkpoint_without_rnd_counter_loads(self) -> None:
         """Checkpoints saved before the RND counter was stored should still load."""

@@ -11,6 +11,13 @@ You are currently on the `extras` branch of RSL-RL, which contains additional fe
 library. These features are mostly contributed by the community. For a list of the additional features, please check the
 [Extras Documentation](https://leggedrobotics.github.io/rsl_rl/extras/).
 
+## Key Features
+
+- **Minimal, readable codebase** with clear extension points for rapid prototyping.
+- **Robotics-first methods** including PPO, SAC, and Student-Teacher Distillation.
+- **High-throughput training** with native Multi-GPU support.
+- **Proven performance** in numerous research publications.
+
 ## Learning Environments
 
 RSL-RL is currently used by the following robot learning libraries:
