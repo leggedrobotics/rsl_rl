@@ -168,8 +168,9 @@ class ResidualMLP(nn.Module):
         if torch.jit.is_scripting():  # type: ignore
             x = self.output_norm(x)
         elif torch.onnx.is_in_onnx_export():  # Compute manually since ONNX does not support RMSNorm
-            x = x * torch.rsqrt(x.square().mean(dim=-1, keepdim=True) + self.output_norm.eps)  # type: ignore
-            x = x * self.output_norm.weight
+            normalized = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
+            normalized = normalized * torch.rsqrt(normalized.square().mean(dim=-1, keepdim=True) + self.output_norm.eps)
+            x = (normalized * self.output_norm.weight).to(x.dtype)
         else:
             x = self.output_norm(x)
         x = self.output_layer(x)

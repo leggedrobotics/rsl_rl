@@ -475,6 +475,28 @@ def test_cuda_graph_delayed_actor_and_resume() -> None:
     assert all(torch.isfinite(p).all() for p in runner.alg.actor.parameters())
 
 
+def test_half_residual_onnx_keeps_rms_normalization_finite() -> None:
+    """The exported residual network matches native RMS normalization for large half inputs."""
+    from io import BytesIO
+
+    from onnx.reference import ReferenceEvaluator
+
+    from rsl_rl.modules import ResidualMLP
+
+    model = ResidualMLP(2, 2, hidden_dim=2, num_blocks=0).half().eval()
+    with torch.no_grad():
+        model.input_layer.weight.copy_(torch.eye(2))
+        model.output_layer.weight.copy_(torch.eye(2))
+    inputs = torch.tensor([[2000.0, 4000.0]], dtype=torch.float16)
+    with torch.no_grad():
+        expected = model(inputs)
+    assert torch.isfinite(expected).all()
+    exported = BytesIO()
+    torch.onnx.export(model, (inputs,), exported, opset_version=18, dynamo=False, input_names=["obs"])
+    actual = ReferenceEvaluator(exported.getvalue()).run(None, {"obs": inputs.numpy()})[0]
+    torch.testing.assert_close(torch.from_numpy(actual), expected, rtol=2e-3, atol=2e-3)
+
+
 @pytest.mark.parametrize("role", ["actor", "critic"])
 def test_recurrent_models_are_rejected(role: str) -> None:
     """Reject recurrent configs explicitly instead of silently treating random replay as sequences."""
