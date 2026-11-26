@@ -218,6 +218,25 @@ class TestSaveLoad:
             runner.load(f.name)
             assert runner.current_learning_iteration == saved_iter
 
+    def test_resume_continues_after_saved_iteration(self, tmp_path: pathlib.Path) -> None:
+        """Resuming from a checkpoint should not re-run the saved iteration."""
+        runner = _build_runner()
+        runner.learn(num_learning_iterations=3)  # iterations 0, 1, 2
+        path = str(tmp_path / "model_2.pt")
+        runner.save(path)
+        resumed = _build_runner()
+        resumed.load(path)
+        assert resumed.current_learning_iteration == 2
+        resumed.learn(num_learning_iterations=2)  # iterations 3, 4
+        assert resumed.current_learning_iteration == 4
+
+    def test_consecutive_learn_calls_do_not_repeat_iterations(self) -> None:
+        """Calling learn() twice should continue the iteration count."""
+        runner = _build_runner()
+        runner.learn(num_learning_iterations=2)  # iterations 0, 1
+        runner.learn(num_learning_iterations=2)  # iterations 2, 3
+        assert runner.current_learning_iteration == 3
+
     def test_load_restores_normalization_stats(self) -> None:
         """Running-mean stats should be identical after save and load."""
         cfg = _make_train_cfg("mlp")
