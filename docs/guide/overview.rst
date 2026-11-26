@@ -69,6 +69,11 @@ Models
    processes them through an MLP. The model does not support stochastic outputs and is intended for Q-value estimation
    in :class:`~rsl_rl.algorithms.sac.SAC`.
 
+:class:`~rsl_rl.models.cnn_model.QCNNModel`
+   A CNN-based model that encodes selected 2D observation groups, concatenates them with optionally normalized 1D
+   observations and actions, and processes them through an MLP. The model does not support stochastic outputs and is
+   intended for Q-value estimation in :class:`~rsl_rl.algorithms.sac.SAC`.
+
 Distributions
 ^^^^^^^^^^^^^
 
