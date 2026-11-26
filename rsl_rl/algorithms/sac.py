@@ -10,16 +10,24 @@ import copy
 import functools
 import math
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from dataclasses import dataclass
 from tensordict import TensorDict
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import Symmetry, resolve_symmetry_config
-from rsl_rl.models import CNNModel, MLPModel, QMLPModel
+from rsl_rl.models import MLPModel, QCNNModel, QMLPModel
 from rsl_rl.modules import EmpiricalNormalization, SquashedGaussianDistribution
 from rsl_rl.storage import ReplayBuffer
-from rsl_rl.utils import CudaGraphCallable, compile_model, resolve_class, resolve_obs_groups, resolve_optimizer
+from rsl_rl.utils import (
+    CudaGraphCallable,
+    compile_model,
+    reduce_gradients_in_buckets,
+    resolve_class,
+    resolve_obs_groups,
+    resolve_optimizer,
+)
 
 
 class SAC:
@@ -47,7 +55,7 @@ class SAC:
     def __init__(
         self,
         actor: MLPModel,
-        critics: list[QMLPModel],
+        critics: list[QMLPModel | QCNNModel],
         storage: ReplayBuffer,
         # Update parameters
         num_updates: int = 16,
@@ -58,9 +66,9 @@ class SAC:
         actor_update_interval: int = 2,
         num_warmup_transitions: int = 100_000,
         # Optimizer parameters
-        actor_learning_rate: float = 0.0001,
-        critic_learning_rate: float = 0.0001,
-        alpha_learning_rate: float = 0.0001,
+        actor_learning_rate: float = 0.0003,
+        critic_learning_rate: float = 0.0003,
+        alpha_learning_rate: float = 0.0003,
         max_grad_norm: float | None = None,
         optimizer: str = "adam",
         weight_decay: float = 0.0,
@@ -91,17 +99,12 @@ class SAC:
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        grad_reduce_bucket_mb: float = 25,
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
-        # Not yet implemented features
-        if multi_gpu_cfg is not None:
-            raise NotImplementedError("Multi-GPU training is not yet supported for SAC.")
+        # Validate configuration
         if actor.is_recurrent or any(critic.is_recurrent for critic in critics):
             raise ValueError("SAC does not yet support recurrent models.")
-        if isinstance(actor, CNNModel):
-            raise ValueError("SAC does not yet support CNN models.")
-
-        # Validate configuration
         if not isinstance(actor.distribution, SquashedGaussianDistribution):
             raise ValueError("SAC requires a SquashedGaussianDistribution actor.")
         if len(critics) < 2:
@@ -114,15 +117,27 @@ class SAC:
             raise ValueError("Unsupported learning rate schedule.")
         if learning_rate_schedule == "cosine" and num_schedule_updates is None:
             raise ValueError("A cosine schedule requires num_schedule_updates to be specified.")
+        if use_cuda_graph and torch.device(device).type != "cuda":
+            raise ValueError("CUDA graph capture requires a CUDA device.")
+        if multi_gpu_cfg is not None and use_cuda_graph and dist.get_backend() != "nccl":
+            raise ValueError("Distributed SAC can only capture CUDA graphs with the NCCL backend.")
+
+        # Device-related parameters
+        self.device = device
+        self.use_cuda_graph = use_cuda_graph
+        self.is_multi_gpu = multi_gpu_cfg is not None
+
+        # Multi-GPU parameters
+        if multi_gpu_cfg is not None:
+            self.gpu_global_rank = multi_gpu_cfg["global_rank"]
+            self.gpu_world_size = multi_gpu_cfg["world_size"]
+        else:
+            self.gpu_global_rank = 0
+            self.gpu_world_size = 1
+        self.grad_reduce_bucket_mb = grad_reduce_bucket_mb
 
         # Symmetry extension
         self.symmetry = Symmetry(**symmetry_cfg) if symmetry_cfg is not None else None
-
-        # Device-related parameters
-        if use_cuda_graph and torch.device(device).type != "cuda":
-            raise ValueError("CUDA graph capture requires a CUDA device.")
-        self.use_cuda_graph = use_cuda_graph
-        self.device = device
 
         # SAC components
         self.actor = actor.to(self.device)
@@ -179,6 +194,9 @@ class SAC:
         self.reward_normalization_max_return = reward_normalization_max_return
         self._return_normalizer = EmpiricalNormalization(1, eps=0.0).to(self.device)
         self._returns = torch.zeros(storage.num_envs, device=self.device)
+        self._return_history = (
+            torch.zeros(storage.num_slots, storage.num_envs, device=self.device) if reward_normalization else None
+        )
         self._max_abs_return = torch.zeros((), device=self.device)
 
         # Exploration parameters
@@ -199,6 +217,15 @@ class SAC:
         self.final_learning_rate_ratio = final_learning_rate_ratio
         self.num_schedule_updates = num_schedule_updates
         self._base_learning_rates = (actor_learning_rate, critic_learning_rate, alpha_learning_rate)
+
+        # Observation groups
+        self._obs_groups = list(
+            dict.fromkeys(
+                group
+                for model in (self.actor, *self.critics)
+                for group in model.obs_groups + getattr(model, "obs_groups_2d", [])  # type: ignore
+            )
+        )
 
         # Initialize update counters, actor state, and collection graphs
         self.num_env_steps = 0
@@ -243,8 +270,7 @@ class SAC:
         # Resolve termination flags and observation groups
         done_mask = dones.reshape(-1).bool()
         time_outs = extras.get("time_outs", torch.zeros_like(done_mask)).to(self.device).reshape(-1).bool()
-        critic_obs_groups = [obs_group for critic in self.critics for obs_group in critic.obs_groups]  # type: ignore
-        groups = list(dict.fromkeys(self.actor.obs_groups + critic_obs_groups))
+        groups = self._obs_groups
         final_obs = extras.get("final_obs")
         if final_obs is None:
             if done_mask.any():
@@ -294,10 +320,20 @@ class SAC:
                     target.obs_normalizer.buffers(), critic.obs_normalizer.buffers()
                 ):
                     target_buffer.copy_(source_buffer)
+            if self.reward_normalization:
+                returns = self._return_history[self.storage.latest_indices(self._num_steps_since_update)]  # type: ignore
+                self._return_normalizer.update(returns.reshape(-1, 1))
             self._num_steps_since_update = 0
+        if self.is_multi_gpu:
+            dist.all_reduce(self._max_abs_return, op=dist.ReduceOp.MAX)
 
         # Wait until enough transitions have been collected
-        if self.storage.size < self.num_warmup_transitions or not self.storage.size:
+        ready = self.storage.size >= self.num_warmup_transitions and self.storage.size > 0
+        if self.is_multi_gpu:
+            ready_tensor = torch.tensor(ready, device=self.device, dtype=torch.long)
+            dist.all_reduce(ready_tensor, op=dist.ReduceOp.MIN)
+            ready = bool(ready_tensor)
+        if not ready:
             return {}, self._get_learning_rate_stats() | _to_floats(self._get_model_stats())
 
         # Run all gradient updates of this iteration, captured as a single CUDA graph if enabled
@@ -435,8 +471,8 @@ class SAC:
         alg_class, alg_cfg = resolve_class(cfg["algorithm"])
         actor_class, actor_cfg = resolve_class(cfg["actor"])
         critic_class, critic_cfg = resolve_class(cfg["critic"])
-        if not issubclass(critic_class, QMLPModel):  # type: ignore
-            raise ValueError("SAC requires QMLPModel critics.")
+        if not issubclass(critic_class, (QMLPModel, QCNNModel)):  # type: ignore
+            raise ValueError("SAC requires QMLPModel or QCNNModel critics.")
 
         # Resolve observation groups
         cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], ["actor", "critic"])
@@ -476,6 +512,43 @@ class SAC:
         alg.compile(cfg.get("torch_compile_mode"))
 
         return alg
+
+    @torch.no_grad()
+    def broadcast_parameters(self) -> None:
+        """Broadcast model parameters and training state to all GPUs."""
+        models = [self._raw_actor, self._raw_critics, self.target_critics, self._return_normalizer]
+        for model in models:
+            for tensor in model.state_dict().values():
+                torch.distributed.broadcast(tensor, src=0)
+        torch.distributed.broadcast(self.log_alpha, src=0)
+        torch.distributed.broadcast(self._max_abs_return, src=0)
+        counters = torch.tensor(
+            [self.num_env_steps, self.num_critic_updates, int(self._actor_loaded)], device=self.device
+        )
+        torch.distributed.broadcast(counters, src=0)
+        self.num_env_steps, self.num_critic_updates, actor_loaded = counters.tolist()
+        self._num_critic_updates_tensor.fill_(self.num_critic_updates)
+        self._actor_loaded = bool(actor_loaded)
+
+    def reduce_parameters(self, optimizer: torch.optim.Optimizer) -> None:
+        """Collect gradients from all GPUs and average them.
+
+        This function is called after the backward pass to synchronize the optimizer's gradients across all GPUs.
+        """
+        params = (parameter for group in optimizer.param_groups for parameter in group["params"])
+        reduce_gradients_in_buckets(params, self.gpu_world_size, self.grad_reduce_bucket_mb)
+
+    def release_cuda_graphs(self) -> None:
+        """Release the captured CUDA graphs.
+
+        With multiple GPUs, the graphs contain NCCL collectives and must be released before the process group is
+        destroyed.
+        """
+        self._update_graphs.clear()
+        self._act_graphs.clear()
+        self._process_env_step_graph = None
+        if self.use_cuda_graph:
+            torch.cuda.synchronize(self.device)
 
     def _act(self, obs: TensorDict, uniform: bool) -> dict[str, torch.Tensor]:
         """Sample actions using only device operations."""
@@ -525,14 +598,16 @@ class SAC:
         transition.next_observations = next_observations
         transition.dones = dones
         transition.terminated = dones & ~time_outs
-        self.storage.write_transition(transition)
 
         # Record discounted returns for reward normalization
         if self.reward_normalization:
             self._returns.mul_(self.gamma).add_(rewards)
             self._max_abs_return.copy_(torch.maximum(self._max_abs_return, self._returns.abs().max()))
-            self._return_normalizer.update(self._returns.unsqueeze(-1))
+            self._return_history.index_copy_(0, self.storage.write_index.view(1), self._returns.unsqueeze(0))  # type: ignore
             self._returns.mul_(~dones)
+
+        # Store the transition
+        self.storage.write_transition(transition)
 
         # Reset exploration for completed episodes
         self._noise_steps_left.mul_(~dones)
@@ -603,6 +678,8 @@ class SAC:
         metrics = self._update_actor_and_alpha(batch) if update_actor else {}
         metrics.update(self._update_critics(batch))
         self._update_target_critics()
+        if self.is_multi_gpu:
+            self._synchronize_batch_norm_buffers()
         return metrics
 
     def _update_actor_and_alpha(self, batch: _Batch) -> dict[str, torch.Tensor]:
@@ -644,6 +721,8 @@ class SAC:
         # Apply the gradients for the actor
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
+        if self.is_multi_gpu:
+            self.reduce_parameters(self.actor_optimizer)
         if self.max_grad_norm is not None:
             nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
         self.actor_optimizer.step()
@@ -654,6 +733,8 @@ class SAC:
         alpha_loss = self.log_alpha.exp() * (entropy - self.target_entropy)
         self.alpha_optimizer.zero_grad(set_to_none=True)
         alpha_loss.backward()
+        if self.is_multi_gpu:
+            self.reduce_parameters(self.alpha_optimizer)
         self.alpha_optimizer.step()
 
         # Store the losses and sampled entropy
@@ -707,6 +788,8 @@ class SAC:
         # Apply the gradients for the critics
         self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
+        if self.is_multi_gpu:
+            self.reduce_parameters(self.critic_optimizer)
         if self.max_grad_norm is not None:
             nn.utils.clip_grad_norm_(self.critics.parameters(), self.max_grad_norm)
         self.critic_optimizer.step()
@@ -728,6 +811,26 @@ class SAC:
         for target, source in zip(self.target_critics, self.critics):
             for target_buffer, source_buffer in zip(target.obs_normalizer.buffers(), source.obs_normalizer.buffers()):  # type: ignore
                 target_buffer.copy_(source_buffer)
+
+    @torch.no_grad()
+    def _synchronize_batch_norm_buffers(self) -> None:
+        """Average local running statistics."""
+        buffers = [
+            buffer
+            for layer in self._actor_batch_norms + self._critic_batch_norms + self._target_batch_norms
+            for buffer in layer.buffers()
+        ]
+        floating = [buffer for buffer in buffers if buffer.is_floating_point()]
+        integer = [buffer for buffer in buffers if not buffer.is_floating_point()]
+        for group, op in ((floating, dist.ReduceOp.SUM), (integer, dist.ReduceOp.MAX)):
+            if not group:
+                continue
+            packed = torch.cat([buffer.reshape(-1) for buffer in group])
+            dist.all_reduce(packed, op=op)
+            if op == dist.ReduceOp.SUM:
+                packed /= self.gpu_world_size
+            for buffer, value in zip(group, packed.split([buffer.numel() for buffer in group])):
+                buffer.copy_(value.view_as(buffer))
 
     def _compute_target(
         self, next_outputs: list[torch.Tensor], batch: _Batch, entropy_bonus: torch.Tensor

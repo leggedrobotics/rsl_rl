@@ -144,6 +144,10 @@ class OnPolicyRunner:
             # Close the run as aborted, e.g., due to a KeyboardInterrupt or an exception
             self.logger.abort_logging_writer()
             raise
+        finally:
+            # Release captured CUDA graphs
+            if self.is_distributed and getattr(self.alg, "release_cuda_graphs", None) is not None:
+                self.alg.release_cuda_graphs()  # type: ignore
 
         # Close the run as finished
         self.logger.stop_logging_writer()
