@@ -49,6 +49,7 @@ the core library. These features, mostly contributed by the community, are liste
 - **Short-Horizon Actor-Critic (SHAC)** trains policies through differentiable dynamics supplied by the task or learned
   from simulator experience.
 - **Equivariant MLP model** that enforces robot symmetries (e.g. left-right mirroring) by construction.
+- **Dynamic-batch ONNX export** for batched MLP, CNN, GRU and LSTM policy inference.
 
 Key Features
 ------------

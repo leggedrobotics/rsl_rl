@@ -200,15 +200,35 @@ class OnPolicyRunner:
         traced_model = torch.jit.script(jit_model)
         traced_model.save(save_path)
 
-    def export_policy_to_onnx(self, path: str, filename: str = "policy.onnx", verbose: bool = False) -> None:
-        """Export the model into an ONNX file."""
-        onnx_model = self.alg.get_policy().as_onnx()
+    def export_policy_to_onnx(
+        self, path: str, filename: str = "policy.onnx", verbose: bool = False, dynamic_batch: bool = False
+    ) -> None:
+        """Export the model into an ONNX file.
+
+        Args:
+            path: Directory in which to save the exported policy.
+            filename: Name of the ONNX file.
+            verbose: Whether to print the exported graph.
+            dynamic_batch: Allow varying batch sizes for MLP, CNN, GRU and LSTM policies. This opt-in path uses
+                the TorchScript ONNX exporter with dynamic axes. The default keeps the existing fixed-batch export.
+        """
+        policy = self.alg.get_policy()
+        onnx_model = policy.as_onnx()
         onnx_model.to("cpu")
         onnx_model.eval()
 
         if not os.path.exists(path):
             os.makedirs(path, exist_ok=True)
         save_path = os.path.join(path, filename)
+
+        export_kwargs = {}
+        if dynamic_batch:
+            export_kwargs["dynamo"] = False
+            export_kwargs["dynamic_axes"] = {
+                name: {1 if policy.is_recurrent and index > 0 else 0: "batch"}
+                for names in (onnx_model.input_names, onnx_model.output_names)
+                for index, name in enumerate(names)
+            }
 
         # Trace and save the model
         torch.onnx.export(
@@ -220,6 +240,7 @@ class OnPolicyRunner:
             verbose=verbose,
             input_names=onnx_model.input_names,  # type: ignore
             output_names=onnx_model.output_names,  # type: ignore
+            **export_kwargs,
         )
 
     def add_git_repo_to_log(self, repo_file_path: str) -> None:
