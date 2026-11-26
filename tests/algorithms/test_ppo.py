@@ -407,6 +407,43 @@ class TestPPOLosses:
         for actual, expected in zip(actor.parameters(), reference.parameters()):
             torch.testing.assert_close(actual.grad, expected.grad)
 
+    def test_recurrent_rnd_loss_excludes_padding(self) -> None:
+        """With recurrent models, the RND predictor must only be trained on valid (non-padded) steps."""
+        torch.manual_seed(0)
+        num_envs, num_steps, obs_dim = 2, 6, 3
+        obs = make_obs(num_envs, obs_dim)
+        obs_groups = {"actor": ["policy"], "critic": ["policy"]}
+        rnn_cfg = {"hidden_dims": [8], "rnn_hidden_dim": 8, "rnn_type": "gru"}
+        actor = RNNModel(
+            obs, obs_groups, "actor", 2, distribution_cfg={"class_name": "GaussianDistribution"}, **rnn_cfg
+        )
+        critic = RNNModel(obs, obs_groups, "critic", 1, **rnn_cfg)
+        storage = RolloutStorage("rl", num_envs, num_steps, obs, [2])
+        rnd_cfg = {**RND_CFG, "num_states": obs_dim, "weight_schedule": None}
+        ppo = PPO(actor, critic, storage, num_learning_epochs=1, num_mini_batches=1, rnd_cfg=rnd_cfg)
+        with torch.inference_mode():
+            for step in range(num_steps):
+                ppo.act(obs)
+                # observations are never all-zero, so all-zero RND states can only come from padding
+                obs = make_obs(num_envs, obs_dim) + 1.0
+                dones = torch.tensor([step == 1, False])  # env 0 is split into two trajectories
+                ppo.process_env_step(obs, torch.zeros(num_envs), dones, {})
+            ppo.compute_returns(obs)
+
+        seen = {"rows": 0, "zero_rows": 0}
+        compute_loss = ppo.rnd.compute_loss
+
+        def counting_compute_loss(rnd_obs: TensorDict) -> torch.Tensor:
+            rnd_state = ppo.rnd.get_rnd_state(rnd_obs).reshape(-1, obs_dim)
+            seen["rows"] += rnd_state.shape[0]
+            seen["zero_rows"] += int((rnd_state == 0).all(-1).sum())
+            return compute_loss(rnd_obs)
+
+        ppo.rnd.compute_loss = counting_compute_loss  # type: ignore[method-assign]
+        ppo.update()
+        assert seen["zero_rows"] == 0
+        assert seen["rows"] == num_envs * num_steps
+
     @pytest.mark.parametrize("advantage, ratio, expected", [(1.0, 1.5, -1.2), (-1.0, 0.5, 0.8), (1.0, 0.5, -0.5)])
     def test_surrogate_loss_clipping(self, advantage: float, ratio: float, expected: float) -> None:
         """The update clips probability ratios for positive and negative advantages."""
