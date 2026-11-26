@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import torch
 from tensordict import TensorDict
+from types import SimpleNamespace
 
-from rsl_rl.extensions.rnd import RandomNetworkDistillation
+from rsl_rl.extensions.rnd import RandomNetworkDistillation, resolve_rnd_config
 from tests.conftest import make_obs
 
 NUM_ENVS = 8
@@ -236,3 +237,34 @@ class TestWeightSchedules:
             rnd.get_intrinsic_reward(obs)
 
         assert rnd.weight == 0.0
+
+
+class TestResolveRndConfig:
+    """Tests for resolving the RND configuration."""
+
+    def test_weight_schedule_final_value_scaled_by_step_dt(self) -> None:
+        """Both the initial weight and the schedule's final value should be scaled by the environment step_dt."""
+        obs = make_obs(NUM_ENVS, OBS_DIM)
+        env = SimpleNamespace(unwrapped=SimpleNamespace(step_dt=0.02))
+        alg_cfg = {
+            "rnd_cfg": {
+                "weight": 1.0,
+                "weight_schedule": {"mode": "step", "final_step": 3, "final_value": 0.5},
+                "num_outputs": 4,
+                "predictor_hidden_dims": [32],
+                "target_hidden_dims": [32],
+            }
+        }
+        alg_cfg = resolve_rnd_config(alg_cfg, obs, {"rnd_state": ["policy"]}, env)
+        assert abs(alg_cfg["rnd_cfg"]["weight"] - 0.02) < 1e-9
+        assert abs(alg_cfg["rnd_cfg"]["weight_schedule"]["final_value"] - 0.01) < 1e-9
+
+        rnd = RandomNetworkDistillation(**alg_cfg["rnd_cfg"])
+        rnd.train()
+        weights = []
+        for _ in range(5):
+            rnd.get_intrinsic_reward(obs)
+            weights.append(rnd.weight)
+        # The schedule halves the weight (1.0 -> 0.5 before scaling), so it must decrease, not jump up
+        assert all(abs(w - 0.02) < 1e-9 for w in weights[:2])
+        assert all(abs(w - 0.01) < 1e-9 for w in weights[2:])
