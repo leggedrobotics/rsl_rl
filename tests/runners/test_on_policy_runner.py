@@ -405,3 +405,68 @@ class TestOnnxBatchExport:
                     next_obs = torch.randn_like(inputs[0])
                     inputs = (next_obs, *expected[1:])
                     feeds = dict(zip(wrapper.input_names, (next_obs.numpy(), *actual[1:])))
+
+
+def test_jit_export_uses_evaluation_mode(tmp_path: pathlib.Path) -> None:
+    """Deployment modules use evaluation-mode statistics."""
+    runner = _build_runner()
+    runner.export_policy_to_jit(str(tmp_path))
+    assert not torch.jit.load(str(tmp_path / "policy.pt")).training
+
+
+def test_tensor_episode_length_limits() -> None:
+    """Floating per-environment limits preserve the environment's integer buffer dtype and bounds."""
+    runner = _build_runner()
+    runner.env.max_episode_length = torch.tensor([1.5, 2.25, 3.75, 8.5])
+    runner.env.episode_length_buf = torch.zeros(NUM_ENVS, dtype=torch.int32)
+    runner.learn(0, init_at_random_ep_len=True)
+    assert runner.env.episode_length_buf.dtype == torch.int32
+    assert (runner.env.episode_length_buf >= 0).all()
+    assert (runner.env.episode_length_buf < runner.env.max_episode_length).all()
+
+
+def test_load_without_optimizer_restores_models_and_iteration(tmp_path: pathlib.Path) -> None:
+    """Fresh optimizer state can accompany a full checkpoint model restore."""
+    runner = _build_runner()
+    runner.learn(1)
+    runner.current_learning_iteration = 7
+    path = str(tmp_path / "model.pt")
+    runner.save(path)
+    restored = _build_runner()
+    load_cfg = restored.alg.get_default_load_cfg()
+    load_cfg["optimizer"] = False
+    restored.load(path, load_cfg=load_cfg)
+    assert restored.current_learning_iteration == 7
+    assert not restored.alg.optimizer.state
+    for expected, actual in zip(runner.alg.actor.parameters(), restored.alg.actor.parameters()):
+        torch.testing.assert_close(actual, expected)
+
+
+def test_nonfinite_environment_outputs_raise_before_the_update() -> None:
+    """NaN rewards are reported at the end of the rollout, before the policy is updated."""
+
+    class NanRewardEnv(DummyEnv):
+        def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:
+            obs, rewards, dones, extras = super().step(actions)
+            return obs, torch.full_like(rewards, torch.nan), dones, extras
+
+    runner = OnPolicyRunner(NanRewardEnv(), _make_train_cfg())
+    before = [p.detach().clone() for p in runner.alg.actor.parameters()]
+    with pytest.raises(ValueError, match="rewards"):
+        runner.learn(1)
+    assert all(torch.equal(a, b) for a, b in zip(before, runner.alg.actor.parameters()))
+
+
+def test_learn_rejects_nonfinite_environment_outputs_on_another_rank(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A finite rank stops before the learner update when another rank reports nonfinite outputs."""
+    runner = OnPolicyRunner(DummyEnv(), _make_train_cfg())
+    runner.is_distributed = True
+    monkeypatch.setattr(runner.alg, "broadcast_parameters", lambda: None)
+
+    def report_invalid_peer(flag: torch.Tensor, op: torch.distributed.ReduceOp) -> None:
+        assert not flag and op == torch.distributed.ReduceOp.MAX
+        flag.fill_(1)
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", report_invalid_peer)
+    with pytest.raises(ValueError, match="another rank"):
+        runner.learn(1)

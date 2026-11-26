@@ -171,3 +171,11 @@ class TestEmpiricalDiscountedVariationNormalization:
         result = norm(torch.tensor([2.0, 2.0]))
         result.mul_(3.0)
         assert torch.equal(norm.disc_avg.avg, torch.tensor([2.0, 2.0]))
+
+
+def test_normalizer_standard_deviation_buffer_identity() -> None:
+    """Normalizer updates preserve buffers referenced by captured CUDA graphs."""
+    normalizer = EmpiricalNormalization(3)
+    original = normalizer._std
+    normalizer.update(torch.randn(8, 3))
+    assert normalizer._std is original

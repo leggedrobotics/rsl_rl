@@ -24,7 +24,12 @@ from rsl_rl.utils import (
 
 
 class Distillation:
-    """Distillation algorithm for training a student model to mimic a teacher model."""
+    """Distillation algorithm for training a student model to mimic a teacher model.
+
+    Reference:
+        - Ross et al. "A Reduction of Imitation Learning and Structured Prediction to No-Regret
+          Online Learning." arXiv preprint arXiv:1011.0686 (2011).
+    """
 
     student: MLPModel
     """The student model."""
@@ -124,8 +129,8 @@ class Distillation:
 
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
-    ) -> None:
-        """Record one environment step."""
+    ) -> dict[str, torch.Tensor]:
+        """Record one environment step and return per-environment values that the logger sums over each episode."""
         # Record the rewards and dones
         self.transition.rewards = rewards
         self.transition.dones = dones
@@ -134,14 +139,14 @@ class Distillation:
         self.transition.clear()
         self.student.reset(dones)
         self.teacher.reset(dones)
+        return {"Training/mean_reward": rewards}
 
     def compute_returns(self, obs: TensorDict) -> None:
         """No-op since distillation does not use return targets."""
-        # Not needed for distillation
         pass
 
-    def update(self) -> dict[str, float]:
-        """Run optimization epochs over stored batches and return mean losses."""
+    def update(self) -> tuple[dict[str, float], dict[str, float]]:
+        """Run optimization epochs over stored batches and return mean losses and statistics."""
         self.num_updates += 1
         mean_behavior_loss = 0
         loss = 0
@@ -195,10 +200,15 @@ class Distillation:
         # Construct the loss dictionary
         loss_dict = {"behavior": mean_behavior_loss}
 
+        # Construct the stats dictionary
+        stats_dict = {"Optimizer/learning_rate": self.learning_rate}
+        if self.student.distribution is not None:
+            stats_dict["Model/mean_policy_std"] = self.student.output_std.mean().item()
+
         # Clear the storage
         self.storage.clear()
 
-        return loss_dict
+        return loss_dict, stats_dict
 
     def train_mode(self) -> None:
         """Set train mode for the student and keep the teacher in eval mode."""
@@ -220,18 +230,17 @@ class Distillation:
         }
         return saved_dict
 
+    def get_default_load_cfg(self) -> dict:
+        """Return the default selection for resuming this algorithm's own checkpoints."""
+        return {"student": True, "teacher": True, "optimizer": True, "iteration": True}
+
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load specified models from a saved dict."""
-        # If no load_cfg is provided, determine what to load automatically
-        if load_cfg is None and any("actor_state_dict" in key for key in loaded_dict):  # Load from RL training
-            load_cfg = {"teacher": True, "iteration": False}  # Only load teacher by default
-        elif load_cfg is None:  # Load from distillation training
-            load_cfg = {
-                "student": True,
-                "teacher": True,
-                "optimizer": True,
-                "iteration": True,
-            }
+        if load_cfg is None:
+            if any("actor_state_dict" in key for key in loaded_dict):
+                load_cfg = {"teacher": True, "iteration": False}  # Load a previous RL checkpoint
+            else:
+                load_cfg = self.get_default_load_cfg()
 
         # Load the specified models
         if load_cfg.get("student"):

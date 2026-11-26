@@ -5,6 +5,7 @@
 
 """Environment definition."""
 
+from .differentiable_task import DifferentiableTask, EuclideanStateRepresentation, RolloutState, StateRepresentation
 from .vec_env import VecEnv
 
-__all__ = ["VecEnv"]
+__all__ = ["DifferentiableTask", "EuclideanStateRepresentation", "RolloutState", "StateRepresentation", "VecEnv"]

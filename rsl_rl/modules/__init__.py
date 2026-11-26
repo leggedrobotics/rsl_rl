@@ -6,7 +6,13 @@
 """Building blocks for neural models."""
 
 from .cnn import CNN
-from .distribution import BetaDistribution, Distribution, GaussianDistribution, HeteroscedasticGaussianDistribution
+from .distribution import (
+    BetaDistribution,
+    Distribution,
+    GaussianDistribution,
+    HeteroscedasticGaussianDistribution,
+    SquashedGaussianDistribution,
+)
 from .equivariant import (
     EquivariantGaussianDistribution,
     EquivariantLinear,
@@ -14,7 +20,7 @@ from .equivariant import (
     SignedPermutation,
     SymmetricEmpiricalNormalization,
 )
-from .mlp import MLP
+from .mlp import MLP, ResidualMLP
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
 from .rnn import RNN, HiddenState
 
@@ -32,6 +38,8 @@ __all__ = [
     "GaussianDistribution",
     "HeteroscedasticGaussianDistribution",
     "HiddenState",
+    "ResidualMLP",
     "SignedPermutation",
+    "SquashedGaussianDistribution",
     "SymmetricEmpiricalNormalization",
 ]

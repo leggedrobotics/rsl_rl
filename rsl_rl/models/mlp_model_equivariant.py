@@ -84,7 +84,14 @@ class EquivariantMLPModel(MLPModel):
             raise ValueError("EquivariantMLPModel requires equivariance_cfg with an 'obs' representation")
 
         super().__init__(
-            obs, obs_groups, obs_set, output_dim, hidden_dims, activation, obs_normalization, distribution_cfg
+            obs,
+            obs_groups,
+            obs_set,
+            output_dim,
+            hidden_dims,
+            activation,
+            obs_normalization,
+            distribution_cfg=distribution_cfg,
         )
 
         rep_in = SignedPermutation(**equivariance_cfg["obs"])

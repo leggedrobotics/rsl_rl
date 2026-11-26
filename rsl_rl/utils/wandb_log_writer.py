@@ -59,6 +59,9 @@ class WandbLogWriter(SummaryWriter, LogWriter):
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
         """Upload environment and training configuration to W&B."""
         wandb.config.update({"train_cfg": train_cfg})
+        if isinstance(env_cfg, dict):
+            wandb.config.update({"env_cfg": env_cfg})
+            return
         try:
             wandb.config.update({"env_cfg": env_cfg.to_dict()})  # type: ignore
         except Exception:

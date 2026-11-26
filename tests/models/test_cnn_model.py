@@ -15,6 +15,7 @@ import onnx
 import pytest
 
 from rsl_rl.models import CNNModel
+from rsl_rl.modules import ResidualMLP
 from rsl_rl.modules.cnn import _compute_output_dim, _compute_padding
 
 NUM_ENVS = 2
@@ -47,6 +48,24 @@ def _make_cnn_model(**kwargs: object) -> tuple[CNNModel, TensorDict]:
     defaults.update(kwargs)
     model = CNNModel(obs, obs_groups, "actor", NUM_ACTIONS, **defaults)
     return model, obs
+
+
+def test_custom_network_forward_and_export() -> None:
+    """A custom network consumes CNN features, propagates gradients, and supports deterministic export."""
+    model, obs = _make_cnn_model(
+        cnn_cfg={"output_channels": [4], "kernel_size": 3, "stride": 2},
+        network_cfg={"class_name": "ResidualMLP", "hidden_dim": 8, "num_blocks": 1},
+    )
+    assert isinstance(model.mlp, ResidualMLP)
+    outputs = model(obs)
+    assert outputs.shape == (NUM_ENVS, NUM_ACTIONS)
+    outputs.square().mean().backward()
+    assert any(parameter.grad is not None and parameter.grad.abs().sum() > 0 for parameter in model.cnns.parameters())
+
+    model.eval()
+    expected = model(obs).detach()
+    exported = torch.jit.script(model.as_jit())
+    torch.testing.assert_close(exported(obs["policy"], [obs["image"]]), expected)
 
 
 class TestCNNLatentConcatenation:
@@ -224,3 +243,41 @@ class TestCNNModelONNXExport:
 
             assert [i.name for i in loaded.graph.input] == ["obs", "image"]
             assert [o.name for o in loaded.graph.output] == ["actions"]
+
+
+@pytest.mark.parametrize("output_dim", [1, 11])
+def test_action_conditioned_cnn(output_dim: int) -> None:
+    """Q heads consume actions after image encoding and differentiate through both inputs."""
+    from rsl_rl.models import QCNNModel
+
+    _, obs = _make_cnn_model()
+    model = QCNNModel(
+        obs,
+        {"critic": ["policy", "image"]},
+        "critic",
+        output_dim,
+        NUM_ACTIONS,
+        hidden_dims=[16],
+        cnn_cfg={"output_channels": [4], "kernel_size": 3},
+        obs_normalization=True,
+    )
+    model.update_normalization(obs)
+    actions = torch.randn(NUM_ENVS, NUM_ACTIONS, requires_grad=True)
+    outputs = model(obs, actions)
+    assert outputs.shape == (NUM_ENVS, output_dim)
+    outputs.square().mean().backward()
+    assert actions.grad is not None and actions.grad.abs().sum() > 0
+    assert any(parameter.grad.abs().sum() > 0 for parameter in model.cnns.parameters())
+    with pytest.raises(ValueError, match="output distribution"):
+        QCNNModel(
+            obs,
+            {"critic": ["policy", "image"]},
+            "critic",
+            output_dim,
+            NUM_ACTIONS,
+            distribution_cfg={"class_name": "GaussianDistribution"},
+        )
+    with pytest.raises(NotImplementedError, match="TorchScript"):
+        model.as_jit()
+    with pytest.raises(NotImplementedError, match="ONNX"):
+        model.as_onnx()

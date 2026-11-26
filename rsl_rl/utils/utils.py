@@ -190,7 +190,7 @@ def resolve_class(cfg: dict) -> tuple[Callable, dict]:
 
 
 def resolve_obs_groups(
-    obs: TensorDict, obs_groups: dict[str, list[str]], default_sets: list[str]
+    obs: TensorDict, obs_groups: dict[str, list[str]], default_sets: list[str], fallback_to_policy: bool = True
 ) -> dict[str, list[str]]:
     """Validate the observation configuration and resolve missing observation sets.
 
@@ -213,7 +213,7 @@ def resolve_obs_groups(
     function will:
 
     1. Check if a group with the same name exists in the observations and assign this group to the observation set.
-    2. If 1. fails, it will assign the 'policy' observation group to the missing observation set.
+    2. If 1. fails and ``fallback_to_policy`` is True, assign the 'policy' observation group to the missing set.
     3. If 2. fails, an error is raised.
 
     Args:
@@ -221,6 +221,7 @@ def resolve_obs_groups(
         obs_groups: Dictionary mapping observation sets to lists of observation groups.
         default_sets: Default observation set names used by the algorithm. If not provided in ``obs_groups``, a
             default behavior gets triggered.
+        fallback_to_policy: Whether missing sets may use the "policy" group. Disable for physical state and goals.
 
     Returns:
         The resolved observation groups.
@@ -261,7 +262,7 @@ def resolve_obs_groups(
                     f" the appropriate observation. Consider adding the '{default_set_name}' key to the 'obs_groups'"
                     f" dictionary for clarity. This behavior will be removed in a future version."
                 )
-            elif "policy" in obs:
+            elif fallback_to_policy and "policy" in obs:
                 obs_groups[default_set_name] = ["policy"]
                 warnings.warn(
                     f"The observation configuration dictionary 'obs_groups' does not contain the '{default_set_name}'"
@@ -287,33 +288,55 @@ def resolve_obs_groups(
     return obs_groups
 
 
-def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor) -> None:
-    """Raise ``ValueError`` if any environment output contains NaN or Inf."""
-    for key, tensor in obs.items():
-        if not torch.isfinite(tensor).all():
-            has_nan = torch.isnan(tensor).any()
-            has_inf = torch.isinf(tensor).any()
-            value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
-            raise ValueError(
-                f"The observation group '{key}' returned by the environment contains {value_name} values. This usually"
-                " indicates a bug in the environment's step() or reset() function."
-            )
-    if not torch.isfinite(rewards).all():
-        has_nan = torch.isnan(rewards).any()
-        has_inf = torch.isinf(rewards).any()
-        value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
+def find_nonfinite(
+    obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict | None = None
+) -> dict[str, torch.Tensor]:
+    """Return a flag per environment output that is ``True`` if the output contains NaN or Inf values.
+
+    .. note::
+        If ``extras`` contains ``"final_obs"``, the final observations of environments that are done are checked as
+        well, or of all environments if ``extras["final_obs_every_step"]`` is True.
+    """
+    flags = {f"observation group '{key}'": ~torch.isfinite(tensor).all() for key, tensor in obs.items()}
+    flags["rewards"] = ~torch.isfinite(rewards).all()
+    flags["dones"] = ~torch.isfinite(dones).all()
+
+    final_obs = extras.get("final_obs") if extras is not None else None
+    if final_obs is not None:
+        done_mask = dones.reshape(-1).bool()
+        if extras.get("final_obs_every_step") is True:
+            done_mask = torch.ones_like(done_mask)
+        for key, tensor in final_obs.items():
+            mask = done_mask.to(tensor.device).reshape(-1, *([1] * (tensor.ndim - 1)))
+            flags[f"final observation group '{key}'"] = ~(torch.isfinite(tensor) | ~mask).all()
+    return flags
+
+
+def raise_if_nonfinite(flags: dict[str, torch.Tensor], distributed_device: str | None = None) -> None:
+    """Raise for flagged environment outputs on every rank when a collective device is supplied."""
+    if not flags and distributed_device is None:
+        return
+
+    device = distributed_device if distributed_device is not None else next(iter(flags.values())).device
+    values = (
+        torch.stack([flag.to(device) for flag in flags.values()])
+        if flags
+        else torch.empty(0, dtype=torch.bool, device=device)
+    )
+    if distributed_device is not None:
+        invalid = values.any().to(torch.int32)
+        torch.distributed.all_reduce(invalid, op=torch.distributed.ReduceOp.MAX)
+        if not invalid:
+            return
+
+    sources = [source for source, value in zip(flags, values.tolist()) if value]
+    if sources:
         raise ValueError(
-            f"The rewards returned by the environment contain {value_name} values. This usually indicates a bug in the"
-            " environment's reward computation."
+            f"The {', '.join(sources)} returned by the environment contained NaN or Inf values. This usually indicates"
+            " a bug in the environment's step() or reset() function."
         )
-    if not torch.isfinite(dones).all():
-        has_nan = torch.isnan(dones).any()
-        has_inf = torch.isinf(dones).any()
-        value_name = "NaN and Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
-        raise ValueError(
-            f"The dones returned by the environment contain {value_name} values. This usually indicates a bug in the"
-            " environment's termination logic."
-        )
+    if distributed_device is not None:
+        raise ValueError("The environment on another rank returned NaN or Inf values.")
 
 
 def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.Module:
@@ -340,6 +363,66 @@ def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.M
             f"forward pattern. Use 'default' or 'max-autotune-no-cudagraphs', or set to None to disable."
         )
     return torch.compile(model, mode=mode)  # type: ignore
+
+
+class CudaGraphCallable:
+    """Run a function in a CUDA graph after a few eager warm-up calls.
+
+    The inputs of each call are copied into static buffers before the graph is replayed. The function must only use
+    tensor operations that are valid during graph capture and return a dictionary of tensors.
+    """
+
+    def __init__(self, fn: Callable[..., dict[str, torch.Tensor]], device: str, num_warmup: int = 3) -> None:
+        """Initialize the graph wrapper.
+
+        Args:
+            fn: Function to capture. Must return a dictionary of tensors.
+            device: CUDA device on which to run warm-up calls and capture the graph.
+            num_warmup: Number of eager calls before graph capture.
+        """
+        self.fn = fn
+        self.num_warmup = num_warmup
+        self.num_calls = 0
+        self.graph: torch.cuda.CUDAGraph | None = None
+        self._stream = torch.cuda.Stream(device=device)
+
+    def __call__(self, *args: torch.Tensor | TensorDict) -> dict[str, torch.Tensor]:
+        """Run an eager warm-up call or replay the captured graph with new inputs."""
+        with torch.cuda.device(self._stream.device):
+            if self.graph is None and self.num_calls < self.num_warmup:
+                # Run eager warm-up calls on the capture stream before recording the graph
+                self.num_calls += 1
+                self._stream.wait_stream(torch.cuda.current_stream())
+                with torch.cuda.stream(self._stream):
+                    outputs = self.fn(*args)
+                torch.cuda.current_stream().wait_stream(self._stream)
+                return outputs
+            if self.graph is None:
+                # Capture the function using inputs with fixed memory addresses
+                self._static_args = tuple(arg.clone() for arg in args)
+                self.graph = torch.cuda.CUDAGraph()
+                with torch.inference_mode(False):
+                    self.graph.register_generator_state(torch.cuda.default_generators[self._stream.device.index])
+                with torch.cuda.graph(self.graph, stream=self._stream):
+                    self._static_outputs = self.fn(*self._static_args)
+            else:
+                # Copy new inputs into the buffers referenced by the captured graph
+                for static, arg in zip(self._static_args, args):
+                    static.copy_(arg)
+
+            # Replay the graph and return independent copies of its outputs
+            self.graph.replay()
+            return {key: value.clone() for key, value in self._static_outputs.items()}
+
+
+def normalize_loss_across_ranks(
+    total: torch.Tensor, weight: torch.Tensor, world_size: int, minimum: float = 1.0
+) -> torch.Tensor:
+    """Scale a local loss sum so averaging gradients across ranks gives the globally weighted mean."""
+    if world_size > 1:
+        weight = weight.detach().clone()
+        torch.distributed.all_reduce(weight)
+    return total * world_size / weight.clamp(min=minimum)
 
 
 def reduce_gradients_in_buckets(params: Iterable[torch.nn.Parameter], world_size: int, bucket_mb: float) -> None:
