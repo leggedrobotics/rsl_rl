@@ -52,6 +52,8 @@ class OnPolicyRunner:
         )
 
         self.current_learning_iteration = 0
+        # Whether current_learning_iteration refers to an already completed iteration (after learn() or load())
+        self._iteration_completed = False
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         """Run the learning loop for the specified number of iterations."""
@@ -80,7 +82,8 @@ class OnPolicyRunner:
         self.logger.init_logging_writer()
 
         # Start training
-        start_it = self.current_learning_iteration
+        # Continue after the last completed iteration instead of re-running it (e.g. when resuming from model_N.pt)
+        start_it = self.current_learning_iteration + 1 if self._iteration_completed else self.current_learning_iteration
         total_it = start_it + num_learning_iterations
         try:
             for it in range(start_it, total_it):
@@ -120,6 +123,7 @@ class OnPolicyRunner:
                 stop = time.time()
                 learn_time = stop - start
                 self.current_learning_iteration = it
+                self._iteration_completed = True
 
                 # Log information
                 self.logger.log(
@@ -177,6 +181,7 @@ class OnPolicyRunner:
         load_iteration = self.alg.load(loaded_dict, load_cfg, strict)
         if load_iteration:
             self.current_learning_iteration = loaded_dict["iter"]
+            self._iteration_completed = True
         return loaded_dict["infos"]
 
     def get_inference_policy(self, device: str | None = None) -> MLPModel:
