@@ -237,6 +237,10 @@ def resolve_rnd_config(alg_cfg: dict, obs: TensorDict, obs_groups: dict[str, lis
         alg_cfg["rnd_cfg"]["obs_groups"] = obs_groups
         # Scale down the rnd weight with timestep
         alg_cfg["rnd_cfg"]["weight"] *= env.unwrapped.step_dt  # type: ignore
+        # Scale the final value of the weight schedule the same way, so both ends of the schedule are consistent
+        weight_schedule = alg_cfg["rnd_cfg"].get("weight_schedule")
+        if weight_schedule is not None and "final_value" in weight_schedule:
+            weight_schedule["final_value"] *= env.unwrapped.step_dt  # type: ignore
     else:
         alg_cfg["rnd_cfg"] = None
     return alg_cfg
