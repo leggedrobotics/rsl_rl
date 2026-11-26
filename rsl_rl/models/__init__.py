@@ -5,13 +5,14 @@
 
 """Neural models for the learning algorithm."""
 
-from .cnn_model import CNNModel
+from .cnn_model import CNNModel, QCNNModel
 from .mlp_model import MLPModel, QMLPModel
 from .rnn_model import RNNModel
 
 __all__ = [
     "CNNModel",
     "MLPModel",
+    "QCNNModel",
     "QMLPModel",
     "RNNModel",
 ]
