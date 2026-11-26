@@ -49,6 +49,7 @@ the core library. These features, mostly contributed by the community, are liste
 - **Short-Horizon Actor-Critic (SHAC)** trains policies through differentiable dynamics supplied by the task or learned
   from simulator experience.
 - **Equivariant MLP model** that enforces robot symmetries (e.g. left-right mirroring) by construction.
+- **Global-advantage PPO** that optionally normalizes advantages across all distributed rollout shards.
 
 Key Features
 ------------

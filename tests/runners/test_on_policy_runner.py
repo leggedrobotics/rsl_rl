@@ -15,6 +15,7 @@ from tensordict import TensorDict
 
 import pytest
 
+from rsl_rl.algorithms import GlobalAdvantagePPO
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner
 from rsl_rl.utils import LogWriter
@@ -151,6 +152,14 @@ class TestRunnerConstruction:
         """Initial learning iteration should be zero."""
         runner = _build_runner()
         assert runner.current_learning_iteration == 0
+
+    def test_global_advantage_ppo_from_configuration(self) -> None:
+        """The optional subclass is selectable through the existing algorithm configuration."""
+        cfg = _make_train_cfg()
+        cfg["algorithm"]["class_name"] = "GlobalAdvantagePPO"
+        runner = OnPolicyRunner(DummyEnv(), cfg, log_dir=None, device="cpu")
+        assert isinstance(runner.alg, GlobalAdvantagePPO)
+        runner.learn(num_learning_iterations=1)
 
 
 class TestLearnLoop:

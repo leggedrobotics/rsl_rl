@@ -13,6 +13,7 @@ from tensordict import TensorDict
 
 import pytest
 
+from rsl_rl.algorithms.global_advantage_ppo import GlobalAdvantagePPO
 from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.models import CNNModel, MLPModel, RNNModel
 from rsl_rl.storage import RolloutStorage
@@ -257,6 +258,42 @@ class TestGAEComputation:
         adv = ppo.storage.advantages.flatten()
         assert abs(adv.mean().item()) < 1e-5, "Advantages should be zero-mean"
         assert abs(adv.std().item() - 1.0) < 0.1, "Advantages should be unit-std"
+
+
+class TestGlobalAdvantagePPO:
+    """Tests for the optional pooled normalization variant."""
+
+    def test_single_process_matches_ppo(self) -> None:
+        """Without distributed training, GAE and the optimizer update are unchanged."""
+        torch.manual_seed(71)
+        reference, obs = _build_ppo(num_learning_epochs=1, num_mini_batches=1)
+        variant = GlobalAdvantagePPO(
+            copy.deepcopy(reference.actor),
+            copy.deepcopy(reference.critic),
+            copy.deepcopy(reference.storage),
+            num_learning_epochs=1,
+            num_mini_batches=1,
+            schedule="fixed",
+        )
+        for algorithm in (reference, variant):
+            torch.manual_seed(72)
+            _fill_rollout(algorithm, obs)
+            with torch.inference_mode():
+                algorithm.compute_returns(obs)
+        torch.testing.assert_close(variant.storage.returns, reference.storage.returns, rtol=0, atol=0)
+        torch.testing.assert_close(variant.storage.advantages, reference.storage.advantages, rtol=0, atol=0)
+        for algorithm in (reference, variant):
+            torch.manual_seed(73)
+            algorithm.update()
+        for model, expected in ((variant.actor, reference.actor), (variant.critic, reference.critic)):
+            for actual, wanted in zip(model.parameters(), expected.parameters()):
+                torch.testing.assert_close(actual, wanted, rtol=0, atol=0)
+
+    def test_rejects_per_minibatch_normalization(self) -> None:
+        """A later local normalization must not undo the pooled normalization."""
+        ppo, _ = _build_ppo()
+        with pytest.raises(ValueError, match="normalize_advantage_per_mini_batch=False"):
+            GlobalAdvantagePPO(ppo.actor, ppo.critic, ppo.storage, normalize_advantage_per_mini_batch=True)
 
 
 class TestTimeoutBootstrapping:
